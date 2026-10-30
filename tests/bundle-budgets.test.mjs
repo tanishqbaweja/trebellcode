@@ -131,7 +131,16 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // waits for turn-support.js before its message shows only when its thread's context is full enough to compact first. Its headroom
 // stays 0.9 / 0.1 KB, as on main before them. The first bundle went down, 627.6 / 202.2 to 608.5 / 196.9 KB, with 3.1 KB gzip of
 // room for R13S and the next round.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:813.9,gzipKB:269.1}};
+// Its repair (2026-10-30, review of that move) then made what those scripts do happen once per press and only where it was pressed:
+// pressed again while it is on its way, also while its script is still coming, it joins the press on its way, and pressed before its
+// script has come it is done only in the view it was pressed in (whenLoaded in App; a send in the background holds the composer,
+// Sending…, meanwhile). It made room for that by moving two cards' own actions into those cards, which are drawn, and so loaded,
+// before they can be pressed: a denied action's Allow anyway into GuardianDenialCard.jsx and an app's device verification into
+// McpElicitationModal.jsx. The first bundle went down again, 608.5 / 196.9 to 607.7 / 196.8 KB (3.2 KB gzip of room for R13S and
+// the next round), and the lazy chunks went up 1.5 / 0.4 KB to 814.5 / 269.4 KB (the two cards' actions 1.4 / 0.5, the delegation
+// in turn-support.js 0.1 / 0.0, the Settings chunk's import line 0.0 / -0.1), and their limit with them, its headroom still
+// 0.9 / 0.1 KB.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:815.4,gzipKB:269.5}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{

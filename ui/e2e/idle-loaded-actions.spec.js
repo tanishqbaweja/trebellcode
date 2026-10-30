@@ -21,7 +21,8 @@ import { keepThreadMeta } from "./test-home.js";
 // background or to several models, a queued follow-up's Send now, Edit from here, Compact and a desktop SnapShot attached with the
 // turn support (turn-support.js), and a thread a pull request links, opened from the Source panel, with the thread actions
 // (thread-actions.js). Each done before its script has come (here with the script's request held from the page's first ask, which
-// comes at idle) waits for it and then does what it did before, once; where the script cannot load, each says so in loadFailed's
+// comes at idle) waits for it and then does what it did before, once, also when pressed again meanwhile, and only in the view it was
+// pressed in (a thread or a new task opened meanwhile is left as it is); where the script cannot load, each says so in loadFailed's
 // words where its own failure is said.
 
 const RELOAD="Part of Trebell could not load. Reload Trebell to get it back.";
@@ -252,8 +253,9 @@ test("a background send made before the turn support has loaded starts once it h
     await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:15_000});
     await expect(composer).toHaveValue("");
     await expect.poll(()=>fixture.threadStore.list("native").length).toBe(2);
+    // Its thread is made before its turn starts, so the turn is waited for.
     const started=fixture.threadStore.list("native").find(thread=>thread.id!==fixture.threads[0].id);
-    expect(fixture.threadStore.get(started.id)?.turns?.[0]?.items?.find(item=>item.type==="userMessage")?.content?.[0]?.text).toBe(task);
+    await expect.poll(()=>fixture.threadStore.get(started.id)?.turns?.[0]?.items?.find(item=>item.type==="userMessage")?.content?.[0]?.text,{timeout:10_000}).toBe(task);
     await shootModes(page,"background-send-after-script",()=>expect(page.locator(".thread-row")).toHaveCount(2));
     await appStays(page);
   }finally{await script.drop();await fixture.close()}
@@ -328,7 +330,8 @@ test("a background send and a SnapShot say so when the turn support cannot load,
 // A Codex thread at rest whose follow-up waits in Codex's own queue, left there before the window opened: it shows under the
 // composer with Send now, which starts it as the thread's next turn (thread/queue/start). started(): how many Codex was asked to start.
 const QUEUED="Queued before the window opened";
-async function codexQueuedThread(page){
+// other: a second thread at rest, listed below it, with no queue of its own.
+async function codexQueuedThread(page,{other=null}={}){
   const thread={id:"idle-actions-queue",name:"Idle actions queue",preview:"A follow-up left queued",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
   let queue=[{id:"queued-1",input:[{type:"text",text:QUEUED}],clientUserMessageId:"idle-actions-queued-1"}];
   const calls=[],upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
@@ -339,13 +342,13 @@ async function codexQueuedThread(page){
     ws.on("message",raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;calls.push(message);let result={};
       if(message.method==="initialize")result={userAgent:"idle-actions-queue"};
-      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
-      else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
+      else if(message.method==="thread/list")result={data:other?[thread,other]:[thread],nextCursor:null};
+      else if(message.method==="thread/resume"||message.method==="thread/read")result={thread:other&&message.params?.threadId===other.id?other:thread};
       else if(["thread/items/list","thread/attachment/list","threadSection/list"].includes(message.method))result={data:[],nextCursor:null};
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
-      else if(message.method==="thread/queue/list")result={data:queue,nextCursor:null};
+      else if(message.method==="thread/queue/list")result={data:!other||message.params?.threadId===thread.id?queue:[],nextCursor:null};
       else if(message.method==="thread/queue/start"){
         queue=queue.filter(item=>item.id!==message.params.queuedSubmissionId);const turn={id:"turn-queued-"+calls.length,status:"inProgress",items:[]};
         ws.send(JSON.stringify({id:message.id,result:{turn}}));
@@ -360,7 +363,7 @@ async function codexQueuedThread(page){
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const close=async()=>{relay.close();for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstream.close(resolve))])};
   try{
-    const meta={[thread.id]:{projectless:true,environmentId:null}};await keepThreadMeta(page,meta);
+    const meta={[thread.id]:{projectless:true,environmentId:null},...(other?{[other.id]:{projectless:true,environmentId:null}}:{})};await keepThreadMeta(page,meta);
     const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"};
     await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/codex/ws`,cwd:process.cwd(),platform:process.platform,version:"idle-actions-queue",activeEnvironmentId:null,activeEnvironment:null}));
     await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:meta}));
@@ -615,4 +618,197 @@ test("a linked thread whose thread actions cannot load says so in the Source pan
     await shootModes(page,"linked-thread-cannot-load",()=>expect(alert).toBeVisible());
     await appStays(page);
   }finally{await fixture.close()}
+});
+
+// Pressed again while its script is still on its way, each of these is done once; and once another thread or a new task has been
+// opened meanwhile, it is not done at all, leaving what is shown then as it is (App's whenLoaded, and the background send's hold on
+// the composer). After a press that is not to be done, nothing marks its end on the page, so those checks wait a moment
+// (settle) before they look.
+const settle=page=>page.waitForTimeout(1500);
+const backgroundTurn=async request=>({id:"idle-actions-again-"+Math.random().toString(36).slice(2,8),provider:request.provider,model:request.model,text:(request.metadata?.completionGate||request.responseJsonSchema?.name==="trebell_completion_gate")?JSON.stringify({status:"complete",progress:"improved",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[],unresolved:[],reason:"Done."}):"Background work done.",toolCalls:[],finishReason:"stop",usage:{}});
+
+test("a background send waiting for the turn support says Sending…, takes no second press, and starts one task",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  await keepSettings(page);
+  const fixture=await startStreamingFixture(page,{providerTurn:backgroundTurn});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await script.asked();
+    const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",sending=page.getByTestId("composer-sending");
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
+    // It says it is sending, with the draft still in the composer, and Send is off until it has gone.
+    await expect(sending).toBeVisible();await expect(sending).toContainText("Sending");
+    await expect(composer).toHaveValue(task);await expect(page.getByTestId("send")).toBeDisabled();
+    await shootModes(page,"background-send-waiting",()=>expect(sending).toBeVisible());
+    // Pressed again, from the keyboard both ways, it starts nothing more.
+    await composer.focus();await page.keyboard.press("Control+Enter");await page.keyboard.press("Enter");
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    await expect(page.locator(".thread-row")).toHaveCount(1);expect(fixture.threadStore.list("native")).toHaveLength(1);
+    await script.release();
+    // Once it has come, one task starts, and the composer is free for the next.
+    await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:15_000});
+    await expect(composer).toHaveValue("");await expect(sending).toHaveCount(0);
+    const started=()=>fixture.threadStore.list("native").filter(thread=>thread.id!==fixture.threads[0].id);
+    await expect.poll(()=>started()[0]?.id&&fixture.threadStore.get(started()[0].id)?.turns?.[0]?.items?.find(item=>item.type==="userMessage")?.content?.[0]?.text,{timeout:10_000}).toBe(task);
+    await settle(page);
+    expect(started(),"one task for one task").toHaveLength(1);await expect(page.locator(".thread-row")).toHaveCount(2);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("a background send waiting for the turn support does not go once a thread is opened, and that thread's draft stays",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  await keepSettings(page);
+  const fixture=await startStreamingFixture(page,{providerTurn:backgroundTurn});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await script.asked();
+    const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",draft="A draft for this thread";
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
+    await expect(page.getByTestId("composer-sending")).toBeVisible();
+    // The thread opened meanwhile lets the composer go: no longer sending, and its draft is the person's to write.
+    const row=page.locator(".thread-row").filter({hasText:"Native streaming"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(page.getByTestId("composer-sending")).toHaveCount(0);
+    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type(draft,{delay:5});await expect(composer).toHaveValue(draft);
+    await script.release();
+    // Once the turn support has come the task does not start from that thread, whose composer and rows stay as they are.
+    await settle(page);
+    await expect(composer).toHaveValue(draft);await expect(row).toHaveClass(/active/);
+    expect(fixture.threadStore.list("native"),"no task started").toHaveLength(1);await expect(page.locator(".thread-row")).toHaveCount(1);
+    await shootModes(page,"background-send-thread-opened",()=>expect(composer).toHaveValue(draft));
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("Send now pressed twice before the turn support has loaded starts the follow-up once",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await codexQueuedThread(page);
+  try{
+    await script.asked();
+    await sendNow(page).click();await sendNow(page).click();
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    await expect(page.locator(".queued-message")).toContainText(QUEUED);expect(fixture.started()).toBe(0);
+    await script.release();
+    const sent=page.locator(".user-bubble").filter({hasText:QUEUED});
+    await expect(sent).toHaveCount(1,{timeout:10_000});await expect(page.locator(".queued-message")).toHaveCount(0);
+    await settle(page);
+    expect(fixture.started(),"started once").toBe(1);await expect(sent).toHaveCount(1);
+    await expect(page.locator("[data-testid=app-action-error]")).toHaveCount(0);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("Send now pressed before the turn support has loaded does nothing once a new task is opened, and the follow-up stays queued",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await codexQueuedThread(page);
+  try{
+    await script.asked();
+    await sendNow(page).click();
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);await expect(page.locator(".queued-message")).toHaveCount(0);
+    await script.release();
+    // The new task stays as it is: nothing runs there, and no follow-up of the thread left shows in it.
+    await settle(page);
+    expect(fixture.started(),"nothing started").toBe(0);
+    await expect(page.locator(".user-bubble").filter({hasText:QUEUED})).toHaveCount(0);
+    await expect(page.locator(".stop-control")).toHaveCount(0);
+    await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder",/follow-up|Steer/);
+    await shootModes(page,"send-now-new-task-opened",()=>expect(page.locator(".thread-row.active")).toHaveCount(0));
+    // Back in its thread, the follow-up is still queued, with its Send now.
+    const row=page.locator(".thread-row").filter({hasText:"Idle actions queue"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(page.locator(".queued-message")).toContainText(QUEUED,{timeout:10_000});await expect(sendNow(page)).toBeEnabled();
+    expect(fixture.started()).toBe(0);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("Send now pressed before the turn support has loaded leaves another thread opened meanwhile as it is, and its follow-up stays queued",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  const other={id:"idle-actions-other",name:"Idle actions other",preview:"Another chat",cwd:process.cwd(),createdAt:Date.now()-2000,updatedAt:Date.now()-500,turns:[]};
+  const fixture=await codexQueuedThread(page,{other});
+  try{
+    await script.asked();
+    await sendNow(page).click();
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    const otherRow=page.locator(".thread-row").filter({hasText:other.name});await otherRow.locator(".thread-main").click();await expect(otherRow).toHaveClass(/active/);
+    await expect(page.locator(".queued-message")).toHaveCount(0);
+    await script.release();
+    // The thread opened meanwhile stays as it is: not running, and the other thread's follow-up is neither sent nor drawn in it.
+    await settle(page);
+    expect(fixture.started(),"nothing started").toBe(0);
+    await expect(page.locator(".user-bubble").filter({hasText:QUEUED})).toHaveCount(0);await expect(page.locator(".stop-control")).toHaveCount(0);
+    await expect(otherRow).toHaveClass(/active/);await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder",/follow-up|Steer/);
+    await shootModes(page,"send-now-thread-opened",()=>expect(otherRow).toHaveClass(/active/));
+    // Back in its thread, the follow-up is still queued, with its Send now.
+    const row=page.locator(".thread-row").filter({hasText:"Idle actions queue"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(page.locator(".queued-message")).toContainText(QUEUED,{timeout:10_000});await expect(sendNow(page)).toBeEnabled();
+    expect(fixture.started()).toBe(0);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("a task sent to two models before the turn support has loaded keeps its draft once a new task is opened, and starts nothing",async({page})=>{
+  test.setTimeout(90_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await nativeFanout(page),task="Rename the session helper with both models";
+  try{
+    await script.asked();
+    const composer=await pickBothModels(page);
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Enter");
+    await expect(composer).toHaveValue("");
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await script.release();
+    // The send is kept: its draft comes back to the composer, and no worktree, thread or model run starts.
+    await expect(composer).toHaveValue(task,{timeout:10_000});
+    await settle(page);
+    expect(fixture.worktrees,"no worktree made").toHaveLength(0);expect(fixture.providerCalls).toHaveLength(0);
+    await expect(page.locator(".thread-row")).toHaveCount(0);await expect(composer).toHaveValue(task);
+    await shootModes(page,"two-model-send-new-task-opened",()=>expect(composer).toHaveValue(task));
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("a linked thread pressed twice before the thread actions have loaded is read and opened once",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"thread-actions");
+  const fixture=await linkedThreadFixture(page);
+  try{
+    await script.asked();
+    const {button}=await linkedThreadButton(page,fixture);
+    await button.click();await button.click();
+    expect(script.held(),"the thread actions are still on their way").toBeGreaterThan(0);
+    expect(fixture.reads()).toBe(0);
+    await script.release();
+    await expect(threadRow(page,fixture.linked.name)).toHaveClass(/active/,{timeout:10_000});
+    await settle(page);
+    expect(fixture.reads(),"read once").toBe(1);await expect(threadRow(page,fixture.linked.name)).toHaveCount(1);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("a linked thread pressed before the thread actions have loaded is not opened once a new task is opened",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"thread-actions");
+  const fixture=await linkedThreadFixture(page);
+  try{
+    await script.asked();
+    const {button}=await linkedThreadButton(page,fixture);
+    await button.click();
+    expect(script.held(),"the thread actions are still on their way").toBeGreaterThan(0);
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);
+    await script.release();
+    // The new task opened since stays shown: the linked thread is neither read nor opened.
+    await settle(page);
+    expect(fixture.reads(),"no read").toBe(0);
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);await expect(threadRow(page,fixture.linked.name)).toHaveCount(0);
+    await shootModes(page,"linked-thread-new-task-opened",()=>expect(page.locator(".thread-row.active")).toHaveCount(0));
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
 });

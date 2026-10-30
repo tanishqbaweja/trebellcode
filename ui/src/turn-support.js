@@ -597,10 +597,12 @@ export async function startDetachedTurn(deps,text,paths,modelId=deps.model,{forc
     throw failure;
   }
 }
+// The parent is the thread shown when the task was delegated (activeThread, of that render), also when this module came after it and
+// another thread is shown by then: the task goes to the thread it was asked in, and only that thread's goal is read again.
 export async function delegateTask(deps,rawSpec){
-  const {activeThreadRef,backgroundThreadsRef,models,rpc,rpcStatus,setGoal,setThreadMeta,setThreads}=deps;
+  const {activeThread,activeThreadRef,backgroundThreadsRef,models,rpc,rpcStatus,setGoal,setThreadMeta,setThreads}=deps;
   if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
-  const parent=activeThreadRef.current;if(!parent?.id)throw new Error("Open a parent thread before delegating work.");
+  const parent=activeThread||activeThreadRef.current;if(!parent?.id)throw new Error("Open a parent thread before delegating work.");
   if(rawSpec?.model&&!models.includes(rawSpec.model))throw new Error("Delegation model is not available in the active runtime: "+rawSpec.model);
   const result=await rpc.request("thread/delegate",{threadId:parent.id,...rawSpec});
   if(result?.thread?.id){

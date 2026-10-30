@@ -112,9 +112,12 @@ const AgentBackgroundTerminals=lazyPart(()=>import("./components/AgentBackground
 // Shown only once auto review has denied an action, so it loads with the first denial instead of with the app (B11). The approval
 // card stays in App (ApprovalCard below): a harness waits on it, so it shows the moment the request comes, and no chunk that is
 // slow or fails to load stands between the person and their answer.
-const GuardianDenialCard=lazyPart(()=>import("./components/GuardianDenialCard.jsx"));
+// Each card's own action comes with it: a denial's Allow anyway (approveGuardianDenial) and an app's device verification
+// (verifyMcpUser), which only that card can ask for, once it is drawn and so loaded.
+const loadGuardianDenialCard=()=>import("./components/GuardianDenialCard.jsx"),loadMcpElicitationModal=()=>import("./components/McpElicitationModal.jsx");
+const GuardianDenialCard=lazyPart(loadGuardianDenialCard);
 const QuestionModal=lazyPart(()=>import("./components/QuestionModal.jsx"));
-const McpElicitationModal=lazyPart(()=>import("./components/McpElicitationModal.jsx"));
+const McpElicitationModal=lazyPart(loadMcpElicitationModal);
 const SnoozeDialog=lazyPart(()=>import("./components/SnoozeDialog.jsx"));
 const CommandPalette=lazyPart(()=>import("./components/CommandPalette.jsx"));
 const OnboardingModal=lazyPart(()=>import("./components/OnboardingModal.jsx"));
@@ -160,8 +163,9 @@ let idleParts=null,idlePartsLoad=null,reachIdle;const idleReached=new Promise(re
 const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>idleParts=module,error=>{
   idlePartsLoad=null;throw loadFailed(error);
 });
-// A press of Load earlier messages or Load these turns made before the chunk has come waits for it (loadEarlierMessages in App).
-let earlierPageWait=null;
+// A press of Load earlier messages or Load these turns made before the chunk has come waits for it (loadEarlierMessages in App), as
+// does one of what turn-support.js or thread-actions.js does (pressWaits, by what was pressed: whenLoaded in App).
+let earlierPageWait=null;const pressWaits={};
 // load: what a part drawn before the chunk is in waits for (the chunk itself, or the idle load for the Cite button).
 const idlePart=(name,load=loadIdleParts)=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:load().then(parts=>({default:parts[name]})));
 const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar",()=>idleReached.then(loadIdleParts)),ThreadFindBar=idlePart("ThreadFindBar"),RuntimeSurface=idlePart("RuntimeSurface"),ThreadHistoryPage=idlePart("ThreadHistoryPage");
@@ -4084,7 +4088,18 @@ export default function App(){
   }
   async function focusThreadFindOccurrence(occurrence,expectedSeq=null,afterPage=false){return (idleParts||await loadIdleParts()).focusThreadFindOccurrence(historyDeps(),occurrence,expectedSeq,afterPage)}
   async function stepThreadFind(direction){return (idleParts||await loadIdleParts()).stepThreadFind(historyDeps(),direction)}
-  async function openLinkedThread(reference){return (threadActions||await loadThreadActions()).openLinkedThread({openThread,rpc,rpcStatus,setThreads,threads,updateThreadMeta},reference)}
+  // What the person does that turn-support.js or thread-actions.js does (module: that script, once in) is done once per press: pressed
+  // again while it is on its way (key: what was pressed), also while it waits for its script to come, it joins the press on its way,
+  // so a follow-up's Send now starts it once and a linked thread is read and opened once. Pressed before the script has come, it is
+  // done once the script is in, only in the view it was pressed in (the same thread or new task, openSeqRef), as the find bar opens
+  // only on the thread it was asked on, and not at all ("left") once another thread or a new task has been opened: a queued
+  // follow-up stays queued, a message stays as it is, the thread opened since stays. One whose script cannot load fails with
+  // loadFailed's words.
+  function whenLoaded(key,module,load,run){
+    const threadId=activeThreadRef.current?.id,seq=openSeqRef.current;
+    return pressWaits[key]||=(module?Promise.resolve(module):load()).then(loaded=>openSeqRef.current===seq&&activeThreadRef.current?.id===threadId?run(loaded):"left").finally(()=>delete pressWaits[key]);
+  }
+  function openLinkedThread(reference){return whenLoaded("link"+reference?.threadId,threadActions,loadThreadActions,actions=>actions.openLinkedThread({openThread,rpc,rpcStatus,setThreads,threads,updateThreadMeta},reference))}
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
   // A send's new worktree, and a background send's, are made by turn-support.js: a send's in New worktree mode only, a background
   // send's also when it asks for one (force).
@@ -4373,12 +4388,13 @@ export default function App(){
     });
   }
   // A send with several models picked, and no thread open, fans out in turn-support.js (sendModelFanout); any other send goes on at
-  // once, as before, without waiting for that module. "kept": the composer gives the draft back (dispatchSend).
+  // once, as before, without waiting for that module. "kept": the composer gives the draft back (dispatchSend), as it does to one
+  // whose view was left while that module was on its way (whenLoaded): it fans out in no view but its own.
   async function sendModelFanout(text){
     const fanout=new Set(selectedModels.filter(id=>models.includes(id)));if(activeThread?.id||running||fanout.size<2||!runtimeCapabilities.multiModelFanout)return false;
-    let support;try{support=await loadTurnSupport()}
+    let fanned;try{fanned=await whenLoaded("fanout",turnSupport,loadTurnSupport,support=>support.sendModelFanout(turnDeps(),text))}
     catch(error){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return "kept"}
-    return support.sendModelFanout(turnDeps(),text);
+    return fanned==="left"?"kept":fanned;
   }
   // A send that starts with "/" may be a command rather than a message (a project's recipe or one of the composer's commands), which
   // turn-support.js runs (runSlashCommand): true when it ran, "kept" when the composer keeps the draft, which goes back (keepDraft), or
@@ -4505,10 +4521,18 @@ export default function App(){
     try{return await dispatchSend(promptOverride)}
     finally{if(submittingRef.current===token){submittingRef.current=null;setSubmitting(false)}}
   }
+  // A send in the background pressed before turn-support.js has come holds the composer as a send does (submitting: Sending…, and
+  // Enter and Ctrl+Enter wait), with its draft there, and goes once that module is in, from the view it was pressed in only: another
+  // thread opened meanwhile lets the composer go (openThread), and then it does not go, nor touch that thread's composer or rows.
   async function sendInBackground(promptOverride=null){
-    let support;try{support=await loadTurnSupport()}
-    catch(error){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return}
-    return support.sendInBackground(turnDeps(),promptOverride);
+    if(!turnSupport){
+      if(submittingRef.current)return;
+      const token={};submittingRef.current=token;setSubmitting(true);
+      let failed=null;try{await loadTurnSupport()}catch(error){failed=error}
+      if(submittingRef.current!==token)return;submittingRef.current=null;setSubmitting(false);
+      if(failed){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(failed.message)+" Your draft is kept."});return}
+    }
+    return turnSupport.sendInBackground(turnDeps(),promptOverride);
   }
   // A follow-up's button pressed from the keyboard keeps the keyboard, as the sidebar's rows do, instead of dropping it on the page with
   // the button its action takes away or turns off: Edit gives it to the composer, where the edit is made; Send now and Remove, whose
@@ -4525,9 +4549,10 @@ export default function App(){
     return runUserAction(async()=>{try{return await action()}finally{if(press&&!press.done&&queueKeysRef.current===press)queueKeysRef.current=null}},label);
   }
   function queueKeysDone(id){const press=queueKeysRef.current;if(press?.id===id)press.done=true}
-  // Send now (its button, and the keyboard's steer) runs in turn-support.js (sendQueuedNow); what cannot load it says so where the
-  // press does (runUserAction).
-  async function sendQueuedNow(item){return (turnSupport||await loadTurnSupport()).sendQueuedNow(turnDeps(),item)}
+  // Send now (its button, and the keyboard's steer) runs in turn-support.js (sendQueuedNow): once while it is on its way, however
+  // often it is pressed, and, pressed before that module has come, in the thread it was pressed in only (whenLoaded); what cannot
+  // load it says so where the press does (runUserAction).
+  function sendQueuedNow(item){return whenLoaded("now"+item?.id,turnSupport,loadTurnSupport,support=>support.sendQueuedNow(turnDeps(),item))}
   // A queued follow-up is edited in the composer and stays queued as it was until the edit is saved (dispatchSend) or Escape ends it
   // (cancelQueuedEdit); the composer's draft is set aside meanwhile.
   async function editQueued(item){
@@ -4606,12 +4631,12 @@ export default function App(){
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){if(ended){setRunning(false);setActiveTurnId(null)}await loadNativeQueue(rpc,threadId);return}
     if(ended)setRunning(false);
   }
-  // Edit from here runs in turn-support.js (editFromHere): pressed before that module has loaded it waits for it, and one that cannot
-  // load it says so, as an edit that fails does.
+  // Edit from here runs in turn-support.js (editFromHere): pressed before that module has loaded it waits for it and asks once it has,
+  // in the thread it was pressed in only (whenLoaded), and one that cannot load it says so, as an edit that fails does.
   async function editFromHere(message){
-    let support;try{support=turnSupport||await loadTurnSupport()}
+    let edit;try{edit=await whenLoaded("edit",turnSupport,loadTurnSupport,support=>()=>support.editFromHere(turnDeps(),message))}
     catch(error){showActionError(error,"Could not edit from this message");return}
-    return support.editFromHere(turnDeps(),message);
+    if(edit!=="left")return edit();
   }
   // Waits a few frames for a composer that is still held (the thread reloading) and leaves the focus where the person put it meanwhile.
   function focusComposerAt(caret,frames=30){
@@ -4801,19 +4826,8 @@ export default function App(){
     setQuestions(prev=>liveRequests(prev,client));
     setElicitations(prev=>liveRequests(prev,client));
   }
-  async function approveGuardianDenial(review){
-    if(!rpc||!review?.threadId||guardianBusy)return;
-    const reviewId=String(review.reviewId||crypto.randomUUID());setGuardianBusy(reviewId);
-    try{
-      // The denial's card has loaded its module, which builds the event (B11), so this import is already there.
-      const {guardianDeniedEvent}=await import("./components/GuardianDenialCard.jsx");
-      await rpc.request("thread/approveGuardianDeniedAction",{threadId:review.threadId,event:guardianDeniedEvent(review)});
-      setGuardianDenials(prev=>prev.filter(item=>item.reviewId!==review.reviewId));
-      setEvents(prev=>[...prev,{id:"auto-review-override-"+Date.now(),kind:"autoReview",title:"Auto review denial overridden by user",status:"done",raw:{reviewId:review.reviewId}}]);
-    }catch(error){
-      setEvents(prev=>[...prev,{id:"auto-review-override-error-"+Date.now(),kind:"error",title:"Could not override auto review: "+(error.message||String(error)),status:"done",raw:{reviewId:review.reviewId}}]);
-    }finally{setGuardianBusy("")}
-  }
+  // The denial's card has loaded its module, which overrides it (B11), so this import is already there.
+  async function approveGuardianDenial(review){return (await loadGuardianDenialCard()).approveGuardianDenial({rpc,guardianBusy,setGuardianBusy,setGuardianDenials,setEvents},review)}
   function dismissGuardianDenial(review){setGuardianDenials(prev=>prev.filter(item=>item.reviewId!==review.reviewId))}
   // Questions wait in the order they came, one per request and per thread: the modal shows the first, and the next once it is answered
   // or dismissed. Each answer goes back on the socket that asked.
@@ -4824,17 +4838,8 @@ export default function App(){
     if(!current.client.respond(current.request.id,response))throw new Error("Runtime disconnected before the app response could be sent.");
     setElicitations(prev=>prev.slice(1));return true;
   }
-  async function verifyMcpUser(request){
-    if(agentRuntime!=="codex"||!rpc)throw new Error("Device-backed user verification requires the Codex runtime.");
-    if(workspaceEnvironmentId)throw new Error("Device verification is unavailable for remote workspaces.");
-    const params=request?.params||{};
-    if(params.mode!=="openai/userVerification")throw new Error("This request is not a Codex user-verification challenge.");
-    const challenge=String(params.challenge||"").trim(),title=String(params.title||"").trim(),description=String(params.description||"");
-    if(!challenge||!title)throw new Error("The verification challenge is incomplete.");
-    const result=await rpc.request("userVerification/verify",{challenge,title,description});
-    if(!result?.proof)throw new Error("Codex did not return a verification proof.");
-    return result.proof;
-  }
+  // The modal that asks has loaded its module, which verifies (B11), so this import is already there.
+  async function verifyMcpUser(request){return (await loadMcpElicitationModal()).verifyMcpUser({agentRuntime,rpc,workspaceEnvironmentId},request)}
   // The name goes to the transport there is once the dialog closes; with none (the harness went away meanwhile) the rename names the
   // harness, as the title's tooltip does. It names the thread it was asked for, even when another view is open by then.
   async function renameThread(){if(!rpc||!activeThread)return;const name=await askText("Rename thread",titleOf(activeThread));if(!name?.trim())return;const client=rpcRef.current;if(!client?.isConnected())throw new Error(agentRuntimeLabel+" is not connected.");await client.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>prev?.id===activeThread.id?{...prev,name:name.trim()}:prev);setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
