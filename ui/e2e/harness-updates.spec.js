@@ -1,7 +1,7 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 
@@ -15,6 +15,7 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 // - Grok Build from WinGet (1.0.41, 1.0.70 out): no Update, but the version, the file it runs and `winget upgrade xAI.GrokBuild`;
 // - OpenCode, not there: Install;
 // - and Claude Code from WinGet: the same note with `winget upgrade Anthropic.ClaudeCode`.
+// A row with such a note, a refused switch or the sign-in choice's key fields under it keeps its buttons beside its badge.
 // Nothing real is installed, updated or started but a script of the test's own standing in for Codex's app-server.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/harness-updates/",import.meta.url));mkdirSync(shots,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
@@ -46,12 +47,16 @@ function machine(root,{path="",instances=[],latest,answer}){
   const runFn=async(command,args)=>{calls.push([command,...args]);return answer(command,args)};
   return {manager:new AgentRuntimeManager({state:{settings:()=>({...settings}),updateSettings:patch=>Object.assign(settings,patch)},env,platform:"win32",runFn,fetchImpl}),calls};
 }
-// The harness list Settings asks for is the manager's own listing; an Install or Update press is its install, answered as the server
-// answers it. pressed: the bodies of the presses.
+// The harness list Settings asks for is the manager's own listing; an Install or Update press is its install, and a switch its own,
+// each answered as the server answers it. pressed: the bodies of the presses.
 async function serve(page,manager,pressed=[]){
   await page.route(/\/api\/agent-runtimes$/,async route=>{
     const method=route.request().method(),body=method==="POST"?route.request().postDataJSON()||{}:{};
     if(method==="GET")return json(route,await manager.snapshot({refresh:true}));
+    if(body.action==="select"){
+      try{const selected=await manager.setActive({runtime:body.runtime,instanceId:body.instanceId});return json(route,{...await manager.snapshot(),selected})}
+      catch(error){return json(route,{error:error.message},400)}
+    }
     if(body.action!=="install")return route.continue();
     pressed.push(body);
     try{const installed=await manager.install(body.runtime,{id:body.id,instanceId:body.instanceId});return json(route,{installed,...await manager.snapshot()})}
@@ -70,6 +75,15 @@ async function openHarnesses(page){
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
 }
 const harnessRow=(page,name)=>page.locator(".agent-runtime-option").filter({has:page.locator("strong",{hasText:new RegExp("^"+name+"$")})});
+// Where each harness row puts its own buttons (Sign in, Install, Update): beside, all on its first line to the right of its badge;
+// under, all below that line, the first indented as far as the status above it; end, how far its last button, else its badge, ends
+// from the row's right edge.
+const laidOut=page=>page.locator(".agent-runtime-option:not(.agent-runtime-skeleton)").evaluateAll(rows=>rows.map(row=>{
+  const box=row.getBoundingClientRect(),main=row.querySelector(":scope>button").getBoundingClientRect(),badge=row.querySelector(":scope>button em").getBoundingClientRect();
+  const buttons=[...row.querySelectorAll(":scope>button~button")].map(button=>button.getBoundingClientRect());
+  return {name:row.querySelector("strong").textContent,beside:buttons.every(button=>button.top<main.bottom&&button.left>=badge.right),
+    under:buttons.every(button=>button.top>=main.bottom)&&(!buttons.length||Math.round(buttons[0].left-box.left)===42),end:Math.round(box.right-Math.max(badge.right,...buttons.map(button=>button.right)))};
+}));
 async function shootRows(page,name,rows){
   for(const mode of ["dark","light"]){
     await switchMode(page,mode);
@@ -170,6 +184,60 @@ test("a WinGet Claude Code offers no Update, and says the release, the file Treb
     await expect(row.getByRole("button",{name:"Install",exact:true})).toHaveCount(0);
     await shootRows(page,"winget",["Claude Code"]);
     expect(pressed).toEqual([]);
+  }finally{
+    await restore();
+    rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:200});
+  }
+});
+
+test("a harness row with a note, a refused switch or its key fields under it keeps its Sign in or Install beside its badge, ending on the same right edge as every other row",async({page,request})=>{
+  test.setTimeout(120_000);
+  const root=mkdtempSync(join(tmpdir(),"trebell-e2e-harness-rows-")),restore=await settled(page,request);
+  try{
+    // Claude Code from WinGet, signed out, 2.1.320 out: Sign in and the note. Grok Build from WinGet, 1.0.70 out: the note and no
+    // button. Cursor, whose `about` does not tell its sign-in: Needs setup and Sign in. OpenCode, not there, set to its API keys:
+    // Install and the key fields. Codex and Antigravity are not there (Install), nor is Muse Code.
+    const folder=join(root,"AppData","Local","Microsoft","WinGet","Packages","Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe");write(join(folder,"claude.exe"));
+    const grok=write(join(root,"AppData","Local","Microsoft","WinGet","Packages","xAI.GrokBuild_Microsoft.Winget.Source_8wekyb3d8bbwe","grok.exe"));
+    const cursor=write(join(root,"AppData","Local","cursor-agent","cursor-agent.exe"));
+    let cursorAccount="{}";
+    const fx=machine(root,{path:folder,instances:[{id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true,binaryPath:cursor,environment:{}},{id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,auth:"api-key",environment:{}}],latest:{"@anthropic-ai/claude-code":"2.1.320","@xai-official/grok":"1.0.70"},answer:(command,args)=>{
+      if(/^claude(\.exe)?$/i.test(basename(command)))return args[0]==="--version"?answered("2.1.300 (Claude Code)\n"):{ok:false,code:1,error:null,stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"}),stderr:""};
+      if(command===grok)return answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41 (4220f3b224a6)\n");
+      if(command===cursor)return args[0]==="--version"?answered("2026.10.22-5f1a2b3\n"):args[0]==="about"?answered(cursorAccount):missing(command);
+      return missing(command);
+    }});
+    await serve(page,fx.manager);
+    await openHarnesses(page);
+    const claude=harnessRow(page,"Claude Code"),cursorRow=harnessRow(page,"Cursor");
+    await expect(claude.getByRole("button",{name:"Sign in",exact:true})).toBeVisible();
+    await expect(claude.locator("p.agent-runtime-option-note")).toContainText("Claude Code 2.1.320 is available.");
+    await expect(harnessRow(page,"Grok Build").locator("p.agent-runtime-option-note")).toContainText("Grok Build 1.0.70 is available.");
+    await expect(harnessRow(page,"OpenCode").getByLabel("Key for OpenCode",{exact:true})).toBeVisible();
+    await expect(cursorRow.locator("button").first().locator("em")).toHaveText("Needs setup");
+    // Signed out of Cursor elsewhere since the list was read: its own check refuses the switch, said under its row.
+    cursorAccount=JSON.stringify({userEmail:null});
+    await cursorRow.locator("button").first().click();
+    await expect(cursorRow.getByRole("alert")).toHaveText("Could not switch to Cursor: Cursor Agent is installed but not authenticated. Run cursor-agent login.");
+    await expect(cursorRow.getByRole("button",{name:"Sign in",exact:true})).toBeVisible();
+    for(const width of [1280,900,700]){
+      await page.setViewportSize({width,height:900});
+      for(const mode of ["dark","light"]){
+        await switchMode(page,mode);
+        const rows=await laidOut(page);
+        expect.soft(rows.map(row=>[row.name,row.beside,row.end]),`each row's buttons beside its badge, ending 13 px in, at ${width} in ${mode}`).toEqual(rows.map(row=>[row.name,true,13]));
+        await cursorRow.scrollIntoViewIfNeeded();
+        await page.screenshot({animations:"disabled",path:shots+`rows-cursor-${mode}-${width}.png`});
+        await claude.scrollIntoViewIfNeeded();
+        await page.screenshot({animations:"disabled",path:shots+`rows-claude-${mode}-${width}.png`});
+      }
+    }
+    // At a phone's width every row takes two lines: its buttons under its name and status, indented as they are, its badge on the edge.
+    await switchMode(page,"dark");await page.setViewportSize({width:560,height:900});
+    const narrow=await laidOut(page);
+    expect.soft(narrow.map(row=>[row.name,row.under,row.end]),"each row's buttons on a line of their own at 560").toEqual(narrow.map(row=>[row.name,true,13]));
+    await cursorRow.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"rows-cursor-dark-560.png"});
   }finally{
     await restore();
     rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:200});

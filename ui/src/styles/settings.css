@@ -151,19 +151,21 @@
    window's edge. */
 :root:root .settings-page.redesigned-settings .settings-card .agent-runtime-option>:is(.agent-runtime-option-error,.agent-runtime-option-note){flex:1 0 100%;margin:-6px 0 0;padding:0 0 11px 41px;scroll-margin:12px 0;font-size:11.5px!important;line-height:1.5!important;color:var(--err)!important;overflow-wrap:anywhere}
 :root:root .settings-page.redesigned-settings .settings-card .agent-runtime-option>.agent-runtime-option-note{color:var(--tx2)!important}
-/* How a harness signs in (its own sign-in, or its provider's API key and that key's field), under its row: the row's own line keeps
-   its buttons (its first button shrinks first), and the choice takes a line of its own. */
+/* How a harness signs in (its own sign-in, or its provider's API key and that key's field), under its row, on a line of its own. */
 :root:root .settings-page.redesigned-settings .agent-runtime-option:has(>.harness-auth){flex-wrap:wrap}
-:root:root .settings-page.redesigned-settings .agent-runtime-option:has(>.harness-auth)>button:first-child{flex-basis:0}
 :root:root .settings-page.redesigned-settings .settings-card .harness-auth{flex:1 0 100%;display:grid;gap:8px;margin:-6px 0 0;padding:0 0 11px 41px;font-size:11.5px;line-height:1.5;color:var(--tx2)}
 .harness-auth{grid-column:1/-1}.harness-auth [role=radiogroup]{display:flex;flex-wrap:wrap;gap:6px 18px}
 :root:root .settings-page.redesigned-settings .settings-card .harness-auth [role=radiogroup] label{display:inline-flex;align-items:center;gap:7px;font-size:12px!important;font-weight:500;letter-spacing:normal;text-transform:none;color:var(--tx1)}
 :root:root .settings-page.redesigned-settings .settings-card .harness-auth input[type=radio]{flex:none;width:14px!important;height:14px!important;margin:0;padding:0;accent-color:var(--ac)}
 .harness-auth-key{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.harness-auth-key small{flex:1 0 100%;font-size:inherit;overflow-wrap:anywhere}.harness-auth-key :is(input,select){flex:1 1 180px;min-width:0}
 :root:root .settings-page.redesigned-settings .agent-runtime-option:has(>button.active){border-color:color-mix(in srgb,var(--ac) 42%,var(--line));background:linear-gradient(180deg,var(--acsoft),transparent 90%),var(--st-row)}
-:root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:flex-start;gap:12px;min-height:58px!important;margin:0;padding:11px 6px 11px 14px!important;border:0!important;border-radius:var(--r-m)!important;background:transparent!important;color:var(--tx1)!important;text-align:left;white-space:normal;box-shadow:none;transform:none!important}
-/* A row without its own action buttons ends its pill on the same right edge as the Update/Install buttons of the other rows. */
-:root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child:only-child{padding-right:0!important}
+/* A row's first button takes what its own buttons leave of its line (it shrinks first), so a row that wraps for what is under it (a
+   refusal, a note, the sign-in choice) keeps Sign in, Install or Update on that line beside its badge: sized to a long status, that
+   button took the line and put them on the next, against the row's left border. */
+:root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child{flex:1 1 0;min-width:0;display:flex;align-items:center;justify-content:flex-start;gap:12px;min-height:58px!important;margin:0;padding:11px 6px 11px 14px!important;border:0!important;border-radius:var(--r-m)!important;background:transparent!important;color:var(--tx1)!important;text-align:left;white-space:normal;box-shadow:none;transform:none!important}
+/* A row without its own action buttons ends its pill on the same right edge as the Update/Install buttons of the other rows, also
+   with a refusal, a note or the sign-in choice under it (its only button, no longer its only child). */
+:root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child:last-of-type{padding-right:0!important}
 :root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child:hover:not(:disabled){background:transparent!important}
 :root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child:disabled{opacity:1;cursor:default}
 :root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child:focus-visible{outline-offset:-2px}
@@ -385,9 +387,9 @@
 @container tbsettings (max-width:620px){
   :root:root .settings-page.redesigned-settings .settings-card{padding:16px!important}
   :root:root .settings-page.redesigned-settings .agent-runtime-option{flex-wrap:wrap;row-gap:0}
-  /* A row with the sign-in choice too: its first button takes the line, its buttons the next, as on every other row (the wide
-     rule that shrinks that button first left its name and status about 30 px at a phone's width). */
-  :root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child,:root:root .settings-page.redesigned-settings .agent-runtime-option:has(>.harness-auth)>button:first-child{flex-basis:100%}
+  /* Every row's first button takes the line, its buttons the next (the wide rule that shrinks that button first left its name and
+     status about 30 px at a phone's width), its badge on the edge every other row's ends on. */
+  :root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child{flex-basis:100%;padding-right:0!important}
   :root:root .settings-page.redesigned-settings .agent-runtime-option>button:nth-child(2){margin-left:41px}
   :root:root .settings-page.redesigned-settings .agent-runtime-option>button:not(:first-child){margin-bottom:10px}
   :root:root .settings-page.redesigned-settings .runtime-profile-row{flex-wrap:wrap}
