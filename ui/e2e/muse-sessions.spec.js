@@ -107,16 +107,16 @@ test("a Muse Code subagent and its todo list show as the running turn's row and 
     await send(page,"Please spawn subagent and keep a todo list");
     // While the subagent runs: its row, titled by its role, and Muse's todo list as the plan, without the cancelled and blank steps.
     const live=page.locator(".agent-block .activity-card");
-    await expect(row(live,"Subagent · hello agent")).toHaveClass(/status-running/,{timeout:20_000});
-    await expect(row(live,"Spawn the hello agent")).toHaveClass(/status-running/);
+    await expect(row(live,"Subagent · greeter")).toHaveClass(/status-running/,{timeout:20_000});
+    await expect(row(live,"Spawn the greeter")).toHaveClass(/status-running/);
     await expect(row(live,"Read its result")).toHaveClass(/status-pending/);
     await expect(live).not.toContainText("Discarded step");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await live.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-subagent-running-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
     // Its result is ready: the turn replies, the row is done, and the meter reads the context Muse reported of its window.
-    await expect(reply(page,"Hello")).toBeVisible({timeout:20_000});
-    await expect(row(page,"Subagent · hello agent")).toHaveClass(/status-done/);
-    await expect(row(page,"Spawn the hello agent")).toHaveClass(/status-done/);
+    await expect(reply(page,"Hi")).toBeVisible({timeout:20_000});
+    await expect(row(page,"Subagent · greeter")).toHaveClass(/status-done/);
+    await expect(row(page,"Spawn the greeter")).toHaveClass(/status-done/);
     const meter=page.locator(".composer-context");
     await expect(meter).toContainText("3% · 33,267/1,007,997");
     await expect(meter).toHaveAttribute("title","Context 3% · 33,267 input · 66,296 total");
@@ -131,30 +131,30 @@ test("a Muse Code workflow's agents settle in the turn that launched it, and Mus
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     // The turn has ended and the workflow runs on, held after its first agent's scheduling: the workflow's row still runs, and that
     // agent, scheduled after the turn ended, comes in pending on the ended turn's card (the live card until another turn starts).
     // Soft, so that the old code also shows what each of the two rows says.
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
     const live=page.locator(".agent-block .activity-card");
-    await expect(row(live,"Workflow ping-pong")).toHaveCount(2,{timeout:20_000});
-    await expect.soft(row(live,/^Workflow ping-pong$/),"the workflow, past the end of its turn").toHaveClass(/status-running/);
-    await expect.soft(row(live,/^Workflow ping-pong · ping$/),"its agent, scheduled after the turn ended").toHaveClass(/status-pending/);
+    await expect(row(live,"Workflow alpha-beta")).toHaveCount(2,{timeout:20_000});
+    await expect.soft(row(live,/^Workflow alpha-beta$/),"the workflow, past the end of its turn").toHaveClass(/status-running/);
+    await expect.soft(row(live,/^Workflow alpha-beta · alpha$/),"its agent, scheduled after the turn ended").toHaveClass(/status-pending/);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await live.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-runs-on-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
     await harness.release("workflow");
     // Muse reports once the workflow is done, in a turn with no message of the person's.
-    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(reply(page,"The alpha and beta agents are done.")).toBeVisible({timeout:20_000});
     await expect(page.locator(".user-row")).toHaveCount(1);
     const launched=page.locator(".turn-card").first().locator(".activity-card");
     if(await launched.getAttribute("data-state")!=="open")await launched.locator(".activity-card-head").click();
-    await expect(row(launched,"Workflow ping-pong")).toHaveCount(3);
-    await expect(row(launched,/^Workflow ping-pong$/)).toHaveClass(/status-done/);
-    await expect(row(launched,/^Workflow ping-pong · ping$/)).toHaveClass(/status-done/);
-    await expect(row(launched,/^Workflow ping-pong · pong: budget_exhausted$/)).toHaveClass(/status-error/);
+    await expect(row(launched,"Workflow alpha-beta")).toHaveCount(3);
+    await expect(row(launched,/^Workflow alpha-beta$/)).toHaveClass(/status-done/);
+    await expect(row(launched,/^Workflow alpha-beta · alpha$/)).toHaveClass(/status-done/);
+    await expect(row(launched,/^Workflow alpha-beta · beta: budget_exhausted$/)).toHaveClass(/status-error/);
     // The report turn has no steps of the workflow's.
-    await expect(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
+    await expect(page.locator(".activity-card").filter({hasText:"Workflow alpha-beta"})).toHaveCount(1);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-report-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
@@ -166,12 +166,12 @@ test("Muse Code's report on a workflow lists none of the launching turn's steps,
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const context=row(page,"Trebell context skipped");
     await expect(context).toHaveCount(1);
     // Muse reports once the workflow is done, in a turn with no message of the person's.
-    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(reply(page,"The alpha and beta agents are done.")).toBeVisible({timeout:20_000});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
     const [thread]=harness.threadStore.list(),[launchedTurn,reportTurn]=harness.threadStore.get(thread.id).turns;
     expect(reportTurn,"the report is a turn of its own").toBeTruthy();
@@ -182,16 +182,16 @@ test("Muse Code's report on a workflow lists none of the launching turn's steps,
     await expect(context).toHaveCount(1);
     await expect(row(launched,"Trebell context skipped")).toHaveCount(1);
     await expect(launched.locator(".tool-event summary strong").first()).toHaveText(/^Trebell context skipped/);
-    await expect(row(launched,"Workflow ping-pong")).toHaveCount(3);
+    await expect(row(launched,"Workflow alpha-beta")).toHaveCount(3);
     await expect(page.locator(".agent-block [data-testid=activity-card]"),"no card of the report turn's").toHaveCount(0);
     await expect(page.locator(`[data-testid=activity-card][data-turn-id="${reportTurn.id}"]`)).toHaveCount(0);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-report-no-launching-steps-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
     // Once the window is reloaded, the report turn still lists none of them.
     await page.reload();
-    const listed=page.locator(".thread-row").filter({hasText:"Please run workflow ping-pong"});
+    const listed=page.locator(".thread-row").filter({hasText:"Please run workflow alpha-beta"});
     await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
-    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(reply(page,"The alpha and beta agents are done.")).toBeVisible({timeout:20_000});
     await expect(page.locator(`[data-testid=activity-card][data-turn-id="${reportTurn.id}"]`)).toHaveCount(0);
     await expect(page.locator(".agent-block [data-testid=activity-card]")).toHaveCount(0);
   }finally{await harness.close()}
@@ -204,9 +204,9 @@ test("a Muse Code workflow goes on in the card of the turn that launched it whil
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
-    await expect(row(page.locator(".agent-block .activity-card"),"Workflow ping-pong")).toHaveCount(2,{timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
+    await expect(row(page.locator(".agent-block .activity-card"),"Workflow alpha-beta")).toHaveCount(2,{timeout:20_000});
     // The next message's turn takes the live card; the launching turn's own card has the workflow as it is, still running. Soft, so
     // that the old code also shows what that card and the live card say at each step.
     await send(page,"Hello Muse");
@@ -215,22 +215,22 @@ test("a Muse Code workflow goes on in the card of the turn that launched it whil
     const [thread]=harness.threadStore.list(),launchedId=harness.threadStore.get(thread.id).turns[0].id;
     const launched=page.locator(`.turn-card[data-turn-id="${launchedId}"] [data-testid=activity-card]`);
     if(await launched.getAttribute("data-state")!=="open")await launched.locator(".activity-card-head").click();
-    await expect.soft(row(launched,/^Workflow ping-pong$/),"the workflow on its turn's card").toHaveClass(/status-running/);
-    await expect.soft(row(launched,/^Workflow ping-pong · ping$/),"its agent on its turn's card").toHaveClass(/status-pending/);
+    await expect.soft(row(launched,/^Workflow alpha-beta$/),"the workflow on its turn's card").toHaveClass(/status-running/);
+    await expect.soft(row(launched,/^Workflow alpha-beta · alpha$/),"its agent on its turn's card").toHaveClass(/status-pending/);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-past-next-turn-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
-    // The workflow goes on with no turn running: its agents start, pong comes and fails on its budget, and the workflow ends, each on
+    // The workflow goes on with no turn running: its agents start, beta comes and fails on its budget, and the workflow ends, each on
     // the launching turn's card, before Muse starts its report; the live card, the next message's, lists none of it.
     await harness.release("workflow");
-    await expect.soft(row(launched,"Workflow ping-pong · pong"),"the agent that came after the next turn, on the launching turn's card").toHaveClass(/status-error/,{timeout:20_000});
-    await expect.soft(row(launched,/^Workflow ping-pong · ping$/)).toHaveClass(/status-done/);
-    await expect.soft(row(launched,/^Workflow ping-pong$/)).toHaveClass(/status-done/);
-    await expect.soft(page.locator(".agent-block").filter({hasText:"Workflow ping-pong"}),"none of it on the next message's card").toHaveCount(0);
-    await expect.soft(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
+    await expect.soft(row(launched,"Workflow alpha-beta · beta"),"the agent that came after the next turn, on the launching turn's card").toHaveClass(/status-error/,{timeout:20_000});
+    await expect.soft(row(launched,/^Workflow alpha-beta · alpha$/)).toHaveClass(/status-done/);
+    await expect.soft(row(launched,/^Workflow alpha-beta$/)).toHaveClass(/status-done/);
+    await expect.soft(page.locator(".agent-block").filter({hasText:"Workflow alpha-beta"}),"none of it on the next message's card").toHaveCount(0);
+    await expect.soft(page.locator(".activity-card").filter({hasText:"Workflow alpha-beta"})).toHaveCount(1);
     await harness.release("report_start");
-    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
-    await expect(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
-    await expect(row(launched,"Workflow ping-pong")).toHaveCount(3);
+    await expect(reply(page,"The alpha and beta agents are done.")).toBeVisible({timeout:20_000});
+    await expect(page.locator(".activity-card").filter({hasText:"Workflow alpha-beta"})).toHaveCount(1);
+    await expect(row(launched,"Workflow alpha-beta")).toHaveCount(3);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-settled-past-turns-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
@@ -242,32 +242,32 @@ test("a Muse Code workflow still running past its turn keeps running on that tur
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
-    await expect(row(page.locator(".agent-block .activity-card"),"Workflow ping-pong")).toHaveCount(2,{timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
+    await expect(row(page.locator(".agent-block .activity-card"),"Workflow alpha-beta")).toHaveCount(2,{timeout:20_000});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
     // The window is reloaded while the workflow runs on, held after its first agent's scheduling, and the person opens the thread
     // again: its card is rebuilt from the thread's history. Soft, so that the old code also shows what each row says.
     await page.reload();
-    const listed=page.locator(".thread-row").filter({hasText:"Please run workflow ping-pong"});
+    const listed=page.locator(".thread-row").filter({hasText:"Please run workflow alpha-beta"});
     await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const [stored]=harness.threadStore.list(),launchedId=harness.threadStore.get(stored.id).turns[0].id;
     const card=page.locator(`[data-testid=activity-card][data-turn-id="${launchedId}"]`);
     await expect(card).toHaveCount(1);
     if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
-    await expect.soft(row(card,/^Workflow ping-pong$/),"the workflow, still running").toHaveClass(/status-running/);
-    await expect.soft(row(card,/^Workflow ping-pong · ping$/),"its agent, still scheduled").toHaveClass(/status-pending/);
+    await expect.soft(row(card,/^Workflow alpha-beta$/),"the workflow, still running").toHaveClass(/status-running/);
+    await expect.soft(row(card,/^Workflow alpha-beta · alpha$/),"its agent, still scheduled").toHaveClass(/status-pending/);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-runs-on-after-reload-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
     // The workflow goes on and ends, its rows settling on that card, and Muse reports on it in a turn of its own.
     await harness.release("workflow");
-    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(reply(page,"The alpha and beta agents are done.")).toBeVisible({timeout:20_000});
     if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
-    await expect(row(card,/^Workflow ping-pong$/)).toHaveClass(/status-done/);
-    await expect(row(card,/^Workflow ping-pong · ping$/)).toHaveClass(/status-done/);
-    await expect(row(card,/^Workflow ping-pong · pong: budget_exhausted$/)).toHaveClass(/status-error/);
-    await expect(page.locator(".tool-event").filter({hasText:"Workflow ping-pong"}),"on that card only").toHaveCount(3);
+    await expect(row(card,/^Workflow alpha-beta$/)).toHaveClass(/status-done/);
+    await expect(row(card,/^Workflow alpha-beta · alpha$/)).toHaveClass(/status-done/);
+    await expect(row(card,/^Workflow alpha-beta · beta: budget_exhausted$/)).toHaveClass(/status-error/);
+    await expect(page.locator(".tool-event").filter({hasText:"Workflow alpha-beta"}),"on that card only").toHaveCount(3);
   }finally{await harness.close()}
 });
 
@@ -325,10 +325,10 @@ test("a command Muse Code's report still runs when the person's message takes th
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     // Muse reports on the finished workflow in a turn of its own, says its first sentence and runs `npm test`, and holds there.
-    await expect(page.getByText("The workflow with ping and pong agents is complete.").first()).toBeVisible({timeout:20_000});
+    await expect(page.getByText("The alpha and beta agents are done.").first()).toBeVisible({timeout:20_000});
     const live=page.locator(".agent-block .activity-card");
     await expect(row(live,"npm test")).toHaveClass(/status-running/,{timeout:20_000});
     // A message from another window of the person's takes the report over (this window queues its own behind the running report):

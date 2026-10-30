@@ -15,11 +15,11 @@ import { historyFromItemEntries } from "../ui/src/thread-history.js";
 // says so as no turn's and comes back on the next message, a message whose host fails is refused once in Muse's own words, and a notice
 // Trebell cannot read is skipped with a log line.
 
-// Muse's usage report, observed at nowMs, and the refusal Meta relayed through Muse.
-const USAGE={observedAtMs:1791447762610,tier:"tier-1",window:{usedPercent:0,windowDurationMins:300,resetsAtMs:1791465557000},weekly:{usedPercent:5,resetsAtMs:1791763200000}};
+// A usage report as Muse sends it, observed at NOW, and a quota refusal as Meta relays it through Muse.
+const USAGE={observedAtMs:1793610930250,tier:"tier-1",window:{usedPercent:3,windowDurationMins:300,resetsAtMs:1793626800000},weekly:{usedPercent:8,resetsAtMs:1794182400000}};
 const NOW=USAGE.observedAtMs;
-const REAL_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2026-10-13T10:45:52Z.) (after 10 provider attempts)";
-const QUOTA_MESSAGE="API error 429: Subscription quota exhausted. Your usage window resets soon. (rate_limit_error)";
+const REAL_REFUSAL="API error 429: All credentials for model muse-spark-1.3 are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2026-11-03T06:30:00Z.) (after 4 provider attempts)";
+const QUOTA_MESSAGE="API error 429: Subscription quota exhausted. Your usage window resets later today. (rate_limit_error)";
 const limited=(error,message)=>muse.museUsageLimited?.(error,message);
 const resetAt=(...args)=>muse.museUsageLimitResetAt?.(...args);
 
@@ -45,17 +45,17 @@ test("Meta's quota refusal is a usage limit, and no other failure is",()=>{
 
 test("a usage limit lifts once every used-up window has reset, at the reset a refusal names or types when no report has one, and has no reset otherwise",()=>{
   const sessionOut={...USAGE,window:{...USAGE.window,usedPercent:103}};
-  assert.equal(resetAt(sessionOut,NOW),"2026-10-08T13:19:17.000Z");
+  assert.equal(resetAt(sessionOut,NOW),"2026-11-02T13:40:00.000Z");
   const bothOut={...sessionOut,weekly:{...USAGE.weekly,usedPercent:100}};
-  assert.equal(resetAt(bothOut,NOW),"2026-10-12T00:00:00.000Z","with both windows out, the later reset wins");
-  assert.equal(resetAt(undefined,NOW,{message:REAL_REFUSAL}),"2026-10-13T10:45:52.000Z","the recorded refusal is limited until the time it names");
+  assert.equal(resetAt(bothOut,NOW),"2026-11-09T00:00:00.000Z","with both windows out, the later reset wins");
+  assert.equal(resetAt(undefined,NOW,{message:REAL_REFUSAL}),"2026-11-03T06:30:00.000Z","the refusal is limited until the time it names");
   const quota={resetsAtMs:USAGE.window.resetsAtMs};
-  assert.equal(resetAt(USAGE,NOW,{quota}),"2026-10-08T13:19:17.000Z");
-  assert.equal(resetAt({...USAGE,weekly:{...USAGE.weekly,usedPercent:100}},NOW,{quota}),"2026-10-12T00:00:00.000Z");
+  assert.equal(resetAt(USAGE,NOW,{quota}),"2026-11-02T13:40:00.000Z");
+  assert.equal(resetAt({...USAGE,weekly:{...USAGE.weekly,usedPercent:100}},NOW,{quota}),"2026-11-09T00:00:00.000Z");
   assert.equal(resetAt(undefined,NOW),null);
   assert.equal(resetAt(USAGE,NOW),null,"no window is used up");
   assert.equal(resetAt({...USAGE,window:{...USAGE.window,usedPercent:100}},USAGE.window.resetsAtMs),null,"a reset that has passed");
-  assert.equal(resetAt(undefined,Date.parse("2026-10-14T00:00:00Z"),{message:REAL_REFUSAL}),null);
+  assert.equal(resetAt(undefined,Date.parse("2026-11-04T00:00:00Z"),{message:REAL_REFUSAL}),null);
 });
 
 test("a turn the quota stopped says the Muse Code usage limit was reached and when it resets, the later of two used-up windows, with Muse's own words kept; a plain 429 stays Muse's own failure",async()=>{
@@ -73,7 +73,7 @@ test("a turn the quota stopped says the Muse Code usage limit was reached and wh
   const named=new Date(hours(30)).toISOString().replace(/\.\d{3}Z$/,"Z");
   turn=await runningTurn(fixture);
   fixture.muse.notify("usage/changed",{observedAtMs:Date.now(),tier:"tier-1",window:{usedPercent:10,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:10,resetsAtMs:weekReset}});
-  const relayed=REAL_REFUSAL.replace("2026-10-13T10:45:52Z",named);
+  const relayed=REAL_REFUSAL.replace("2026-11-03T06:30:00Z",named);
   complete(fixture,turn.turnId,"failed",{reason:relayed,error:{kind:"modelError",message:relayed,retryable:true}});
   error=await failure(turn.running);
   assert.deepEqual([error.usageLimit,error.resetAt],[true,named.replace("Z",".000Z")]);
@@ -285,7 +285,7 @@ test("through the relay, Muse retrying the turn's request is the turn's retry ro
     await relay.completed(thread.id,2);
     const failed=relay.threadStore.get(thread.id).turns.at(-1);
     assert.equal(failed.status,"failed");
-    assert.match(failed.error.message,new RegExp("^Muse Code usage limit reached\\. Send the message again after it resets at "+local("2031-05-04T10:45:52Z").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\."));
+    assert.match(failed.error.message,new RegExp("^Muse Code usage limit reached\\. Send the message again after it resets at "+local("2031-03-14T07:20:00Z").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\."));
   }finally{await relay.close()}
 });
 

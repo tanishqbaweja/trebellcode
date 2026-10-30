@@ -29,7 +29,7 @@ test("a command Muse Code's report still runs when a message takes the report ov
   const relay=await museRelay("trebell-muse-report-command-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1",MUSE_FAKE_REPORT_COMMAND_HOLD:release}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}]});
     await relay.completed(thread.id,1);
     // Muse reports on the finished workflow in a turn of its own, and runs `npm test` there, which goes on until the hold's file is there.
     const started=()=>relay.notifications.find(item=>item.method==="item/started"&&item.params.threadId===thread.id&&String(item.params.item?.id||"").endsWith("-report-check"));

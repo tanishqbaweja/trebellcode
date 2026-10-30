@@ -8,8 +8,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 
-const REPORT=Object.freeze({observedAtMs:1791447762610,tier:"tier-1",window:{usedPercent:0,windowDurationMins:300,resetsAtMs:1791465557000},weekly:{usedPercent:5,resetsAtMs:1791763200000}});
-const OBSERVED="2026-10-08T08:22:42.610Z",WINDOW_RESET="2026-10-08T13:19:17.000Z",WEEKLY_RESET="2026-10-12T00:00:00.000Z";
+const REPORT=Object.freeze({observedAtMs:1793610930250,tier:"tier-1",window:{usedPercent:3,windowDurationMins:300,resetsAtMs:1793626800000},weekly:{usedPercent:8,resetsAtMs:1794182400000}});
+const OBSERVED="2026-11-02T09:15:30.250Z",WINDOW_RESET="2026-11-02T13:40:00.000Z",WEEKLY_RESET="2026-11-09T00:00:00.000Z";
 const NOT_OBSERVED="Muse Code has not reported its subscription windows yet. They show here once a Muse Code turn in Trebell Code reports them.";
 const ALL_RESET="Muse Code's subscription windows have reset since its last report. They show here again once a Muse Code turn in Trebell Code reports them.";
 const report=(patch={})=>({...REPORT,...patch,window:{...REPORT.window,...patch.window},weekly:{...REPORT.weekly,...patch.weekly}});
@@ -40,7 +40,7 @@ test("the sessions' last usage/changed becomes a 5-hour row with the length Muse
   const fx=museManager();fx.store.report=report({window:{usedPercent:103}});
   assert.deepEqual(await fx.limits(),{checkedAt:new Date(fx.clock.now).toISOString(),observedAt:OBSERVED,windows:[
     {id:"window",kind:"session",label:"5-hour",windowDurationMins:300,usedPercent:100,resetsAt:WINDOW_RESET},
-    {id:"weekly",kind:"weekly",label:"Weekly",windowDurationMins:10_080,usedPercent:5,resetsAt:WEEKLY_RESET},
+    {id:"weekly",kind:"weekly",label:"Weekly",windowDurationMins:10_080,usedPercent:8,resetsAt:WEEKLY_RESET},
   ]});
   // The next report the sessions keep shows at the next read, its window named by the length it reports.
   fx.store.report=report({observedAtMs:REPORT.observedAtMs+1000,window:{usedPercent:42.5,windowDurationMins:240},weekly:{usedPercent:141}});

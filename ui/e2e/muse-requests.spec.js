@@ -99,9 +99,9 @@ test("Muse Code's approval shows on Trebell's approval card with Muse's own thre
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
     const card=page.locator(".inline-approval .approval-card");
-    await send(page,"Please ask approval to touch muse-approved.txt");
+    await send(page,"Please ask approval to touch trebell-approved.txt");
     await expect(card).toBeVisible({timeout:20_000});
-    await expect(card).toContainText("touch muse-approved.txt");
+    await expect(card).toContainText("touch trebell-approved.txt");
     await expect(card.locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-approval-card-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
@@ -194,7 +194,7 @@ test("a retry Muse schedules shows on the turn's retry row while the turn goes o
     await expect(row.locator("summary strong")).toHaveText("Recovered after retrying");
     // A turn the subscription quota stopped: the usage limit and its reset in the person's own time, not Meta's 429.
     await send(page,"This one hits the quota");
-    const resets=new Date("2031-05-04T10:45:52Z").toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
+    const resets=new Date("2031-03-14T07:20:00Z").toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
     const failed=page.locator(".tool-event.kind-error").filter({hasText:"Muse Code usage limit reached"});
     await expect(failed.locator("summary strong")).toHaveText(`Muse Code usage limit reached. Send the message again after it resets at ${resets}.`,{timeout:20_000});
     await expect(failed).toHaveClass(/status-error/);

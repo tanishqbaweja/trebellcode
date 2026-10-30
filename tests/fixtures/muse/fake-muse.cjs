@@ -21,10 +21,10 @@
 //   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,007,997 the context holds after each plain turn (session/tokenUsage and
 //                          session/contextUsage), as a long conversation's does
 //   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
-//                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not. A child's approval
+//                          `touch trebell-approved.txt`, as "child approval" asks it, whether a turn runs or not. A child's approval
 //                          names, as its subagent id, the child id of the agent of "run workflow" running then, if one runs
-// A turn whose message says one of these runs as the recorded sessions (the permission transcript) and Muse 1.4.13's schema shape them:
-//   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
+// A turn whose message says one of these runs as Trebell's recorded sessions (fixtures/muse/permission*.ndjson) and Muse 1.4.13's schema shape them:
+//   "ask approval"      asks to run `touch trebell-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
 //   "reviewer decides"  asks the same, and Muse's reviewer allows it MUSE_FAKE_REVIEW_MS (300) ms later (approval/resolved by
 //                       llmJudge), or once the file MUSE_FAKE_REVIEW_HOLD names is there
@@ -33,7 +33,7 @@
 //   "child approval"    a workflow child (subagentOrigin, its own run) asks to run the same command while the turn waits until it
 //                       is stopped or the child's approval is settled; the child's approval outlives the turn
 //   "protected child"   a workflow child asks to write .muse/settings.json, a protected write that offers Allow once and Reject only
-//   "subagent approval" a subagent (role "sleeper") the turn waits on asks to run the same command, its origin naming the subagent
+//   "subagent approval" a subagent (role "counter") the turn waits on asks to run the same command, its origin naming the subagent
 //   "staged approval"   asks to run `touch a.txt && rm b.txt` stage by stage: `touch a.txt` first, and once the file MUSE_FAKE_STAGE_HOLD
 //                       names is there (else MUSE_FAKE_STAGE_MS, 300 ms, later) Muse's reviewer moves the approval on to `rm b.txt`
 //                       (approval/updated, reviewCompleted) with that stage's own choices, a saved rule keeping it out among them; a
@@ -52,12 +52,12 @@
 //                       with background true, then settles), completes the turn, and MUSE_FAKE_BACKGROUND_MS (1500) ms later, or once
 //                       the file MUSE_FAKE_BACKGROUND_HOLD names is there, tells the command's end as an item of its own naming the
 //                       call (backgroundTerminalCompletion, MSP 1.4.13)
-// And as the recorded subagent and workflow sessions run them, with the token usage and context those reported:
-//   "spawn subagent"    keeps a todo list and runs a subagent (role "hello agent"), whose child session replies on its own turn, and
+// And as Trebell's recorded subagent and workflow sessions run them (fixtures/muse/subagent.ndjson, workflow.ndjson), with token usage of its own:
+//   "spawn subagent"    keeps a todo list and runs a subagent (role "greeter"), whose child session replies on its own turn, and
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
-//   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
-//                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and going on past ping's scheduling only
-//                       once the file MUSE_FAKE_WORKFLOW_HOLD names is there, when it names one, and past ping's start only once the
+//   "run workflow"      launches the alpha-beta workflow and completes the turn while it runs; its agents alpha and beta run
+//                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, beta failing on its budget, and going on past alpha's scheduling only
+//                       once the file MUSE_FAKE_WORKFLOW_HOLD names is there, when it names one, and past alpha's start only once the
 //                       file MUSE_FAKE_WORKFLOW_AGENT_HOLD names is there, when it names one; MUSE_FAKE_REPORT_DELAY_MS (0) ms after
 //                       the workflow has completed, or once the file MUSE_FAKE_REPORT_START_HOLD names is there, Muse starts a report
 //                       turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
@@ -67,7 +67,7 @@
 //                       ends once the message comes, before the rest of the report (and, when MUSE_FAKE_REPORT_COMMAND_HOLD names a
 //                       file, only once that file is there, the rest of the report and the message's turn after it, as they follow a
 //                       long command in Muse); once the file MUSE_FAKE_REPORT_ASK_HOLD names is
-//                       there, the held report asks to run `touch muse-approved.txt` ("ask approval"), and its answer ends the report;
+//                       there, the held report asks to run `touch trebell-approved.txt` ("ask approval"), and its answer ends the report;
 //                       once the file MUSE_FAKE_REPORT_END_HOLD names is there, a held report no message came for ends by itself
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
@@ -134,47 +134,47 @@ function startTurn(sessionId,params,{usage=null}={}){
 // A model step's tokens and the context they leave, as Muse 1.4.13 reports them (session/tokenUsage, session/contextUsage).
 function usageStep(sessionId,turnId,{prompt,output,cacheRead=0,reasoning=0,used=prompt+output}){
   notify("session/tokenUsage",sessionId,{turnId,modelId:"muse-spark-1.3",usage:{inputTokens:prompt,outputTokens:output,cachedTokens:cacheRead,cacheWriteTokens:0,cacheReadTokens:cacheRead,reasoningTokens:reasoning},promptTokens:prompt,totalTokens:prompt+output,sourceRange:{},cumulative:{promptTokens:prompt,outputTokens:output,totalTokens:prompt+output}});
-  notify("session/contextUsage",sessionId,{windowTokens:1007997,usedTokens:used,pressure:"normal",sourceRange:{}});
+  notify("session/contextUsage",sessionId,{windowTokens:1048576,usedTokens:used,pressure:"normal",sourceRange:{}});
 }
 function spawnSubagent(sessionId,turnId,turn){
-  const agent=(revision,fields)=>({itemId:turnId+"-agent",kind:"subagent",turnId,revision,status:"inProgress",fallbackText:"Subagent: Reply with exactly: Hello",subagentId:"subagent-1",agentPath:"main/hello agent/1",depth:1,role:"hello agent",objective:"Reply with exactly: Hello",...fields});
+  const agent=(revision,fields)=>({itemId:turnId+"-agent",kind:"subagent",turnId,revision,status:"inProgress",fallbackText:"Subagent: Reply with exactly: Hi",subagentId:"subagent-1",agentPath:"main/greeter/1",depth:1,role:"greeter",objective:"Reply with exactly: Hi",...fields});
   const todos=items=>notify("session/todoListChanged",sessionId,{items,revision:1,sourceTool:"write_todos",sourceRange:{}});
-  todos([{text:" Spawn the hello agent ",status:"inProgress"},{text:"Read its result",status:"pending"},{text:"Discarded step",status:"cancelled"},{text:"  ",status:"pending"}]);
-  usageStep(sessionId,turnId,{prompt:32900,output:129,reasoning:36});
+  todos([{text:" Spawn the greeter ",status:"inProgress"},{text:"Read its result",status:"pending"},{text:"Discarded step",status:"cancelled"},{text:"  ",status:"pending"}]);
+  usageStep(sessionId,turnId,{prompt:30120,output:140,reasoning:40});
   notify("item/started",sessionId,{item:agent(1,{controlStatus:"accepted"})});
   notify("item/updated",sessionId,{item:agent(2,{controlStatus:"running",childSessionId:turnId+"-child"})});
   // The child session's own reply carries its own turn, and is not the turn's.
-  notify("item/started",sessionId,{item:{itemId:turnId+"-child-reply",kind:"agentMessage",turnId:turnId+"-child",revision:1,status:"inProgress",text:"Hello from the child session"}});
+  notify("item/started",sessionId,{item:{itemId:turnId+"-child-reply",kind:"agentMessage",turnId:turnId+"-child",revision:1,status:"inProgress",text:"Hi from the child session"}});
   setTimeout(()=>{
-    notify("item/updated",sessionId,{item:agent(3,{controlStatus:"resultReady",childSessionId:turnId+"-child",durationMs:1810,result:{summary:"Hello",text:"Hello",evidenceRefs:[],artifactRefs:[]}})});
-    todos([{text:"Spawn the hello agent",status:"completed"},{text:"Read its result",status:"completed"}]);
-    usageStep(sessionId,turnId,{prompt:33144,output:123,cacheRead:32625,reasoning:7});
-    reply(sessionId,turn,"Hello");complete(sessionId,turnId);
+    notify("item/updated",sessionId,{item:agent(3,{controlStatus:"resultReady",childSessionId:turnId+"-child",durationMs:1810,result:{summary:"Hi",text:"Hi",evidenceRefs:[],artifactRefs:[]}})});
+    todos([{text:"Spawn the greeter",status:"completed"},{text:"Read its result",status:"completed"}]);
+    usageStep(sessionId,turnId,{prompt:30410,output:118,cacheRead:29880,reasoning:9});
+    reply(sessionId,turn,"Hi");complete(sessionId,turnId);
   },Number(process.env.MUSE_FAKE_SUBAGENT_MS||200));
 }
-// "subagent approval": a subagent (role "sleeper") runs while its turn waits on it, and asks to run `touch muse-approved.txt`, its
+// "subagent approval": a subagent (role "counter") runs while its turn waits on it, and asks to run `touch trebell-approved.txt`, its
 // subagentOrigin naming the subagent; the turn ends once that is settled, or with a Stop.
 function subagentApproval(sessionId,turnId){
-  notify("item/started",sessionId,{item:{itemId:turnId+"-agent",kind:"subagent",turnId,revision:1,status:"inProgress",fallbackText:"Subagent: Sleep a while",subagentId:"subagent-1",agentPath:"main/sleeper/1",depth:1,role:"sleeper",objective:"Sleep a while",controlStatus:"running",childSessionId:turnId+"-child"}});
+  notify("item/started",sessionId,{item:{itemId:turnId+"-agent",kind:"subagent",turnId,revision:1,status:"inProgress",fallbackText:"Subagent: Count slowly to ten",subagentId:"subagent-1",agentPath:"main/counter/1",depth:1,role:"counter",objective:"Count slowly to ten",controlStatus:"running",childSessionId:turnId+"-child"}});
   askApproval(sessionId,turnId,false,{child:true,subagent:"subagent-1"});
 }
 function runWorkflow(sessionId,turnId,turn){
   const step=Number(process.env.MUSE_FAKE_WORKFLOW_MS||300),itemId=turnId+"-workflow";let revision=0;
-  const workflow=(children,fields={})=>({itemId,kind:"workflow",turnId,revision:++revision,status:"inProgress",fallbackText:"Workflow: model-chosen generated workflow",workflowRunId:"workflow-run-"+turnId,entryId:"ping-pong",scriptId:"generated.workflow.ping-pong",triggerSource:"guidanceAuto",children,stopAvailable:true,...fields});
-  const launch=(rev,status,extra={})=>({itemId:turnId+"-launch",kind:"toolCall",turnId,revision:rev,status,tool:"workflow",callId:"call_"+turnId,args:"{\"name\":\"ping-pong\"}",...extra});
-  usageStep(sessionId,turnId,{prompt:33474,output:1531,reasoning:1333});
+  const workflow=(children,fields={})=>({itemId,kind:"workflow",turnId,revision:++revision,status:"inProgress",fallbackText:"Workflow: alpha-beta",workflowRunId:"workflow-run-"+turnId,entryId:"alpha-beta",scriptId:"generated.workflow.alpha-beta",triggerSource:"guidanceAuto",children,stopAvailable:true,...fields});
+  const launch=(rev,status,extra={})=>({itemId:turnId+"-launch",kind:"toolCall",turnId,revision:rev,status,tool:"workflow",callId:"call_"+turnId,args:"{\"name\":\"alpha-beta\"}",...extra});
+  usageStep(sessionId,turnId,{prompt:31250,output:1420,reasoning:1210});
   notify("item/started",sessionId,{item:launch(1,"inProgress")});
-  notify("item/completed",sessionId,{item:launch(2,"completed",{visibleOutput:"{\"status\":\"launched\",\"entryId\":\"ping-pong\"}"})});
+  notify("item/completed",sessionId,{item:launch(2,"completed",{visibleOutput:"{\"status\":\"launched\",\"entryId\":\"alpha-beta\"}"})});
   notify("item/started",sessionId,{item:workflow([])});
-  reply(sessionId,turn,"Started the ping-pong workflow.");complete(sessionId,turnId);
-  const ping={childId:itemId+"-ping",attempt:1},pong={childId:itemId+"-pong",attempt:1},pingDone={...ping,status:"terminal",terminal:"completed",durationMs:2360};
-  const revisions=[[{...ping,status:"scheduled",label:"ping"}],[{...ping,status:"started"}],[{...ping,status:"started"},{...pong,status:"scheduled",label:"pong"}],[pingDone,{...pong,status:"started"}],
-    [pingDone,{...pong,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:2639}]];
-  // Each revision step ms after the one before, the one after ping's scheduling, or after its start, once its hold's file is there.
-  // The agent running (ping while it alone runs, then pong) is the one a child's approval comes from.
+  reply(sessionId,turn,"Started the alpha-beta workflow.");complete(sessionId,turnId);
+  const alpha={childId:itemId+"-alpha",attempt:1},beta={childId:itemId+"-beta",attempt:1},alphaDone={...alpha,status:"terminal",terminal:"completed",durationMs:2360};
+  const revisions=[[{...alpha,status:"scheduled",label:"alpha"}],[{...alpha,status:"started"}],[{...alpha,status:"started"},{...beta,status:"scheduled",label:"beta"}],[alphaDone,{...beta,status:"started"}],
+    [alphaDone,{...beta,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:2639}]];
+  // Each revision step ms after the one before, the one after alpha's scheduling, or after its start, once its hold's file is there.
+  // The agent running (alpha while it alone runs, then beta) is the one a child's approval comes from.
   const state=sessions.get(sessionId);
   const revise=index=>{
-    if(state)state.workflowAgent=index===1||index===2?ping.childId:index===3?pong.childId:null;
+    if(state)state.workflowAgent=index===1||index===2?alpha.childId:index===3?beta.childId:null;
     if(index===revisions.length){
       notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
       return later(process.env.MUSE_FAKE_REPORT_START_HOLD,Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0),()=>reportTurn(sessionId,turnId+"-report"));
@@ -207,8 +207,8 @@ function reportTurn(sessionId,turnId){
   const turn={itemId:turnId+"-reply",text:""};running.set(turnId,turn);
   notify("turn/started",sessionId,{turnId,commandId:turnId});
   notify("item/started",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:1,status:"inProgress",text:""}});
-  reply(sessionId,turn,"The workflow with ping and pong agents is complete.");
-  usageStep(sessionId,turnId,{prompt:36716,output:262,cacheRead:33393,reasoning:238});
+  reply(sessionId,turn,"The alpha and beta agents are done.");
+  usageStep(sessionId,turnId,{prompt:34880,output:250,cacheRead:31900,reasoning:215});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/started",sessionId,{item:reportCheck(turnId,1,"inProgress")});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_ASK_HOLD)later(process.env.MUSE_FAKE_REPORT_ASK_HOLD,0,()=>{if(running.has(turnId))askApproval(sessionId,turnId,false)});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"){
@@ -228,12 +228,12 @@ function releaseReport(sessionId,params){
     if(process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/completed",sessionId,{item:reportCheck(turnId,2,"completed",{visibleOutput:"All 12 tests passed."})});
     reply(sessionId,turn," The rest of the report.");
     usageStep(sessionId,turnId,{prompt:100,output:10});
-    complete(sessionId,turnId,"completed",{inputTokens:36816,outputTokens:272,cachedTokens:33393,cacheReadTokens:33393,cacheWriteTokens:0,reasoningTokens:238});
+    complete(sessionId,turnId,"completed",{inputTokens:34980,outputTokens:260,cachedTokens:31900,cacheReadTokens:31900,cacheWriteTokens:0,reasoningTokens:215});
     setTimeout(()=>startTurn(sessionId,params,{usage:{prompt:500,output:20}}),20);
   });
 }
-const QUOTA_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-05-04T10:45:52Z.) (after 10 provider attempts)";
-// The approval Muse asks before running `touch muse-approved.txt` (the recorded permission session), and how it settles.
+const QUOTA_REFUSAL="API error 429: All credentials for model muse-spark-1.3 are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-03-14T07:20:00Z.) (after 4 provider attempts)";
+// The approval Muse asks before running `touch trebell-approved.txt` (as in fixtures/muse/permission-approved.ndjson), and how it settles.
 const approvals=new Map(),questions=new Map();
 const SHELL_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix",label:"Always allow in this workspace: touch ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: touch ..."},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once",acceptsFeedback:true}];
 // A file read outside the workspace: Muse reads its workspace unasked, and asks with Allow once or Reject for a file beyond it.
@@ -247,9 +247,9 @@ function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,pro
   const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:subagent||sessions.get(sessionId)?.workflowAgent||"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
   const approvalId=turnId+"-approval",requirement={approvalId,sourceIndex:0},workspaceRoot=sessions.get(sessionId)?.workspaceRoot||"";
   const outside=read?require("node:path").resolve(workspaceRoot||process.cwd(),"..","outside-notes.txt"):"",choices=read||protectedWrite?READ_CHOICES:SHELL_CHOICES;
-  const command=staged?"touch a.txt && rm b.txt":"touch muse-approved.txt",stage=(index,argv)=>({requirementId:{approvalId,sourceIndex:index},position:index+1,totalStages:staged?2:1,argv,argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:[argv[0]],label:`Always allow in this workspace: ${argv[0]} ...`}});
+  const command=staged?"touch a.txt && rm b.txt":"touch trebell-approved.txt",stage=(index,argv)=>({requirementId:{approvalId,sourceIndex:index},position:index+1,totalStages:staged?2:1,argv,argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:[argv[0]],label:`Always allow in this workspace: ${argv[0]} ...`}});
   const subject=read?{kind:"fileAccess",access:"read",path:outside,toolName:"read_file"}:protectedWrite?{kind:"fileAccess",access:"write",path:".muse/settings.json",toolName:"write_file"}
-    :{kind:"shell",command,workspaceRoot,stages:staged?[stage(0,["touch","a.txt"]),stage(1,["rm","b.txt"])]:[stage(0,["touch","muse-approved.txt"])]};
+    :{kind:"shell",command,workspaceRoot,stages:staged?[stage(0,["touch","a.txt"]),stage(1,["rm","b.txt"])]:[stage(0,["touch","trebell-approved.txt"])]};
   const params={sessionId,approvalId,turnId,taskId:approvalId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:read?"read_file":protectedWrite?"write_file":"bash",rawArgs:JSON.stringify(read?{file_path:outside}:protectedWrite?{file_path:".muse/settings.json"}:{command}),viewCursor:`v:${sessionId}:${++cursor}`,sourceRange:{},
     subject,currentRequirementId:requirement,availableChoices:choices,protectedWrite,judgeEscalated:false,...origin};
   approvals.set(approvalId,{sessionId,turnId,parentTurnId,settled:false,choices,requirement,read,staged});

@@ -630,8 +630,8 @@ test("Compact's row from between Muse Code's turns stays out of the report Muse 
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
-    await send(page,"Please run workflow ping-pong");
-    const launched=reply(page,"Started the ping-pong workflow.");
+    await send(page,"Please run workflow alpha-beta");
+    const launched=reply(page,"Started the alpha-beta workflow.");
     await expect(launched).toBeVisible({timeout:20_000});
     const stop=page.getByRole("button",{name:"Stop",exact:true});
     await expect(stop).toHaveCount(0,{timeout:20_000});
@@ -640,7 +640,7 @@ test("Compact's row from between Muse Code's turns stays out of the report Muse 
     await expect(failed).toHaveCount(1,{timeout:20_000});
     // Muse reports on its workflow in a turn of its own.
     await harness.release("report_start");
-    const report=page.locator(".history-assistant,.agent-block .assistant-answer").filter({hasText:"The workflow with ping and pong agents is complete."});
+    const report=page.locator(".history-assistant,.agent-block .assistant-answer").filter({hasText:"The alpha and beta agents are done."});
     await expect(report).toBeVisible({timeout:20_000});
     await expect(stop).toHaveCount(0,{timeout:20_000});
     const [thread]=harness.threadStore.list();

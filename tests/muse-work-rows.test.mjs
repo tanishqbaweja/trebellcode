@@ -42,10 +42,10 @@ test("a harness's call that has not started reads pending, and one its turn ende
 });
 
 test("a row of work that runs on past its turn stays as it is at the turn's end in the open window, and the thread's history settles it as before",()=>{
-  const workflow=mapped({toolCallId:"wf-1",title:"Workflow ping-pong",kind:"other",status:"in_progress",runsPastTurn:true});
+  const workflow=mapped({toolCallId:"wf-1",title:"Workflow alpha-beta",kind:"other",status:"in_progress",runsPastTurn:true});
   assert.equal(workflow.runsPastTurn,true);
   for(const flag of [undefined,false,"yes"])assert.equal("runsPastTurn" in mapped({toolCallId:"t",title:"x",kind:"other",status:"in_progress",runsPastTurn:flag}),false);
-  const running=activityRow(workflow,{turnId:"turn-1"}),scheduled=live({toolCallId:"wf-1:agent:ping",title:"Workflow ping-pong · ping",kind:"other",status:"pending",runsPastTurn:true});
+  const running=activityRow(workflow,{turnId:"turn-1"}),scheduled=live({toolCallId:"wf-1:agent:alpha",title:"Workflow alpha-beta · alpha",kind:"other",status:"pending",runsPastTurn:true});
   for(const [row,ended] of [[running,"done"],[scheduled,"notRun"]]){
     assert.equal(settledRow(row,{keepPast:true}),row,"left for the work's own rows");
     assert.equal(settledRow(row).status,ended);
@@ -61,7 +61,7 @@ async function workSession(){
   return {...fixture,seen};
 }
 const rowsOf=(seen,id)=>seen.filter(entry=>entry.update.toolCallId===id).map(entry=>entry.update);
-const workflowItem=(turnId,revision,children,fields={})=>({itemId:"wf-1",kind:"workflow",revision,status:"inProgress",turnId,entryId:"ping-pong",children,...fields});
+const workflowItem=(turnId,revision,children,fields={})=>({itemId:"wf-1",kind:"workflow",revision,status:"inProgress",turnId,entryId:"alpha-beta",children,...fields});
 
 test("Muse Code's workflow, its agents and a command it sends to the background say on each of their rows, to the one that settles them, that they run on past their turn; its other steps do not",async()=>{
   const fixture=await workSession(),{session,seen}=fixture,sid=session.sessionId;
@@ -79,19 +79,19 @@ test("Muse Code's workflow, its agents and a command it sends to the background 
   fixture.muse.notify("turn/completed",{sessionId:sid,viewCursor:"v",terminal:"completed",turnId});
   assert.equal((await running).stopReason,"end_turn");
   // Past the turn's end: the agent is scheduled, then the workflow and the command in the background end.
-  fixture.muse.write(itemFrame("item/updated",sid,workflowItem(turnId,2,[{childId:"ping",attempt:1,status:"scheduled",label:"ping"}])));
-  fixture.muse.write(itemFrame("item/completed",sid,workflowItem(turnId,3,[{childId:"ping",attempt:1,status:"terminal",terminal:"completed"}],{status:"completed",finalSummary:"done"})));
+  fixture.muse.write(itemFrame("item/updated",sid,workflowItem(turnId,2,[{childId:"alpha",attempt:1,status:"scheduled",label:"alpha"}])));
+  fixture.muse.write(itemFrame("item/completed",sid,workflowItem(turnId,3,[{childId:"alpha",attempt:1,status:"terminal",terminal:"completed"}],{status:"completed",finalSummary:"done"})));
   const end={itemId:"dev-finished",kind:"backgroundTerminalCompletion",turnId,revision:1,status:"completed",backgroundTerminalCompletion:{command:"npm run dev",output:"Dev server stopped.",outputTruncated:false,terminalStatus:"completed",toolCallId:"call_dev"}};
   fixture.muse.write(itemFrame("item/completed",sid,end));
-  await until(()=>rowsOf(seen,"dev").some(row=>row.rawOutput==="Dev server stopped.")&&rowsOf(seen,"wf-1:agent:ping").length===2,"the work's ends");
+  await until(()=>rowsOf(seen,"dev").some(row=>row.rawOutput==="Dev server stopped.")&&rowsOf(seen,"wf-1:agent:alpha").length===2,"the work's ends");
   const shape=id=>rowsOf(seen,id).map(row=>[row.status,row.runsPastTurn===true]);
   assert.deepEqual(shape("wf-1"),[["in_progress",true],["completed",true]]);
-  assert.deepEqual(shape("wf-1:agent:ping"),[["pending",true],["completed",true]]);
+  assert.deepEqual(shape("wf-1:agent:alpha"),[["pending",true],["completed",true]]);
   assert.deepEqual(shape("dev"),[["in_progress",false],["in_progress",true],["in_progress",true],["completed",true]],"from the update that sent it to the background, running until Muse tells its end, though Muse settled the call as it went there");
   assert.deepEqual(shape("check"),[["in_progress",false],["completed",false]],"a step that ends in its turn says nothing of the kind");
   assert.ok(seen.filter(entry=>entry.update.toolCallId).every(entry=>entry.turnKey===turnId),"every row names the turn that started it");
   // Through the relay's mapping, the window gets the agent's row pending, the work's rows as running past the turn.
-  assert.deepEqual(rowsOf(seen,"wf-1:agent:ping").map(row=>[mapped(row).status,mapped(row).runsPastTurn]),[["pending",true],["completed",true]]);
+  assert.deepEqual(rowsOf(seen,"wf-1:agent:alpha").map(row=>[mapped(row).status,mapped(row).runsPastTurn]),[["pending",true],["completed",true]]);
   // In the window (each item notification merged as App merges it), the dev server's row runs on past the turn's end with what Muse
   // said as it sent the command there, which the turn's end leaves it once the streamed output goes.
   let shown=null;for(const [index,update] of rowsOf(seen,"dev").slice(0,3).entries())shown=mergeLiveRow(shown,activityRow(mapped(update),{turnId}),{phase:index?"progress":"started"});
@@ -104,24 +104,24 @@ test("a read of a thread whose Muse Code session still runs a workflow past its 
   const relay=await museRelay("trebell-muse-live-work-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_WORKFLOW_HOLD:release}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}]});
     await relay.completed(thread.id,1);
     // The workflow runs on past its turn, held after its first agent is scheduled.
-    await eventually(()=>relay.notifications.some(item=>/^item\//.test(item.method)&&item.params.item?.tool==="Workflow ping-pong · ping"),"the workflow's agent");
+    await eventually(()=>relay.notifications.some(item=>/^item\//.test(item.method)&&item.params.item?.tool==="Workflow alpha-beta · alpha"),"the workflow's agent");
     // The window rebuilds the thread's cards from each of the reads it opens a thread with (an open, a reload, a reconnect).
     const shown=async()=>{
       const resumed=await relay.rpc("thread/resume",{threadId:thread.id}),items=await relay.rpc("thread/items/list",{threadId:thread.id,limit:200});
       const turns=await relay.rpc("thread/turns/list",{threadId:thread.id,itemsView:"full"}),read=await relay.rpc("thread/read",{threadId:thread.id});
-      const rows=cards=>Object.fromEntries(Object.values(cards).flat().filter(row=>/^Workflow ping-pong/.test(row.title)).map(row=>[row.title,row.status]));
+      const rows=cards=>Object.fromEntries(Object.values(cards).flat().filter(row=>/^Workflow alpha-beta/.test(row.title)).map(row=>[row.title,row.status]));
       return {resume:rows(cardRowsFromTurns(resumed.thread.turns)),items:rows(cardRowsFromItemEntries(items.data)),turns:rows(cardRowsFromTurns(turns.data)),read:rows(cardRowsFromTurns(read.thread.turns))};
     };
     const every=rows=>({resume:rows,items:rows,turns:rows,read:rows});
-    assert.deepEqual(await shown(),every({"Workflow ping-pong":"running","Workflow ping-pong · ping":"pending"}),"the work still runs, so its rows stay as they are");
+    assert.deepEqual(await shown(),every({"Workflow alpha-beta":"running","Workflow alpha-beta · alpha":"pending"}),"the work still runs, so its rows stay as they are");
     // The workflow goes on and ends: its rows settle as stored.
     await writeFile(release,"");
-    await eventually(()=>relay.notifications.some(item=>item.method==="item/completed"&&item.params.item?.tool==="Workflow ping-pong"),"the workflow's end");
+    await eventually(()=>relay.notifications.some(item=>item.method==="item/completed"&&item.params.item?.tool==="Workflow alpha-beta"),"the workflow's end");
     await relay.completed(thread.id,2);
-    assert.deepEqual(await shown(),every({"Workflow ping-pong":"done","Workflow ping-pong · ping":"done","Workflow ping-pong · pong: budget_exhausted":"failed"}));
+    assert.deepEqual(await shown(),every({"Workflow alpha-beta":"done","Workflow alpha-beta · alpha":"done","Workflow alpha-beta · beta: budget_exhausted":"failed"}));
     // What the thread keeps holds nothing of the reads' word.
     assert.equal(JSON.stringify(relay.threadStore.get(thread.id)).includes("stillRunning"),false);
   }finally{await relay.close();await rm(holds,{recursive:true,force:true}).catch(()=>{})}

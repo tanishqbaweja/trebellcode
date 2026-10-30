@@ -9,8 +9,8 @@ import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
 // Muse Code's work that runs past its turn: subagents and workflows as rows, the todo
 // list as the turn's plan, the report turns Muse starts itself, and the relay's idle sweep keeping a session while that work runs.
-// Sessions run on a fake `muse serve` and on the recorded sessions (fixtures/muse/workflow, subagent and subagent_interrupt; MIT, see
-// THIRD_PARTY_NOTICES.md); the relay test on the stand-in Muse Code (fake-muse.cjs).
+// Sessions run on a fake `muse serve` and on Trebell's recorded sessions (fixtures/muse/workflow, subagent and subagent_interrupt); the
+// relay test on the stand-in Muse Code (fake-muse.cjs).
 
 // A session whose updates keep the turn they name (turnKey) and whether work still ran then, with the report turns it started.
 async function workSession({muse:host=child=>new FakeMuse(child),options={},...rest}={}){
@@ -28,34 +28,34 @@ async function runningTurn(fixture,text="go"){
 }
 const complete=(fixture,turnId,terminal="completed",extra={})=>fixture.muse.notify("turn/completed",{sessionId:fixture.session.sessionId,viewCursor:"v",terminal,turnId,...extra});
 const workflowItem=(turnId,revision,children,fields={})=>({itemId:"wf-1",kind:"workflow",revision,status:"inProgress",turnId,entryId:"Probe workflow",children,...fields});
-const REPORT="01a12d5d-6ba0-75d1-aa8f-0d40852d8721";
+const REPORT="01a18ecf-d93f-76f1-828e-1c2e1c90c9ef";
 
 test("the recorded workflow: its row runs on past the turn that launched it, one row per agent keeps its label and first end, and Muse's report on it is a turn of its own",async()=>{
   const fixture=await workSession({muse:child=>new ReplayMuse(child,"workflow"),permissionMode:"full"});
   const {session,seen,wakes}=fixture;
-  const result=await session.prompt([{type:"text",text:"Run a workflow with two agents, ping and pong."}]);
+  const result=await session.prompt([{type:"text",text:"Run a workflow with two agents, alpha and beta."}]);
   assert.equal(result.stopReason,"end_turn");
   const turnId=fixture.muse.frames.find(frame=>frame.method==="turn/start").params.commandId;
   await until(()=>wakes.length===1,"Muse's report turn");
   assert.equal((await settlesWithin(wakes[0],5000,"the report turn")).stopReason,"end_turn");
   // The workflow's row: running when its turn ended, then done with Muse's final summary, all in the turn that launched it.
-  const workflow=rowsOf(seen,"e1f5bbdc-9a2d-52c5-8501-9b6ef280aa94");
+  const workflow=rowsOf(seen,"3cbdaa09-544c-5c23-8fc8-8f2d195094c2");
   assert.deepEqual(workflow.map(row=>[row.sessionUpdate,row.status,row.title,row.rawOutput]),[
-    ["tool_call","in_progress","Workflow ping-pong","Workflow: model-chosen generated workflow"],
-    ["tool_call_update","completed","Workflow ping-pong","{\"status\":\"ok\"}"],
+    ["tool_call","in_progress","Workflow alpha-beta","Workflow: alpha-beta"],
+    ["tool_call_update","completed","Workflow alpha-beta","{\"status\":\"ok\"}"],
   ]);
-  assert.ok(seen.filter(entry=>entry.update.toolCallId?.startsWith("e1f5bbdc")).every(entry=>entry.turnKey===turnId),"every row of it names the turn that launched it");
+  assert.ok(seen.filter(entry=>entry.update.toolCallId?.startsWith("3cbdaa09")).every(entry=>entry.turnKey===turnId),"every row of it names the turn that launched it");
   // Each agent: scheduled is pending, started runs and done once, under its label though later revisions leave it out.
-  const ping=rowsOf(seen,"e1f5bbdc-9a2d-52c5-8501-9b6ef280aa94:agent:01a12d5d-5e54-7f10-a55a-9537347f2ad8");
-  assert.deepEqual(ping.map(row=>[row.status,row.title]),[["pending","Workflow ping-pong · ping"],["in_progress","Workflow ping-pong · ping"],["completed","Workflow ping-pong · ping"]]);
-  const pong=rowsOf(seen,"e1f5bbdc-9a2d-52c5-8501-9b6ef280aa94:agent:01a12d5d-5ef4-72b3-aeed-f42a5925a87b");
-  assert.deepEqual(pong.map(row=>[row.status,row.title]),[["pending","Workflow ping-pong · pong"],["in_progress","Workflow ping-pong · pong"],["completed","Workflow ping-pong · pong"]]);
+  const alpha=rowsOf(seen,"3cbdaa09-544c-5c23-8fc8-8f2d195094c2:agent:01a18ecf-d002-7ca1-a693-89ee784418f4");
+  assert.deepEqual(alpha.map(row=>[row.status,row.title]),[["pending","Workflow alpha-beta · alpha"],["in_progress","Workflow alpha-beta · alpha"],["completed","Workflow alpha-beta · alpha"]]);
+  const beta=rowsOf(seen,"3cbdaa09-544c-5c23-8fc8-8f2d195094c2:agent:01a18ecf-d17f-7753-959e-0219a3792071");
+  assert.deepEqual(beta.map(row=>[row.status,row.title]),[["pending","Workflow alpha-beta · beta"],["in_progress","Workflow alpha-beta · beta"],["completed","Workflow alpha-beta · beta"]]);
   // The launch tool and Muse's reminder children are no rows of their own.
-  assert.equal(seen.some(entry=>entry.update.toolCallId==="01a12d5d-5cfd-72f3-bfab-d3f27075df9a"),false);
+  assert.equal(seen.some(entry=>entry.update.toolCallId==="01a18ecf-ce1b-7b53-886b-a797d26535c8"),false);
   // While the workflow ran past its turn the session had work pending; its report came as a turn of Muse's own, and then none was left.
   const firstAgent=seen.findIndex(entry=>entry.update.toolCallId?.includes(":agent:"));
   assert.equal(seen[firstAgent].pending,true);
-  assert.equal(replyOf(seen,REPORT),"The workflow with `ping` and `pong` agents is complete.");
+  assert.equal(replyOf(seen,REPORT),"The alpha and beta agents are done.");
   assert.equal(replyOf(seen,turnId),"");
   assert.equal(session.pendingBackgroundWork,false);
   assert.equal(session.busy,false);
@@ -78,19 +78,19 @@ test("a workflow agent that completed with a failure kind is failed, with it as 
   assert.equal(rowsOf(fixture.seen,"wf-1:agent:c1").length,1,"a settled agent is sent once, however often Muse sends it again");
   // The pure mapping: a scheduled agent is pending, and the last label stays.
   const labels=new Map();
-  assert.deepEqual(muse.museWorkflowAgentUpdates?.(workflowItem("t",1,[child("x",{status:"scheduled",label:"ping"})]),labels).map(row=>[row.status,row.title]),[["pending","Workflow Probe workflow · ping"]]);
-  assert.deepEqual(muse.museWorkflowAgentUpdates?.(workflowItem("t",2,[child("x",{status:"started"})]),labels).map(row=>[row.status,row.title]),[["in_progress","Workflow Probe workflow · ping"]]);
+  assert.deepEqual(muse.museWorkflowAgentUpdates?.(workflowItem("t",1,[child("x",{status:"scheduled",label:"alpha"})]),labels).map(row=>[row.status,row.title]),[["pending","Workflow Probe workflow · alpha"]]);
+  assert.deepEqual(muse.museWorkflowAgentUpdates?.(workflowItem("t",2,[child("x",{status:"started"})]),labels).map(row=>[row.status,row.title]),[["in_progress","Workflow Probe workflow · alpha"]]);
   await fixture.session.close();
 });
 
 test("the recorded subagent: one row titled by its role, done once its result is ready though Muse's item still runs, with its objective as its prompt and its result as its output; the child's own reply is not the turn's",async()=>{
   const fixture=await workSession({muse:child=>new ReplayMuse(child,"subagent"),permissionMode:"full"});
-  const result=await fixture.session.prompt([{type:"text",text:"Spawn one subagent that replies Hello."}]);
+  const result=await fixture.session.prompt([{type:"text",text:"Start one greeter subagent that answers Hi."}]);
   assert.equal(result.stopReason,"end_turn");
-  const agent=rowsOf(fixture.seen,"01a12d17-81f1-7990-b8c5-4aec1f46ac18");
-  assert.deepEqual(agent.map(row=>[row.status,row.title,row.rawOutput]),[["in_progress","Subagent · hello agent",""],["completed","Subagent · hello agent","Hello"]]);
-  assert.deepEqual(agent[0].rawInput,{objective:"Reply with exactly: Hello",role:"hello agent"});
-  assert.equal(replyOf(fixture.seen),"Hello","the child session's own reply is not the turn's");
+  const agent=rowsOf(fixture.seen,"01a18ece-9f1f-7900-bfb9-4210b0d2df40");
+  assert.deepEqual(agent.map(row=>[row.status,row.title,row.rawOutput]),[["in_progress","Subagent · greeter",""],["completed","Subagent · greeter","Hi"]]);
+  assert.deepEqual(agent[0].rawInput,{objective:"Reply with exactly: Hi",role:"greeter"});
+  assert.equal(replyOf(fixture.seen),"Hi","the child session's own reply is not the turn's");
   assert.equal(fixture.session.pendingBackgroundWork,false,"a subagent whose result is ready holds nothing");
   assert.equal(muse.museWorkStatus?.({kind:"subagent",status:"inProgress",controlStatus:"resultReady"}),"completed");
   assert.deepEqual(fixture.muse.unexpected,[]);
@@ -279,15 +279,15 @@ test("Stop ends a report turn the message's turn took in, then that turn, and a 
 
 test("the recorded interrupted subagent: Stop ends the turn's running subagent with it, and nothing is left pending",async()=>{
   const fixture=await workSession({muse:child=>new ReplayMuse(child,"subagent_interrupt"),permissionMode:"full"});
-  const running=fixture.session.prompt([{type:"text",text:"Spawn a subagent that sleeps for 30 seconds."}]);
-  await until(()=>rowsOf(fixture.seen,"01a12d28-8885-71f3-9961-b8f4d747382b").length>0,"the subagent's row");
+  const running=fixture.session.prompt([{type:"text",text:"Start one slow subagent and wait for it."}]);
+  await until(()=>rowsOf(fixture.seen,"01a18ece-ed88-7251-8487-b436c48db775").length>0,"the subagent's row");
   assert.equal(fixture.session.pendingBackgroundWork,true);
   await fixture.session.cancel();
   const result=await running;
-  assert.deepEqual([result.stopReason,result.interrupted,result.raw.reason],["cancelled",true,"cancelled after tool result reconciliation"]);
-  const agent=rowsOf(fixture.seen,"01a12d28-8885-71f3-9961-b8f4d747382b");
-  assert.deepEqual([agent[0].status,agent[0].title],["in_progress","Subagent · sleeper"]);
-  assert.deepEqual([agent.at(-1).status,agent.at(-1).title],["failed","Subagent · sleeper: Stopped with its turn."]);
+  assert.deepEqual([result.stopReason,result.interrupted,result.raw.reason],["cancelled",true,"cancelled during model step"]);
+  const agent=rowsOf(fixture.seen,"01a18ece-ed88-7251-8487-b436c48db775");
+  assert.deepEqual([agent[0].status,agent[0].title],["in_progress","Subagent · counter"]);
+  assert.deepEqual([agent.at(-1).status,agent.at(-1).title],["failed","Subagent · counter: Stopped with its turn."]);
   assert.equal(fixture.session.pendingBackgroundWork,false);
   assert.deepEqual(fixture.muse.unexpected,[]);
   await fixture.session.close();
@@ -299,14 +299,14 @@ test("a workflow still running when its turn completed settles its rows in that 
   complete(fixture,first.turnId);await first.running;
   assert.equal(session.pendingBackgroundWork,true,"the workflow runs on");
   const second=await runningTurn(fixture,"next");
-  fixture.muse.write(itemFrame("item/updated",first.sid,workflowItem(first.turnId,2,[{childId:"c1",attempt:1,status:"started",label:"ping"}])));
+  fixture.muse.write(itemFrame("item/updated",first.sid,workflowItem(first.turnId,2,[{childId:"c1",attempt:1,status:"started",label:"alpha"}])));
   await until(()=>rowsOf(seen,"wf-1:agent:c1").length===1,"the agent's row");
   assert.ok(seen.filter(entry=>entry.update.toolCallId?.startsWith("wf-1")).every(entry=>entry.turnKey===first.turnId),"its rows stay in the turn that launched it");
   child.stderr.write("panic: lost the model stream\n");child.exit(1);
   await assert.rejects(second.running,/Muse Code exited unexpectedly \(code 1\): panic: lost the model stream/);
   const workflow=rowsOf(seen,"wf-1").at(-1),agent=rowsOf(seen,"wf-1:agent:c1").at(-1);
   assert.deepEqual([workflow.status,workflow.title],["failed","Workflow Probe workflow: Muse Code exited unexpectedly (code 1): panic: lost the model stream"]);
-  assert.deepEqual([agent.status,agent.title],["failed","Workflow Probe workflow · ping: The workflow ended before this agent finished."]);
+  assert.deepEqual([agent.status,agent.title],["failed","Workflow Probe workflow · alpha: The workflow ended before this agent finished."]);
   assert.equal(seen.filter(entry=>entry.update.toolCallId?.startsWith("wf-1")).at(-1).turnKey,first.turnId);
   assert.equal(session.pendingBackgroundWork,false);
   await session.close();
@@ -341,7 +341,7 @@ test("work that has said nothing for four hours holds the host no more, and each
   complete(fixture,turnId);await running;
   assert.equal(session.pendingBackgroundWork,true);
   clock+=muse.MUSE_MAX_IDLE_PIN_MS-1;assert.equal(session.pendingBackgroundWork,true,"just under four hours of silence");
-  fixture.muse.write(itemFrame("item/updated",sid,workflowItem(turnId,2,[{childId:"c1",attempt:1,status:"scheduled",label:"ping"}])));
+  fixture.muse.write(itemFrame("item/updated",sid,workflowItem(turnId,2,[{childId:"c1",attempt:1,status:"scheduled",label:"alpha"}])));
   await until(()=>rowsOf(fixture.seen,"wf-1:agent:c1").length===1,"the agent's row");
   clock+=muse.MUSE_MAX_IDLE_PIN_MS-1;assert.equal(session.pendingBackgroundWork,true,"its update renewed the four hours");
   clock+=2;assert.equal(session.pendingBackgroundWork,false,"four hours of silence");
@@ -362,7 +362,7 @@ test("a report turn whose host dies fails with the host's exit, and nothing of i
 
 // The workflow's own row and its agents' as a launched turn stores them, by title without a failure's detail.
 const workflowRows=turn=>Object.fromEntries(turn.items.filter(item=>item.type==="dynamicToolCall").map(item=>[item.tool.replace(/:.*/,""),item.status]));
-const SETTLED_WORKFLOW={"Workflow ping-pong":"completed","Workflow ping-pong · ping":"completed","Workflow ping-pong · pong":"failed"};
+const SETTLED_WORKFLOW={"Workflow alpha-beta":"completed","Workflow alpha-beta · alpha":"completed","Workflow alpha-beta · beta":"failed"};
 const turnEnds=(relay,threadId)=>relay.notifications.map((item,index)=>item.method==="turn/completed"&&item.params.threadId===threadId?index:-1).filter(index=>index>=0);
 const closedAt=(relay,threadId)=>relay.notifications.findIndex(item=>item.method==="thread/closed"&&item.params.threadId===threadId);
 
@@ -372,7 +372,7 @@ test("through the relay, a workflow's rows stay in the turn that launched it, Mu
   const relay=await museRelay("trebell-muse-background-",{environment:{MUSE_FAKE_WORKFLOW_MS:"400",MUSE_FAKE_REPORT_DELAY_MS:"300"},env:{TREBELL_AGENT_SESSION_IDLE_MS:"1000",TREBELL_AGENT_SESSION_SWEEP_MS:"100"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}]});
     // Muse reports once the workflow is done, in a turn of its own; the session was not swept while the workflow ran (2.4 s, past two
     // idle limits), nor in the moments between the workflow's end and Muse's report (300 ms, three sweeps), as its end counts as use.
     await relay.completed(thread.id,2);
@@ -380,7 +380,7 @@ test("through the relay, a workflow's rows stay in the turn that launched it, Mu
     assert.ok(closed<0||closed>ends[1],"the session was kept while the workflow ran past its turn");
     const [launched,report]=relay.threadStore.get(thread.id).turns;
     assert.equal(report.items.some(item=>item.type==="userMessage"),false,"Muse's report has no message of the person's");
-    assert.equal(report.items.filter(item=>item.type==="agentMessage").map(item=>item.text).join(""),"The workflow with ping and pong agents is complete.");
+    assert.equal(report.items.filter(item=>item.type==="agentMessage").map(item=>item.text).join(""),"The alpha and beta agents are done.");
     assert.deepEqual(workflowRows(launched),SETTLED_WORKFLOW,"the workflow and its agents settled in the turn that launched it");
     assert.deepEqual(workflowRows(report),{});
     // With the workflow done and the report over, the idle session is let go.
@@ -393,11 +393,11 @@ test("through the relay, a workflow's rows settle in the turn that launched it w
   const relay=await museRelay("trebell-muse-background-turns-",{environment:{MUSE_FAKE_WORKFLOW_MS:"500"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}]});
     await relay.completed(thread.id,1);
     // The next turn runs while the workflow's first agent starts, and ends (steered) before the workflow does.
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello Muse, hold until steered"}]});
-    await eventually(()=>relay.notifications.some(item=>item.method==="item/started"&&item.params.item?.tool==="Workflow ping-pong · ping"),"the workflow's first agent while the next turn runs");
+    await eventually(()=>relay.notifications.some(item=>item.method==="item/started"&&item.params.item?.tool==="Workflow alpha-beta · alpha"),"the workflow's first agent while the next turn runs");
     assert.equal(relay.threadStore.get(thread.id).turns[1].status,"inProgress");
     await relay.rpc("turn/steer",{threadId:thread.id,expectedTurnId:relay.threadStore.get(thread.id).turns[1].id,input:[{type:"text",text:"go on"}]});
     await relay.completed(thread.id,3);
@@ -405,7 +405,7 @@ test("through the relay, a workflow's rows settle in the turn that launched it w
     assert.deepEqual(workflowRows(launched),SETTLED_WORKFLOW);
     assert.deepEqual(workflowRows(next),{},"none of the workflow's rows went to the next turn");
     assert.equal(report.items.some(item=>item.type==="userMessage"),false);
-    const workflowUpdates=relay.notifications.filter(item=>/^item\//.test(item.method)&&item.params.item?.tool?.startsWith("Workflow ping-pong"));
+    const workflowUpdates=relay.notifications.filter(item=>/^item\//.test(item.method)&&item.params.item?.tool?.startsWith("Workflow alpha-beta"));
     assert.ok(workflowUpdates.length>3&&workflowUpdates.every(item=>item.params.turnId===launched.id),"every update of its rows named the turn that launched it");
   }finally{await relay.close()}
 });
@@ -414,7 +414,7 @@ test("through the relay, a message sent while Muse's report turn runs takes it o
   const relay=await museRelay("trebell-muse-takeover-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}]});
     await relay.completed(thread.id,1);
     // Muse's report starts once the workflow is done, says its first sentence, and holds.
     await eventually(()=>relay.notifications.some(item=>item.method==="item/agentMessage/delta"&&item.params.turnId===relay.threadStore.get(thread.id).turns[1]?.id),"the report turn's first words");
@@ -430,11 +430,11 @@ test("through the relay, a message sent while Muse's report turn runs takes it o
     assert.equal(marks.filter(({item,index})=>index>started&&index<end&&item.method==="thread/status/changed"&&item.params.threadId===thread.id&&item.params.status?.type!=="active").length,0,"the thread stayed active while the message's turn ran");
     const turns=relay.threadStore.get(thread.id).turns,text=stored=>stored.items.filter(item=>item.type==="agentMessage").map(item=>item.text).join("");
     assert.deepEqual(turns.map(stored=>stored.status),["completed","completed","completed"]);
-    assert.equal(text(turns[1]),"The workflow with ping and pong agents is complete.","the report keeps its own reply");
+    assert.equal(text(turns[1]),"The alpha and beta agents are done.","the report keeps its own reply");
     assert.match(text(turns[2]),/^The rest of the report\.\s*Muse fixture reply/,"the rest of Muse's report, then the message's reply, are the message's turn");
     // Each token once: the report's steps before the message on the report's record, its rest and the message's on the message's.
     const records=new Map(relay.usage.map(entry=>[entry.turnId,entry.usage]));
-    assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(report.id)?.[key]),[36716,262]);
+    assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(report.id)?.[key]),[34880,250]);
     assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(turn.id)?.[key]),[600,30]);
   }finally{await relay.close()}
 });
@@ -443,7 +443,7 @@ test("through the relay, a command Muse's report still runs when a message takes
   const relay=await museRelay("trebell-muse-takeover-command-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}]});
     await relay.completed(thread.id,1);
     const isCheck=item=>item?.type==="commandExecution"&&item.command==="npm test";
     await eventually(()=>relay.notifications.some(item=>item.method==="item/started"&&isCheck(item.params.item)),"the report's command");
@@ -462,12 +462,12 @@ test("through the relay, a report Muse starts while a message's turn gathers its
   // until the report's first words have reached the window: the report starts after the message's turn has started and before the
   // message reaches Muse.
   const holds=await mkdtemp(join(tmpdir(),"trebell-muse-report-start-")),start=join(holds,"report-start");let relay=null;
-  const reported=()=>relay.notifications.some(item=>item.method==="item/agentMessage/delta"&&String(item.params.delta).includes("The workflow with ping and pong agents is complete."));
+  const reported=()=>relay.notifications.some(item=>item.method==="item/agentMessage/delta"&&String(item.params.delta).includes("The alpha and beta agents are done."));
   const repositoryKnowledge={context:async({query})=>{if(/one more thing/.test(query)){await writeFile(start,"");await eventually(reported,"Muse's report to start")}return null}};
   relay=await museRelay("trebell-muse-report-during-send-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_START_HOLD:start},relayOptions:{repositoryKnowledge}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}]});
     await relay.completed(thread.id,1);
     const {turn}=await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"And one more thing"}]});
     await eventually(()=>relay.notifications.some(item=>item.method==="turn/completed"&&item.params.turn?.id===turn.id),"the message's turn to end");
@@ -480,11 +480,11 @@ test("through the relay, a report Muse starts while a message's turn gathers its
     assert.ok(between.filter(item=>item.method==="item/agentMessage/delta").every(item=>item.params.turnId===turn.id),"the report's words and the message's reply streamed in the message's turn");
     const turns=relay.threadStore.get(thread.id).turns,said=stored=>stored.items.filter(item=>item.type==="agentMessage").map(item=>item.text).join("");
     assert.deepEqual(turns.map(stored=>[stored.id,stored.status]),[[turns[0].id,"completed"],[turn.id,"completed"]],"the report has no turn of its own");
-    assert.match(said(turns[1]),/^The workflow with ping and pong agents is complete\. The rest of the report\.\s+Muse fixture reply/,"the report, once, then the message's reply");
+    assert.match(said(turns[1]),/^The alpha and beta agents are done\. The rest of the report\.\s+Muse fixture reply/,"the report, once, then the message's reply");
     // The report's tokens and the message's are the message's turn's, each once.
     const records=relay.usage.filter(entry=>entry.threadId===thread.id);
     assert.deepEqual(records.map(entry=>entry.turnId),[turns[0].id,turn.id]);
-    assert.deepEqual(["inputTokens","outputTokens"].map(key=>records[1].usage[key]),[37316,292]);
+    assert.deepEqual(["inputTokens","outputTokens"].map(key=>records[1].usage[key]),[35480,280]);
   }finally{await relay.close();await rm(holds,{recursive:true,force:true})}
 });
 

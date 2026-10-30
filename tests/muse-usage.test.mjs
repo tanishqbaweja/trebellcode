@@ -17,7 +17,7 @@ async function runningTurn(fixture){
 }
 const step=(sid,turnId,{prompt,output,cacheRead=0,cacheWrite=0,reasoning=0})=>event("session/tokenUsage",sid,{turnId,modelId:"muse-spark-1.3",promptTokens:prompt,totalTokens:prompt+output,
   usage:{inputTokens:prompt,outputTokens:output,cachedTokens:cacheRead,cacheReadTokens:cacheRead,cacheWriteTokens:cacheWrite,reasoningTokens:reasoning},cumulative:{promptTokens:prompt,outputTokens:output,totalTokens:prompt+output,cost:{usd:0.0033,partial:false}},sourceRange:{}});
-const contextUsage=(sid,usedTokens,windowTokens=1007997)=>event("session/contextUsage",sid,{usedTokens,windowTokens,pressure:"normal",sourceRange:{}});
+const contextUsage=(sid,usedTokens,windowTokens=1048576)=>event("session/contextUsage",sid,{usedTokens,windowTokens,pressure:"normal",sourceRange:{}});
 
 test("a turn's tokens add up over its model steps as Trebell keeps OpenAI-style usage, with the context Muse holds of its window, and turn/completed's totals end it",async()=>{
   const fixture=await startSession(),{updates}=fixture,{running,turnId,sid}=await runningTurn(fixture);
@@ -28,9 +28,9 @@ test("a turn's tokens add up over its model steps as Trebell keeps OpenAI-style 
   await until(()=>usageUpdates(updates).length===4,"the usage of both steps");
   assert.deepEqual(usageUpdates(updates).map(({usage,used,size,contextTokens})=>({usage,used,size,contextTokens})),[
     {usage:{input_tokens:1000,output_tokens:100,cache_read_input_tokens:0,cache_write_input_tokens:30,reasoning_tokens:40},used:1100,size:0,contextTokens:undefined},
-    {usage:{input_tokens:1000,output_tokens:100,cache_read_input_tokens:0,cache_write_input_tokens:30,reasoning_tokens:40},used:1100,size:1007997,contextTokens:1100},
-    {usage:{input_tokens:2200,output_tokens:150,cache_read_input_tokens:900,cache_write_input_tokens:30,reasoning_tokens:50},used:2350,size:1007997,contextTokens:1100},
-    {usage:{input_tokens:2200,output_tokens:150,cache_read_input_tokens:900,cache_write_input_tokens:30,reasoning_tokens:50},used:2350,size:1007997,contextTokens:1250},
+    {usage:{input_tokens:1000,output_tokens:100,cache_read_input_tokens:0,cache_write_input_tokens:30,reasoning_tokens:40},used:1100,size:1048576,contextTokens:1100},
+    {usage:{input_tokens:2200,output_tokens:150,cache_read_input_tokens:900,cache_write_input_tokens:30,reasoning_tokens:50},used:2350,size:1048576,contextTokens:1100},
+    {usage:{input_tokens:2200,output_tokens:150,cache_read_input_tokens:900,cache_write_input_tokens:30,reasoning_tokens:50},used:2350,size:1048576,contextTokens:1250},
   ]);
   // The turn's totals: its steps' counted-once prompt tokens as input, and turn/completed's output, cache and reasoning counts.
   fixture.muse.notify("turn/completed",{sessionId:sid,viewCursor:"v",terminal:"completed",turnId,usage:{inputTokens:2100,outputTokens:160,cachedTokens:900,cacheReadTokens:900,cacheWriteTokens:30,reasoningTokens:55}});
@@ -41,12 +41,11 @@ test("a turn's tokens add up over its model steps as Trebell keeps OpenAI-style 
   await fixture.session.close();
 });
 
-test("the recorded subagent turn: four model steps add up to the turn's tokens, and the context meter reads the last step's",async()=>{
+test("the recorded subagent turn: its three model steps add up to the turn's tokens, each step's usage reaching the relay as it comes, then the turn's total",async()=>{
   const fixture=await startSession({muse:child=>new ReplayMuse(child,"subagent"),permissionMode:"full"});
-  const result=await fixture.session.prompt([{type:"text",text:"Spawn one subagent that replies Hello."}]);
-  assert.deepEqual(result.raw.usage,{inputTokens:132949,cachedInputTokens:98899,cacheWriteInputTokens:0,outputTokens:370,reasoningOutputTokens:88,totalTokens:133319});
-  const last=usageUpdates(fixture.updates).at(-1);
-  assert.deepEqual([last.size,last.contextTokens,last.used],[1007997,33573,133319]);
+  const result=await fixture.session.prompt([{type:"text",text:"Start one greeter subagent that answers Hi."}]);
+  assert.deepEqual(result.raw.usage,{inputTokens:3617,cachedInputTokens:600,cacheWriteInputTokens:0,outputTokens:107,reasoningOutputTokens:15,totalTokens:3724});
+  assert.deepEqual(usageUpdates(fixture.updates).map(update=>update.used),[1234,2476,3724,3724],"the turn so far after each step, then its total");
   await fixture.session.close();
 });
 
@@ -96,11 +95,11 @@ test("through the relay, a Muse turn's tokens reach the thread's context meter (
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please spawn subagent and keep a todo list"}]});
     await relay.completed(thread.id,1);
     const meter=relay.notifications.filter(item=>item.method==="thread/tokenUsage/updated"&&item.params.threadId===thread.id).at(-1).params.tokenUsage;
-    assert.equal(meter.modelContextWindow,1007997);
-    assert.deepEqual(meter.last,{totalTokens:33267,inputTokens:33267,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0});
-    assert.deepEqual(meter.total,{totalTokens:66296,inputTokens:66044,cachedInputTokens:32625,cacheWriteInputTokens:0,outputTokens:252,reasoningOutputTokens:43});
+    assert.equal(meter.modelContextWindow,1048576);
+    assert.deepEqual(meter.last,{totalTokens:30528,inputTokens:30528,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0});
+    assert.deepEqual(meter.total,{totalTokens:60788,inputTokens:60530,cachedInputTokens:29880,cacheWriteInputTokens:0,outputTokens:258,reasoningOutputTokens:49});
     const [record]=relay.usage;
     assert.deepEqual([record.runtime,record.threadId,record.cost],["muse",thread.id,null]);
-    assert.deepEqual(record.usage,{totalTokens:66296,inputTokens:66044,cachedInputTokens:32625,cacheWriteInputTokens:0,outputTokens:252,reasoningOutputTokens:43});
+    assert.deepEqual(record.usage,{totalTokens:60788,inputTokens:60530,cachedInputTokens:29880,cacheWriteInputTokens:0,outputTokens:258,reasoningOutputTokens:49});
   }finally{await relay.close()}
 });

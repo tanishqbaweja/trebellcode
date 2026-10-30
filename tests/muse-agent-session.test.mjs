@@ -16,8 +16,8 @@ import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSd
 import { withWorkingContext } from "../src/working-context-envelope.mjs";
 
 // Muse Code is driven through Meta's SDK (@muse-code/sdk, a real Connection) over a fake `muse serve`: a child whose stdio carries
-// MSP frames. Replays use the recorded transcripts in tests/fixtures/muse/*.ndjson (MIT, see THIRD_PARTY_NOTICES.md; recorded with Muse
-// 1.4.3, their frames match the stable schema of Muse 1.4.13); the initialize answer of the other tests is Muse 1.4.13's own.
+// MSP frames. Replays use the sessions recorded in tests/fixtures/muse/*.ndjson (the real Muse Code 1.4.14 run by Trebell's own client
+// against a local stand-in for Meta's model API); the initialize answer of the other tests is Muse 1.4.13's own.
 const FIXTURES=new URL("./fixtures/muse/",import.meta.url);
 const INIT=JSON.parse(readFileSync(new URL("initialize-1.4.13.json",FIXTURES),"utf8")).result;
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
@@ -215,10 +215,10 @@ test("initialize names Trebell Code and asks for session MCP servers; a schema f
   const initialize=muse.frames.find(frame=>frame.method==="initialize");
   assert.deepEqual(initialize.params,{clientInfo:{name:"trebell_code",title:"Trebell Code",version:"1.6.0"},capabilities:{requestedCapabilities:["sessionMcp"]}});
   assert.ok(muse.frames.some(frame=>frame.method==="initialized"&&frame.id===undefined),"initialized follows the answer");
-  // The recorded host (Muse 1.4.3) serves an older stable-schema fingerprint than SDK 1.4.13 pins.
+  // The recorded host (Muse 1.4.14) serves a newer stable-schema fingerprint than SDK 1.4.13 pins.
   const warning=updates.find(update=>update.sessionUpdate==="protocol_warning");
-  assert.match(warning.message,/sha256:4cb67108.*differs from the fingerprint this SDK pins/);
-  assert.equal(session.initializeResult.serverInfo.version,"1.4.3");
+  assert.match(warning.message,/sha256:c94c3d1f.*differs from the fingerprint this SDK pins/);
+  assert.equal(session.initializeResult.serverInfo.version,"1.4.14");
   assert.deepEqual(muse.unexpected,[]);
   await session.close();
 });
@@ -379,11 +379,11 @@ test("prompt parts: text as is, images as base64 with their type, other attachme
 test("a recorded Muse turn streams its reply and ends the turn; Muse's own message and reminder children are not rows",async()=>{
   const {session,muse,updates}=await startSession({muse:child=>new ReplayMuse(child,"simple")});
   let delivered=0;
-  const result=await session.prompt([{type:"text",text:"Respond with the following text: fixture simple ok"}],{onDelivered:()=>delivered++});
+  const result=await session.prompt([{type:"text",text:"Answer with the words: trebell simple ok"}],{onDelivered:()=>delivered++});
   assert.equal(result.stopReason,"end_turn");
   assert.equal(result.raw.terminal,"completed");
   assert.equal(delivered,1);
-  assert.equal(chunks(updates),"fixture simple ok");
+  assert.equal(chunks(updates),"trebell simple ok");
   assert.deepEqual(updates.filter(update=>update.sessionUpdate==="tool_call"||update.sessionUpdate==="tool_call_update"),[],"userMessage and reminderChild items are skipped");
   assert.equal(session.busy,false);
   assert.deepEqual(muse.unexpected,[]);
@@ -392,11 +392,11 @@ test("a recorded Muse turn streams its reply and ends the turn; Muse's own messa
 
 test("a recorded two-turn conversation keeps each turn's reply to its own turn",async()=>{
   const {session,muse,updates}=await startSession({muse:child=>new ReplayMuse(child,"multi_turn")});
-  assert.equal((await session.prompt([{type:"text",text:"first"}])).stopReason,"end_turn");
-  assert.equal(chunks(updates),"first fixture turn complete");
+  assert.equal((await session.prompt([{type:"text",text:"This is the first round."}])).stopReason,"end_turn");
+  assert.equal(chunks(updates),"first round done");
   updates.length=0;
-  assert.equal((await session.prompt([{type:"text",text:"second"}])).stopReason,"end_turn");
-  assert.equal(chunks(updates),"second fixture turn complete");
+  assert.equal((await session.prompt([{type:"text",text:"This is the second round."}])).stopReason,"end_turn");
+  assert.equal(chunks(updates),"second round done");
   const turns=muse.frames.filter(frame=>frame.method==="turn/start").map(frame=>frame.params.commandId);
   assert.equal(new Set(turns).size,2);
   assert.ok(muse.finished||muse.pending.length===0);
@@ -486,7 +486,7 @@ test("tools map to rows: an edit keeps its exact old and new text, a write its c
 test("Stop interrupts the running turn and waits for Muse's turn/completed: a recorded interrupted turn ends as a stop the person asked for",async()=>{
   assert.equal(MUSE_INTERRUPT_TIMEOUT_MS,30_000);
   const {session,muse}=await startSession({muse:child=>new ReplayMuse(child,"turn_interrupt")});
-  const result=await session.prompt([{type:"text",text:"Do not answer immediately."}],{onDelivered:()=>void session.cancel()});
+  const result=await session.prompt([{type:"text",text:"Please wait before answering."}],{onDelivered:()=>void session.cancel()});
   assert.equal(result.stopReason,"cancelled");
   assert.equal(result.interrupted,true);
   assert.equal(result.raw.reason,"cancelled during model step");
@@ -532,12 +532,12 @@ test("a message steers only the running turn, naming the turn it is meant for",a
 test("a recorded approval asks the person once with Muse's own choices, its request gets the presentation receipt, and their Reject sends Muse's abort for the stage asked",async()=>{
   const asked=[];
   const {session,muse,updates}=await startSession({muse:child=>new ReplayMuse(child,"permission"),options:{onPermission:request=>{asked.push(request);return "decline"}}});
-  const result=await session.prompt([{type:"text",text:"Run the shell command `touch muse-declined.txt` with your shell tool once."}]);
+  const result=await session.prompt([{type:"text",text:"Run the shell command `touch trebell-declined.txt` once with your shell tool."}]);
   assert.equal(result.stopReason,"end_turn");
-  assert.equal(chunks(updates),"REJECTED");
+  assert.equal(chunks(updates),"REFUSED");
   assert.equal(asked.length,1,"the request and its notification are asked once");
   assert.deepEqual(asked[0].approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"acceptAlways",label:"Always allow in this workspace: touch ..."},{decision:"decline",label:"Reject"}]);
-  assert.deepEqual(asked[0].params.toolCall,{toolCallId:"call_01a11a6d8ddc760a8b514b4cfbb683c7",title:"touch muse-declined.txt",kind:"execute",rawInput:{command:"touch muse-declined.txt"}});
+  assert.deepEqual(asked[0].params.toolCall,{toolCallId:"call_rec_2",title:"touch trebell-declined.txt",kind:"execute",rawInput:{command:"touch trebell-declined.txt"}});
   const decide=muse.frames.find(frame=>frame.method==="approval/decide");
   assert.equal(decide.params.choiceId,"abort","Muse's Reject; the 'Always allow' rule is never chosen for the person");
   assert.deepEqual(decide.params.requirementId,{approvalId:decide.params.approvalId,sourceIndex:0});

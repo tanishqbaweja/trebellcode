@@ -204,7 +204,7 @@ test("through the relay, a message sent in another mode while Muse writes its ow
   const relay=await museRelay("trebell-muse-report-mode-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"supervised"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}],permissionProfile:"supervised"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}],permissionProfile:"supervised"});
     await relay.completed(thread.id,1);
     await eventually(()=>relay.threadStore.get(thread.id).turns.length===2,"Muse's report turn");
     await assert.rejects(relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"In Full access now"}],permissionProfile:"full"}),{message:REPORT_BLOCKS_MODE});
@@ -222,7 +222,7 @@ test("through the relay, a message steered in another mode while Muse writes its
   const relay=await museRelay("trebell-muse-report-steer-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"full"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}],permissionProfile:"full"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}],permissionProfile:"full"});
     await relay.completed(thread.id,1);
     await eventually(()=>relay.threadStore.get(thread.id).turns.length===2,"Muse's report turn");
     const report=relay.threadStore.get(thread.id).turns[1];
@@ -246,7 +246,7 @@ test("through the relay, a message refused in Full access while Muse writes its 
   const relay=await museRelay("trebell-muse-report-mode-policy-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_ASK_HOLD:ask}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"supervised"});
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}],permissionProfile:"supervised"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow alpha-beta"}],permissionProfile:"supervised"});
     await relay.completed(thread.id,1);
     await eventually(()=>relay.threadStore.get(thread.id).turns.length===2,"Muse's report turn");
     await assert.rejects(relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"In Full access now"}],permissionProfile:"full"}),{message:REPORT_BLOCKS_MODE});

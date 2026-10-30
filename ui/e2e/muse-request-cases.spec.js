@@ -143,7 +143,7 @@ test("Stop leaves a workflow child's approval card waiting, and the person's All
     await expect(card(page)).toBeVisible();
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
     await expect(card(page).locator(":scope > p")).toHaveText("Asked by a Muse Code workflow agent.");
-    await expect(card(page).getByTestId("approval-command")).toHaveText("touch muse-approved.txt");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch trebell-approved.txt");
     expect(await harness.frames("approval/decide")).toEqual([]);
     await shoot(page,"muse-child-card-after-stop",card(page));
     await card(page).getByRole("button",{name:"Allow once",exact:true}).click();
@@ -154,22 +154,22 @@ test("Stop leaves a workflow child's approval card waiting, and the person's All
 
 test("a workflow agent's approval card names the agent and says it runs on past the turn that started it, and Stop on the next message's turn leaves the card so while the agent runs on",async({page})=>{
   test.setTimeout(90_000);
-  // The workflow runs on past its turn, held while its agent ping runs, and ping asks once the next message's turn runs.
+  // The workflow runs on past its turn, held while its agent alpha runs, and alpha asks once the next message's turn runs.
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40"},holds:["workflow_agent","child_ask"]});
   try{
     await openMuse(page,harness);
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const stop=page.getByRole("button",{name:"Stop",exact:true});
     await expect(stop).toHaveCount(0,{timeout:20_000});
-    await expect(row(page,/^Workflow ping-pong · ping$/)).toHaveClass(/status-running/,{timeout:20_000});
+    await expect(row(page,/^Workflow alpha-beta · alpha$/)).toHaveClass(/status-running/,{timeout:20_000});
     await send(page,"Hello Muse, hold until steered");
     await expect(stop).toBeVisible({timeout:20_000});
     await harness.release("child_ask");
-    const line="Asked by the workflow agent ping, which runs on past the turn that started it.";
+    const line="Asked by the workflow agent alpha, which runs on past the turn that started it.";
     await expect(card(page).locator(":scope > p")).toHaveText(line,{timeout:20_000});
     await expect(card(page).locator(".card-title strong")).toHaveText("Command needs approval");
-    await expect(card(page).getByTestId("approval-command")).toHaveText("touch muse-approved.txt");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch trebell-approved.txt");
     // Stop ends the message's turn; the card stays under it, still saying which agent asks, and that agent's row runs on in the card
     // of the turn that launched the workflow.
     await stop.click();
@@ -180,7 +180,7 @@ test("a workflow agent's approval card names the agent and says it runs on past 
     const [thread]=harness.threadStore.list(),launchedId=harness.threadStore.get(thread.id).turns[0].id;
     const launched=page.locator(`.turn-card[data-turn-id="${launchedId}"] [data-testid=activity-card]`);
     if(await launched.getAttribute("data-state")!=="open")await launched.locator(".activity-card-head").click();
-    await expect(row(launched,/^Workflow ping-pong · ping$/)).toHaveClass(/status-running/);
+    await expect(row(launched,/^Workflow alpha-beta · alpha$/)).toHaveClass(/status-running/);
     await shoot(page,"muse-workflow-agent-card-after-stop",card(page));
     // In a narrow window the line wraps above the command.
     await page.setViewportSize({width:700,height:800});
@@ -201,12 +201,12 @@ test("a subagent's approval card names the subagent and not that it runs on past
     await page.addInitScript(()=>{window.trebellDesktop={notify:note=>{(window.__trebellNotes||=[]).push(note)}}});
     await openMuse(page,harness);
     await send(page,"Please have the subagent approval wait");
-    const line="Asked by the subagent sleeper.",stop=page.getByRole("button",{name:"Stop",exact:true});
+    const line="Asked by the subagent counter.",stop=page.getByRole("button",{name:"Stop",exact:true});
     await expect(card(page).locator(":scope > p")).toHaveText(line,{timeout:20_000});
     await expect(card(page).locator(".card-title strong")).toHaveText("Command needs approval");
-    await expect(card(page).getByTestId("approval-command")).toHaveText("touch muse-approved.txt");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch trebell-approved.txt");
     await expect(stop,"the turn that waits on the subagent runs").toBeVisible();
-    await expect.poll(()=>page.evaluate(()=>(window.__trebellNotes||[]).filter(note=>note.title==="Approval required").map(note=>note.body))).toEqual(["touch muse-approved.txt"]);
+    await expect.poll(()=>page.evaluate(()=>(window.__trebellNotes||[]).filter(note=>note.title==="Approval required").map(note=>note.body))).toEqual(["touch trebell-approved.txt"]);
     await shoot(page,"muse-subagent-card-while-its-turn-runs",card(page));
     // Stop ends the turn and the subagent with it; the card stays, saying what it said.
     await stop.click();
@@ -314,10 +314,10 @@ test("a message steered in Supervised while Muse Code writes its report on a Ful
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
   try{
     await openMuse(page,harness,{mode:"full",followUpMode:"steer"});
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const live=page.locator(".agent-block .assistant-answer"),stop=page.getByRole("button",{name:"Stop",exact:true}),picker=page.locator("select.permission-picker").first();
-    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    await expect(live).toContainText("The alpha and beta agents are done.",{timeout:20_000});
     await expect(stop).toHaveAttribute("title","Stop the running turn");
     await picker.selectOption("supervised");
     await send(page,"Ask before you run anything");
@@ -351,10 +351,10 @@ test("a queued message sent now in Full access while Muse Code writes its report
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
   try{
     await openMuse(page,harness);
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const live=page.locator(".agent-block .assistant-answer"),stop=page.getByRole("button",{name:"Stop",exact:true});
-    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    await expect(live).toContainText("The alpha and beta agents are done.",{timeout:20_000});
     await page.locator("select.permission-picker").first().selectOption("full");
     await send(page,"Now in Full access");
     const queued=page.locator(".queued-message"),alert=page.getByTestId("composer-alert");
@@ -394,11 +394,11 @@ test("a follow-up queued before the person picks Full access, sent now by its sh
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
   try{
     await openMuse(page,harness);
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const live=page.locator(".agent-block .assistant-answer"),stop=page.getByRole("button",{name:"Stop",exact:true});
     const queued=page.locator(".queued-message"),alert=page.getByTestId("composer-alert");
-    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    await expect(live).toContainText("The alpha and beta agents are done.",{timeout:20_000});
     // The follow-up is queued in Supervised; Full access is picked after it, and nothing else changes before the shortcut is pressed.
     await send(page,"Now in Full access");
     await expect(queued.locator("p")).toHaveText(["Now in Full access"]);
@@ -428,10 +428,10 @@ test("a follow-up whose Send now Muse Code's report refused goes by itself once 
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"},holds:["report_end"]});
   try{
     await openMuse(page,harness);
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const live=page.locator(".agent-block .assistant-answer"),queued=page.locator(".queued-message"),alert=page.getByTestId("composer-alert");
-    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    await expect(live).toContainText("The alpha and beta agents are done.",{timeout:20_000});
     await page.locator("select.permission-picker").first().selectOption("full");
     await send(page,"Now in Full access");
     await queued.getByRole("button",{name:"Send now"}).click();
@@ -458,21 +458,21 @@ test("a report Muse starts while the person's next message gathers its context s
   const repositoryKnowledge={context:async({query})=>{
     if(!/one more thing/i.test(query))return null;
     await box.harness.release("report_start");
-    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    await expect(live).toContainText("The alpha and beta agents are done.",{timeout:20_000});
     return null;
   }};
   const harness=box.harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"},holds:["report_start"],relayOptions:{repositoryKnowledge}});
   try{
     await openMuse(page,harness);
-    await send(page,"Please run workflow ping-pong");
-    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await send(page,"Please run workflow alpha-beta");
+    await expect(reply(page,"Started the alpha-beta workflow.")).toBeVisible({timeout:20_000});
     const stop=page.getByRole("button",{name:"Stop",exact:true});
     await expect(stop).toHaveCount(0,{timeout:20_000});
     await send(page,"And one more thing, hold until steered");
     // The report and then the message's reply show in the message's turn as it runs, the report's words once, and its Stop stays.
     await expect(live).toContainText("Muse fixture reply",{timeout:20_000});
-    await expect(live).toContainText("The workflow with ping and pong agents is complete. The rest of the report.");
-    await expect(page.locator(".history-assistant, .agent-block .assistant-answer").filter({hasText:"The workflow with ping and pong agents is complete."})).toHaveCount(1);
+    await expect(live).toContainText("The alpha and beta agents are done. The rest of the report.");
+    await expect(page.locator(".history-assistant, .agent-block .assistant-answer").filter({hasText:"The alpha and beta agents are done."})).toHaveCount(1);
     await expect(stop).toBeVisible();
     await shoot(page,"muse-report-in-message-turn",live);
     await expect(stop).toBeVisible();
@@ -497,7 +497,7 @@ test("a message refused in Full access while a Supervised thread compacts leaves
     await expect(page.getByTestId("composer-alert")).toContainText("Not sent: Muse Code is still compacting this conversation",{timeout:20_000});
     // A workflow child still running from the first turn asks to run a command: the thread is still in Supervised, so the person answers.
     await harness.release("child_ask");
-    await expect(card(page)).toContainText("touch muse-approved.txt",{timeout:20_000});
+    await expect(card(page)).toContainText("touch trebell-approved.txt",{timeout:20_000});
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
     expect(await harness.frames("approval/decide")).toEqual([]);
     const [thread]=harness.threadStore.list();

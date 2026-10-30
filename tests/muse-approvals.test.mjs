@@ -17,7 +17,7 @@ const MODES=[
   ["full",["serve","--trust-workspace","--disable-sandbox"],":unrestricted","allowAll"],
   ["read-only",["serve","--disable-shell","--disable-write"],":ask-me","promptUnmatched"],
 ];
-// The shell approval recorded with Muse 1.4.3 (the permission transcript), with its three choices.
+// The shell approval recorded with Muse 1.4.14 (fixtures/muse/permission.ndjson), with its three choices.
 const RECORDED_CHOICES=[
   {choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},
   {choiceId:"allow_local_prefix",label:"Always allow in this workspace: touch ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: touch ..."},
@@ -83,16 +83,16 @@ test("a mode is fixed when its host launches: one with other flags or another se
 test("the recorded permission session: Allow once sends Muse's allow_once, the stage update after it asks nothing more, and Reject in the next turn sends its abort",async()=>{
   let count=0;
   const fixture=await startSession({muse:child=>new ReplayMuse(child,"permission-approved"),approve:()=>++count===1?"accept":"decline"});
-  assert.equal((await fixture.session.prompt([{type:"text",text:"Run the shell command `touch muse-approved.txt` with your shell tool, then reply DONE."}])).stopReason,"end_turn");
+  assert.equal((await fixture.session.prompt([{type:"text",text:"Run the shell command `touch trebell-approved.txt` once with your shell tool, then reply DONE."}])).stopReason,"end_turn");
   assert.equal(chunks(fixture.updates),"DONE");
   fixture.updates.length=0;
-  assert.equal((await fixture.session.prompt([{type:"text",text:"Run the shell command `touch muse-declined.txt` with your shell tool once. If it is rejected, do not retry; reply REJECTED."}])).stopReason,"end_turn");
-  assert.equal(chunks(fixture.updates),"REJECTED");
+  assert.equal((await fixture.session.prompt([{type:"text",text:"Now run `touch trebell-second.txt` the same way."}])).stopReason,"end_turn");
+  assert.equal(chunks(fixture.updates),"REFUSED");
   const decides=fixture.muse.frames.filter(frame=>frame.method==="approval/decide");
   assert.deepEqual(decides.map(frame=>frame.params.choiceId),["allow_once","abort"]);
-  assert.deepEqual(decides.map(frame=>frame.params.requirementId),[{approvalId:"01a11a6d-4730-75f1-bc60-4e5df1a3cdc0",sourceIndex:0},{approvalId:"01a11a6d-9054-70c0-bf68-3ec59d37fbf8",sourceIndex:0}]);
+  assert.deepEqual(decides.map(frame=>frame.params.requirementId),[{approvalId:"01a18ecd-8de7-7980-89ee-7c91292c45fa",sourceIndex:0},{approvalId:"01a18ecd-99a8-7b31-a462-ee5d09c0497b",sourceIndex:0}]);
   assert.equal(fixture.asks.length,2,"each approval is asked once: its request, its notification and its stage update ask nothing more");
-  assert.deepEqual(fixture.asks.map(ask=>ask.request.params.toolCall.title),["touch muse-approved.txt","touch muse-declined.txt"]);
+  assert.deepEqual(fixture.asks.map(ask=>ask.request.params.toolCall.title),["touch trebell-approved.txt","touch trebell-second.txt"]);
   assert.deepEqual(fixture.asks[0].request.approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"acceptAlways",label:"Always allow in this workspace: touch ..."},{decision:"decline",label:"Reject"}]);
   assert.equal(fixture.asks[0].request.askUser,false,"Supervised: Trebell's policy answers first, the person the rest");
   assert.equal(fixture.session.requests.size,0,"Muse settled both");
@@ -340,31 +340,31 @@ test("the approval card says what Muse asks: a protected write, a read outside t
   // that turn has ended with it running (runsPast); what is asked is what a desktop notification says (notice).
   const origin={subagentOrigin:{subagentId:"a7",childRunId:"child-run-1",childSessionId:"child-session"}};
   assert.deepEqual(card(origin),{reason:"Asked by a Muse Code workflow agent.",command:"touch result.txt",notice:"touch result.txt"});
-  assert.deepEqual(card({...origin,...staged(1)},{agent:"workflow agent ping",runsPast:true}),{reason:"Asked by the workflow agent ping, which runs on past the turn that started it. Stage 2 of 2: rm b.txt",command:"touch a.txt && rm b.txt",notice:"Stage 2 of 2: rm b.txt"});
-  assert.deepEqual(card({...origin,...staged(1)},{agent:"workflow agent ping"}).reason,"Asked by the workflow agent ping. Stage 2 of 2: rm b.txt");
-  assert.deepEqual(card({...origin,subject:{kind:"fileAccess",access:"write",path:".muse/settings.json"},protectedWrite:true},{agent:"subagent hello agent"}),{title:"Write to a protected file needs approval",reason:"Asked by the subagent hello agent.",command:".muse/settings.json",notice:".muse/settings.json"});
+  assert.deepEqual(card({...origin,...staged(1)},{agent:"workflow agent alpha",runsPast:true}),{reason:"Asked by the workflow agent alpha, which runs on past the turn that started it. Stage 2 of 2: rm b.txt",command:"touch a.txt && rm b.txt",notice:"Stage 2 of 2: rm b.txt"});
+  assert.deepEqual(card({...origin,...staged(1)},{agent:"workflow agent alpha"}).reason,"Asked by the workflow agent alpha. Stage 2 of 2: rm b.txt");
+  assert.deepEqual(card({...origin,subject:{kind:"fileAccess",access:"write",path:".muse/settings.json"},protectedWrite:true},{agent:"subagent greeter"}),{title:"Write to a protected file needs approval",reason:"Asked by the subagent greeter.",command:".muse/settings.json",notice:".muse/settings.json"});
   assert.equal(card(staged(1)).notice,undefined,"a card that says what is asked needs no notice of its own");
 });
 
 test("a subagent's approval asked while its turn runs names the subagent, not that it runs on past the turn, and Stop, which ends the subagent with its turn, leaves the card as it said",async()=>{
   const fixture=await startSession();
   const {running,turnId,sid}=await runningTurn(fixture);
-  fixture.muse.notify("item/started",{sessionId:sid,viewCursor:"v",item:{turnId,status:"inProgress",itemId:"sub-1",kind:"subagent",revision:1,subagentId:"subagent-1",role:"sleeper",objective:"Sleep a while"}});
-  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-1"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-sleeper",childSessionId:"session-sleeper"}});
+  fixture.muse.notify("item/started",{sessionId:sid,viewCursor:"v",item:{turnId,status:"inProgress",itemId:"sub-1",kind:"subagent",revision:1,subagentId:"subagent-1",role:"counter",objective:"Count slowly to ten"}});
+  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-1"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-counter",childSessionId:"session-counter"}});
   await until(()=>fixture.asks.length===1,"the card");
   const said=()=>[fixture.asks[0].request.card.reason,fixture.asks[0].request.card.command,fixture.asks[0].request.card.notice];
-  assert.deepEqual(said(),["Asked by the subagent sleeper.","touch result.txt","touch result.txt"]);
+  assert.deepEqual(said(),["Asked by the subagent counter.","touch result.txt","touch result.txt"]);
   const stopping=fixture.session.cancel();
   await fixture.muse.next("turn/interrupt");
   complete(fixture,turnId,"cancelled");
   await stopping;
   assert.equal((await running).stopReason,"cancelled");
   assert.equal(fixture.asks[0].withdrawn,false,"a child's card outlives the Stop");
-  assert.deepEqual(said(),["Asked by the subagent sleeper.","touch result.txt","touch result.txt"]);
+  assert.deepEqual(said(),["Asked by the subagent counter.","touch result.txt","touch result.txt"]);
   // The same subagent asking again after the Stop is not said to run on either: it ended with its turn.
-  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-2"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-sleeper",childSessionId:"session-sleeper"}});
+  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-2"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-counter",childSessionId:"session-counter"}});
   await until(()=>fixture.asks.length===2,"the second card");
-  assert.equal(fixture.asks[1].request.card.reason,"Asked by the subagent sleeper.");
+  assert.equal(fixture.asks[1].request.card.reason,"Asked by the subagent counter.");
   await fixture.session.close();
 });
 
@@ -373,17 +373,17 @@ test("a child's approval card names the agent that asks as its row does, a workf
   const {running,turnId,sid}=await runningTurn(fixture);
   const item=(method,fields)=>fixture.muse.notify(method,{sessionId:sid,viewCursor:"v",item:{turnId,status:"inProgress",...fields}});
   // A workflow's later revisions leave its agents' labels out.
-  item("item/started",{itemId:"wf-1",kind:"workflow",revision:1,entryId:"ping-pong",children:[{childId:"child-ping",attempt:1,status:"scheduled",label:"ping"}]});
-  item("item/updated",{itemId:"wf-1",kind:"workflow",revision:2,entryId:"ping-pong",children:[{childId:"child-ping",attempt:1,status:"started"}]});
-  item("item/started",{itemId:"sub-1",kind:"subagent",revision:1,subagentId:"subagent-1",role:"hello agent",objective:"Reply with exactly: Hello"});
+  item("item/started",{itemId:"wf-1",kind:"workflow",revision:1,entryId:"alpha-beta",children:[{childId:"child-alpha",attempt:1,status:"scheduled",label:"alpha"}]});
+  item("item/updated",{itemId:"wf-1",kind:"workflow",revision:2,entryId:"alpha-beta",children:[{childId:"child-alpha",attempt:1,status:"started"}]});
+  item("item/started",{itemId:"sub-1",kind:"subagent",revision:1,subagentId:"subagent-1",role:"greeter",objective:"Reply with exactly: Hi"});
   complete(fixture,turnId);await running;
-  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-1"}),subagentOrigin:{subagentId:"child-ping",childRunId:"run-ping",childSessionId:"session-ping"}});
+  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-1"}),subagentOrigin:{subagentId:"child-alpha",childRunId:"run-alpha",childSessionId:"session-alpha"}});
   fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-2"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-hello",childSessionId:"session-hello"}});
   fixture.muse.notify("approval/requested",childApproval(sid,{approvalId:"child-3"}));
   await until(()=>fixture.asks.length===3,"three cards");
   assert.deepEqual(fixture.asks.map(ask=>[ask.request.card.reason,ask.request.card.command,ask.request.runless]),[
-    ["Asked by the workflow agent ping, which runs on past the turn that started it.","touch result.txt",true],
-    ["Asked by the subagent hello agent, which runs on past the turn that started it.","touch result.txt",true],
+    ["Asked by the workflow agent alpha, which runs on past the turn that started it.","touch result.txt",true],
+    ["Asked by the subagent greeter, which runs on past the turn that started it.","touch result.txt",true],
     ["Asked by a Muse Code workflow agent.","touch result.txt",true],
   ]);
   await fixture.session.close();
@@ -496,7 +496,7 @@ test("through the relay, Muse's approval is the approval card with Muse's own ch
     const [card]=relay.requests;
     assert.equal(card.method,"item/tool/requestApproval");
     assert.deepEqual(card.params.approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"acceptAlways",label:"Always allow in this workspace: touch ..."},{decision:"decline",label:"Reject"}]);
-    assert.deepEqual([card.params.threadId,card.params.reason,card.params.toolCall.title,card.params.toolCall.kind],[thread.id,"touch muse-approved.txt","touch muse-approved.txt","execute"]);
+    assert.deepEqual([card.params.threadId,card.params.reason,card.params.toolCall.title,card.params.toolCall.kind],[thread.id,"touch trebell-approved.txt","touch trebell-approved.txt","execute"]);
     assert.deepEqual([card.params.trebellTitle,card.params.command],[undefined,undefined],"a command's card keeps the card's own title, its command said once");
     const [decide]=await relay.frames("approval/decide");
     assert.deepEqual([decide.params.choiceId,decide.params.requirementId.sourceIndex],["allow_once",0]);
@@ -566,7 +566,7 @@ test("through the relay, Stop leaves a workflow child's approval card waiting fo
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run the workflow whose child approval waits"}]});
     await eventually(()=>relay.requests.some(request=>request.method==="item/tool/requestApproval"),"the child's card");
     const card=relay.requests.find(request=>request.method==="item/tool/requestApproval");
-    assert.deepEqual([card.params.reason,card.params.command,card.params.trebellTitle,card.params.trebellNotice],["Asked by a Muse Code workflow agent.","touch muse-approved.txt",undefined,"touch muse-approved.txt"],"the card says a workflow agent asks, and the notification what it asks");
+    assert.deepEqual([card.params.reason,card.params.command,card.params.trebellTitle,card.params.trebellNotice],["Asked by a Muse Code workflow agent.","touch trebell-approved.txt",undefined,"touch trebell-approved.txt"],"the card says a workflow agent asks, and the notification what it asks");
     await relay.rpc("turn/interrupt",{threadId:thread.id});
     await relay.completed(thread.id,1);
     assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"cancelled");
