@@ -753,6 +753,60 @@ test("Send now pressed before the turn support has loaded leaves another thread 
   }finally{await script.drop();await fixture.close()}
 });
 
+// The thread left and opened again is a view of its own: Send now pressed there again is a press of its own, which the first
+// press, left with the view it was made in, does not take with it.
+test("Send now pressed again in its thread opened again before the turn support has loaded starts the follow-up once",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await codexQueuedThread(page);
+  try{
+    await script.asked();
+    await sendNow(page).click();
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);await expect(page.locator(".queued-message")).toHaveCount(0);
+    // Back in its thread before the turn support has come, the follow-up is still queued, and Send now is pressed again.
+    const row=page.locator(".thread-row").filter({hasText:"Idle actions queue"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(page.locator(".queued-message")).toContainText(QUEUED,{timeout:10_000});await expect(sendNow(page)).toBeEnabled();
+    await sendNow(page).click();
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);expect(fixture.started()).toBe(0);
+    await script.release();
+    // Once it has come, the follow-up starts once, from the press made in the thread shown.
+    const sent=page.locator(".user-bubble").filter({hasText:QUEUED});
+    await expect(sent).toHaveCount(1,{timeout:10_000});await expect(page.locator(".queued-message")).toHaveCount(0);
+    await settle(page);
+    expect(fixture.started(),"started once").toBe(1);await expect(sent).toHaveCount(1);await expect(row).toHaveClass(/active/);
+    await expect(page.locator("[data-testid=app-action-error]")).toHaveCount(0);
+    await shootModes(page,"send-now-thread-opened-again",()=>expect(sent).toBeVisible());
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("Edit from here pressed before the turn support has loaded asks nothing over a new task opened meanwhile",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await nativeThread(page);
+  try{
+    await script.asked();
+    await editFromHere(page).click();
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".thread-row.active")).toHaveCount(0);
+    await script.release();
+    // The new task stays as it is: no question comes up over it.
+    await settle(page);
+    await expect(question(page)).toHaveCount(0);await expect(page.locator(".thread-row.active")).toHaveCount(0);
+    await shootModes(page,"edit-from-here-new-task-opened",()=>expect(question(page)).toHaveCount(0));
+    // Back in the thread, its conversation is as it was, and Edit from here asks at once.
+    const row=page.locator(".thread-row").filter({hasText:"Native streaming"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(page.getByText("Renamed the session helper.",{exact:true})).toBeVisible({timeout:10_000});
+    await expect(page.locator(".user-row").filter({hasText:"Rename the session helper"})).toBeVisible();await expect(question(page)).toHaveCount(0);
+    await editFromHere(page).click();await expect(question(page)).toBeVisible();await expect(question(page)).toHaveCount(1);
+    await page.keyboard.press("Escape");await expect(question(page)).toHaveCount(0);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
 test("a task sent to two models before the turn support has loaded keeps its draft once a new task is opened, and starts nothing",async({page})=>{
   test.setTimeout(90_000);
   const script=await holdScript(page,"turn-support");

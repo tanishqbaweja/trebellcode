@@ -140,7 +140,12 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // the next round), and the lazy chunks went up 1.5 / 0.4 KB to 814.5 / 269.4 KB (the two cards' actions 1.4 / 0.5, the delegation
 // in turn-support.js 0.1 / 0.0, the Settings chunk's import line 0.0 / -0.1), and their limit with them, its headroom still
 // 0.9 / 0.1 KB.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:815.4,gzipKB:269.5}};
+// Its second repair (2026-10-30) keyed each of those presses by the view it is made in as well (whenLoaded's wait): pressed in a
+// thread left and opened again, or in another view, it is a press of its own and is done there, where it joined the press left in
+// the view before and was left undone with it. The first bundle went from 607.7 / 196.8 to 607.8 / 196.8 KB, still 3.2 KB gzip of
+// room for R13S and the next round, and the lazy chunks from 814.5 / 269.4 to 814.5 / 269.3 KB (the first bundle's new name in
+// their import lines), and their limit with them, its headroom still 0.9 / 0.1 KB.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:815.4,gzipKB:269.4}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{

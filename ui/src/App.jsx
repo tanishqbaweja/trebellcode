@@ -164,7 +164,7 @@ const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>i
   idlePartsLoad=null;throw loadFailed(error);
 });
 // A press of Load earlier messages or Load these turns made before the chunk has come waits for it (loadEarlierMessages in App), as
-// does one of what turn-support.js or thread-actions.js does (pressWaits, by what was pressed: whenLoaded in App).
+// does one of what turn-support.js or thread-actions.js does (pressWaits, by what was pressed and in which view: whenLoaded in App).
 let earlierPageWait=null;const pressWaits={};
 // load: what a part drawn before the chunk is in waits for (the chunk itself, or the idle load for the Cite button).
 const idlePart=(name,load=loadIdleParts)=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:load().then(parts=>({default:parts[name]})));
@@ -4089,15 +4089,17 @@ export default function App(){
   async function focusThreadFindOccurrence(occurrence,expectedSeq=null,afterPage=false){return (idleParts||await loadIdleParts()).focusThreadFindOccurrence(historyDeps(),occurrence,expectedSeq,afterPage)}
   async function stepThreadFind(direction){return (idleParts||await loadIdleParts()).stepThreadFind(historyDeps(),direction)}
   // What the person does that turn-support.js or thread-actions.js does (module: that script, once in) is done once per press: pressed
-  // again while it is on its way (key: what was pressed), also while it waits for its script to come, it joins the press on its way,
-  // so a follow-up's Send now starts it once and a linked thread is read and opened once. Pressed before the script has come, it is
-  // done once the script is in, only in the view it was pressed in (the same thread or new task, openSeqRef), as the find bar opens
-  // only on the thread it was asked on, and not at all ("left") once another thread or a new task has been opened: a queued
-  // follow-up stays queued, a message stays as it is, the thread opened since stays. One whose script cannot load fails with
-  // loadFailed's words.
+  // again in the same view while it is on its way (wait: what was pressed, key, and the view it was pressed in), also while it waits
+  // for its script to come, it joins the press on its way, so a follow-up's Send now starts it once and a linked thread is read and
+  // opened once. Pressed before the script has come, it is done once the script is in, only in the view it was pressed in (the same
+  // thread or new task, openSeqRef), as the find bar opens only on the thread it was asked on, and not at all ("left") once another
+  // thread or a new task has been opened: a queued follow-up stays queued, a message stays as it is, the thread opened since stays.
+  // A view opened since, the same thread opened again too, has presses of its own: one made there is done there, and never joins a
+  // press left in the view before, which would leave it undone with that one. One whose script cannot load fails with loadFailed's
+  // words.
   function whenLoaded(key,module,load,run){
-    const threadId=activeThreadRef.current?.id,seq=openSeqRef.current;
-    return pressWaits[key]||=(module?Promise.resolve(module):load()).then(loaded=>openSeqRef.current===seq&&activeThreadRef.current?.id===threadId?run(loaded):"left").finally(()=>delete pressWaits[key]);
+    const threadId=activeThreadRef.current?.id,seq=openSeqRef.current,wait=key+"@"+seq+"@"+threadId;
+    return pressWaits[wait]||=(module?Promise.resolve(module):load()).then(loaded=>openSeqRef.current===seq&&activeThreadRef.current?.id===threadId?run(loaded):"left").finally(()=>delete pressWaits[wait]);
   }
   function openLinkedThread(reference){return whenLoaded("link"+reference?.threadId,threadActions,loadThreadActions,actions=>actions.openLinkedThread({openThread,rpc,rpcStatus,setThreads,threads,updateThreadMeta},reference))}
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
