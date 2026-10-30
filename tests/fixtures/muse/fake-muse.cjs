@@ -146,7 +146,7 @@ function spawnSubagent(sessionId,turnId,turn){
   // The child session's own reply carries its own turn, and is not the turn's.
   notify("item/started",sessionId,{item:{itemId:turnId+"-child-reply",kind:"agentMessage",turnId:turnId+"-child",revision:1,status:"inProgress",text:"Hi from the child session"}});
   setTimeout(()=>{
-    notify("item/updated",sessionId,{item:agent(3,{controlStatus:"resultReady",childSessionId:turnId+"-child",durationMs:1810,result:{summary:"Hi",text:"Hi",evidenceRefs:[],artifactRefs:[]}})});
+    notify("item/updated",sessionId,{item:agent(3,{controlStatus:"resultReady",childSessionId:turnId+"-child",durationMs:870,result:{summary:"Hi",text:"Hi",evidenceRefs:[],artifactRefs:[]}})});
     todos([{text:"Spawn the greeter",status:"completed"},{text:"Read its result",status:"completed"}]);
     usageStep(sessionId,turnId,{prompt:30410,output:118,cacheRead:29880,reasoning:9});
     reply(sessionId,turn,"Hi");complete(sessionId,turnId);
@@ -167,16 +167,16 @@ function runWorkflow(sessionId,turnId,turn){
   notify("item/completed",sessionId,{item:launch(2,"completed",{visibleOutput:"{\"status\":\"launched\",\"entryId\":\"alpha-beta\"}"})});
   notify("item/started",sessionId,{item:workflow([])});
   reply(sessionId,turn,"Started the alpha-beta workflow.");complete(sessionId,turnId);
-  const alpha={childId:itemId+"-alpha",attempt:1},beta={childId:itemId+"-beta",attempt:1},alphaDone={...alpha,status:"terminal",terminal:"completed",durationMs:2360};
+  const alpha={childId:itemId+"-alpha",attempt:1},beta={childId:itemId+"-beta",attempt:1},alphaDone={...alpha,status:"terminal",terminal:"completed",durationMs:885};
   const revisions=[[{...alpha,status:"scheduled",label:"alpha"}],[{...alpha,status:"started"}],[{...alpha,status:"started"},{...beta,status:"scheduled",label:"beta"}],[alphaDone,{...beta,status:"started"}],
-    [alphaDone,{...beta,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:2639}]];
+    [alphaDone,{...beta,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:604}]];
   // Each revision step ms after the one before, the one after alpha's scheduling, or after its start, once its hold's file is there.
   // The agent running (alpha while it alone runs, then beta) is the one a child's approval comes from.
   const state=sessions.get(sessionId);
   const revise=index=>{
     if(state)state.workflowAgent=index===1||index===2?alpha.childId:index===3?beta.childId:null;
     if(index===revisions.length){
-      notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
+      notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:2654,stopAvailable:false})});
       return later(process.env.MUSE_FAKE_REPORT_START_HOLD,Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0),()=>reportTurn(sessionId,turnId+"-report"));
     }
     notify("item/updated",sessionId,{item:workflow(revisions[index])});
