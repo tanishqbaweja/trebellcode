@@ -47,7 +47,7 @@ const GROK_SESSION_NOTIFICATIONS=new Set(["x.ai/session_notification","_x.ai/ses
 const GROK_PROMPT_COMPLETE=new Set(["x.ai/session/prompt_complete","_x.ai/session/prompt_complete"]);
 export const GROK_USAGE_LIMIT_MESSAGE="Grok usage limit reached. Try again later.";
 export const GROK_EMPTY_PLAN="# No plan written yet\n\n(The agent exited plan mode without writing a plan.)";
-export const GROK_PLAN_FEEDBACK="The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.";
+export const GROK_PLAN_FEEDBACK="Trebell Code has shown your plan to the user. Stop here: the user answers with feedback, or asks you to carry it out, in a later turn.";
 
 function inside(root,candidate){
   const rel=relative(resolve(root),resolve(candidate));
@@ -324,7 +324,7 @@ export function grokCompletionFailure(notice){
   }
   if(reason==="error"){
     const detail=boundedDetail(notice?.agentResult);
-    return Object.assign(new Error(detail||"Grok ended the turn with an error."),{code:-32603});
+    return Object.assign(new Error(detail||"Grok Build reported an error and ended the turn."),{code:-32603});
   }
   return null;
 }

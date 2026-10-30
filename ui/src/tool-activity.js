@@ -47,20 +47,20 @@ function commandLine(input){
 }
 function targetName(value){return value?.split(/[\\/]/).findLast(part=>part.length>0&&part!==".")}
 
-// "Searched slugify in src", "Searched files *.js", "Searched in src".
+// "Looked for slugify in src", "Listed *.js", "Looked in src".
 export function searchToolLabel(input){
   const query=firstString(input,SEARCH_QUERY_KEYS),glob=firstString(input,SEARCH_GLOB_KEYS),target=targetName(firstString(input,SEARCH_TARGET_KEYS));
-  if(query&&target)return `Searched ${query} in ${target}`;
-  if(glob&&target)return `Searched files ${glob} in ${target}`;
-  if(glob)return `Searched files ${glob}`;
-  if(query)return `Searched ${query}`;
-  if(target)return `Searched in ${target}`;
+  if(query&&target)return `Looked for ${query} in ${target}`;
+  if(glob&&target)return `Listed ${glob} in ${target}`;
+  if(glob)return `Listed ${glob}`;
+  if(query)return `Looked for ${query}`;
+  if(target)return `Looked in ${target}`;
   return undefined;
 }
 
 // The row name for a dynamic (harness or Native) tool call, or undefined when the tool's own name is the best there is.
 // An edit or write that failed or was declined is named by what it attempted ("Write notes.txt"): the row never claims a
-// change that did not happen. A search whose arguments name no query, files or folder is "Searched files".
+// change that did not happen. A search whose arguments name no query, files or folder is "Looked through the files".
 export function dynamicToolLabel(item={}){
   const input=asRecord(item.arguments)??asRecord(item.input)??{};
   const action=classifyToolCall({namespace:item.namespace,tool:item.tool,kind:item.kind});
@@ -68,7 +68,7 @@ export function dynamicToolLabel(item={}){
   if(action==="read")return `Read ${path||"file"}`;
   if(action==="edit")return path?`${attempted?"Edit":"Edited"} ${path}`:undefined;
   if(action==="write")return path?`${attempted?"Write":"Wrote"} ${path}`:undefined;
-  if(action==="search")return searchToolLabel(input)||(Object.keys(input).length?"Searched files":undefined);
+  if(action==="search")return searchToolLabel(input)||(Object.keys(input).length?"Looked through the files":undefined);
   if(action==="command")return commandLine(input);
   return undefined;
 }

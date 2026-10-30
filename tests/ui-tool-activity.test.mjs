@@ -5,9 +5,9 @@ import { classifyToolCall, dynamicToolLabel, searchToolLabel } from "../ui/src/t
 test("Native's own tool calls are named by what they do",()=>{
   assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"read_file",arguments:{path:"src/slug.js"}}),"Read src/slug.js");
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"read_source",arguments:{path:"src/slug.js",startLine:1,endLine:40}}),"Read src/slug.js");
-  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_code",arguments:{query:"slugify",regex:false}}),"Searched slugify");
-  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_files",arguments:{query:"slug"}}),"Searched slug");
-  assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"list",arguments:{path:"src/"}}),"Searched in src");
+  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_code",arguments:{query:"slugify",regex:false}}),"Looked for slugify");
+  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_files",arguments:{query:"slug"}}),"Looked for slug");
+  assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"list",arguments:{path:"src/"}}),"Looked in src");
   assert.equal(dynamicToolLabel({namespace:"trebell_terminal",tool:"run",arguments:{command:"node",args:["--test"],cwd:"."}}),"node --test");
   assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"replace_text",arguments:{path:"src/slug.js",old_text:"a",new_text:"b"}}),"Edited src/slug.js");
   assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"write_file",arguments:{path:"test/new.test.js",content:"x"}}),"Wrote test/new.test.js");
@@ -26,9 +26,9 @@ test("an edit or write that failed or was declined names what it attempted, not 
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"read_source",arguments:{path:"greet.py"},status:"failed"}),"Read greet.py");
 });
 
-test("a listing or search whose arguments name no query, files or folder is \"Searched files\"",()=>{
-  assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"list",arguments:{depth:2}}),"Searched files");
-  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_code",arguments:{regex:false}}),"Searched files");
+test("a listing or search whose arguments name no query, files or folder is \"Looked through the files\"",()=>{
+  assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"list",arguments:{depth:2}}),"Looked through the files");
+  assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_code",arguments:{regex:false}}),"Looked through the files");
 });
 
 test("tools whose name says nothing about the action keep their name, and missing arguments never invent one",()=>{
@@ -52,9 +52,9 @@ test("arguments sent as a JSON string or a command array are read the same way",
 });
 
 test("search rows use one wording for query, glob and folder",()=>{
-  assert.equal(searchToolLabel({pattern:"TODO",path:"src/components"}),"Searched TODO in components");
-  assert.equal(searchToolLabel({glob:"*.{ts,tsx}",target_directory:"apps/web"}),"Searched files *.{ts,tsx} in web");
-  assert.equal(searchToolLabel({glob:"*.md"}),"Searched files *.md");
+  assert.equal(searchToolLabel({pattern:"TODO",path:"src/components"}),"Looked for TODO in components");
+  assert.equal(searchToolLabel({glob:"*.{js,jsx}",target_directory:"ui/src"}),"Listed *.{js,jsx} in src");
+  assert.equal(searchToolLabel({glob:"*.md"}),"Listed *.md");
   assert.equal(searchToolLabel({cwd:"."}),undefined);
   assert.equal(searchToolLabel({}),undefined);
 });

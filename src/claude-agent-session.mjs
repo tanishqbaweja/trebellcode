@@ -21,7 +21,7 @@ import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 export const CLAUDE_READ_ONLY_TOOLS=Object.freeze(["Read","Glob","Grep"]);
 export const CLAUDE_IDLE_RELEASE_MS=30*60_000;
 export const CLAUDE_MAX_IDLE_PIN_MS=4*60*60_000;
-export const CLAUDE_PLAN_CAPTURED="The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.";
+export const CLAUDE_PLAN_CAPTURED="Trebell Code has shown your plan to the user. Stop here: the user answers with feedback, or asks you to carry it out, in a later turn.";
 export const CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
 // Nothing the person changed: Claude switched itself to Plan, and Claude Code refuses to leave it while its background work pins the process.
 // Work that never ends by itself (a watcher) would hold every message back until the process is released, up to 4 hours: Edit from here

@@ -145,7 +145,7 @@ test("a Trebell tool that answered with text shows that text as its output, and 
   const text="2 matches in 1 file (path: src, glob: *.js)\nsrc/auth/session.js\n  1: import { rotateRefreshToken } from \"./token.js\";\n  3:   refresh(token) { return rotateRefreshToken(token); }";
   const search={id:"native-search",type:"dynamicToolCall",namespace:"trebell_repo",tool:"search_code",arguments:{query:"rotateRefreshToken",path:"src",glob:"*.js"},status:"completed",success:true,contentItems:[{type:"inputText",text}],rawOutput:text};
   const row=activityRow(search,{turnId:"t1"});
-  assert.equal(row.title,"Searched rotateRefreshToken in src");
+  assert.equal(row.title,"Looked for rotateRefreshToken in src");
   assert.equal(row.output,text,"the expanded row shows the grouped lines as written, not inside the item's JSON");
   assert.equal(restoredRow(row),row);
   // A result object keeps the JSON view, and another harness's tool keeps its own rendering.
