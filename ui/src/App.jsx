@@ -49,6 +49,7 @@ import { requestPreview } from "./preview-open.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { EMPTY_ASSISTANT_STREAM, assistantStreamDelta } from "./assistant-stream-sync.js";
 import { createLatestValueBuffer } from "./latest-value-buffer.js";
+import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { focusBesideSelection } from "./selection-focus.js";
@@ -4471,11 +4472,15 @@ export default function App(){
     const detail=error?.message||String(error)||"Unknown checkpoint error";
     setEvents(prev=>[...prev,{id:"checkpoint-error-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind:"error",title:message+": "+detail,status:"error",raw:{...raw,error:detail}}]);
   }
-  // Whether a send compacts the context first, and the wait for it, are turn-support.js's (compactBeforeTurn): a send made before that
-  // module has loaded waits for it, and one that cannot load it goes on with the context as it is. held: the composer's message, which
-  // waits meanwhile in its thread's queue when the queue is Trebell's own (queueMode local); onWait shows a message no queue holds.
+  // Whether a send compacts the context first is decided here (auto-compaction.js), so a send with nothing to compact goes on at once,
+  // also before turn-support.js has loaded. The compaction and the wait for it are turn-support.js's (compactBeforeTurn): a send that
+  // compacts before that module has loaded waits for it, and one that cannot load it goes on with the context as it is. held: the
+  // composer's message, which waits meanwhile in its thread's queue when the queue is Trebell's own (queueMode local); onWait shows a
+  // message no queue holds.
   async function maybeAutoCompactBeforeTurn(thread,held,onWait){
     if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {};
+    const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
+    if(!autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85}).shouldCompact)return {};
     let support;try{support=await loadTurnSupport()}catch{return {}}
     return support.compactBeforeTurn({activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey:WINDOW_KEY,holdMs:120_000,persistLocalQueue,queueNow},thread,queueMode==="local"&&held,onWait);
   }
