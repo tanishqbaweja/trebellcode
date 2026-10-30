@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import net from "node:net";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as configuration from "../src/native-configuration.mjs";
-import { nativeProviderNetworkFailure } from "../src/native-agent-loop.mjs";
+import { nativeProviderConnectFailure, nativeProviderNetworkFailure, nativeProviderRetryable, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import * as longRequest from "../src/provider-long-request-fetch.mjs";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { TREBELL_USER_AGENT } from "../src/version.mjs";
 
@@ -15,6 +17,7 @@ import { TREBELL_USER_AGENT } from "../src/version.mjs";
 // bound (NATIVE_META_STREAM_IDLE_TIMEOUT_MS, 600 s) said. Here Node's fetch gets a 400 ms body timeout in place of its 300 s one, the
 // silences are a few seconds (undici checks its timeouts about every half second), and the lane's bound is set in milliseconds. No request leaves the machine.
 
+const { providerLongRequestFetch }=longRequest;
 const fixture=JSON.parse(readFileSync(new URL("./fixtures/meta-responses-stream.json",import.meta.url),"utf8"));
 const MODEL="muse-spark-1.3-contributor";
 const frame=({event,data})=>`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -113,7 +116,6 @@ test("a stop during a Meta stream's silence ends it at once, as a stop and not a
 test("the Meta stream's transport is not Node's fetch, and a fetch the caller brings stays the transport",async()=>{
   const root=home();
   try{
-    const { providerLongRequestFetch }=await import("../src/provider-long-request-fetch.mjs");
     assert.equal(new ProviderManager({env:{TREBELL_HOME:root}}).longRequestFetchFn,providerLongRequestFetch);
     assert.equal(new ProviderManager({env:{TREBELL_HOME:root},fetchFn:globalThis.fetch}).longRequestFetchFn,providerLongRequestFetch);
     // A test's stand-in or the offline E2E guard (gui-server.mjs offlineE2eFetch) is the transport for every request, this one too.
@@ -133,4 +135,86 @@ test("the Meta stream's transport is not Node's fetch, and a fetch the caller br
       assert.equal(nativeProviderNetworkFailure(error),true);return true;
     });
   }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+// A server that takes the TCP connection and never answers on it: an https request to it never gets its TLS handshake done, so the
+// connection is never made, as with a server that never accepts it (on Windows a listener that never calls accept() still has its
+// connections made by the system, so the handshake is where a connection can be held unmade here).
+async function startSilent(){
+  const sockets=new Set();let connected=null;const firstConnection=new Promise(resolve=>{connected=resolve});
+  const server=net.createServer(socket=>{sockets.add(socket);socket.on("error",()=>{});socket.on("close",()=>sockets.delete(socket));connected()});
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  return {port:server.address().port,firstConnection,close:()=>new Promise(resolve=>{for(const socket of sockets)socket.destroy();server.close(()=>resolve())})};
+}
+
+// Every socket a call opens, and the keepalive state Node records on each (its kSetKeepAlive symbols, which it applies to the
+// connection), whichever way it was set.
+async function socketsOpenedBy(run){
+  const sockets=[],connect=net.Socket.prototype.connect;
+  net.Socket.prototype.connect=function(...args){sockets.push(this);return connect.apply(this,args)};
+  try{await run()}finally{net.Socket.prototype.connect=connect}
+  return sockets;
+}
+const keepAliveState=socket=>Object.fromEntries(Object.getOwnPropertySymbols(socket).filter(symbol=>/^kSetKeepAlive/.test(String(symbol.description))).map(symbol=>[String(symbol.description),socket[symbol]]));
+
+test("every connection the Meta stream's transport opens has TCP keepalive on after 60 s without traffic, as Node's fetch has on its own",async()=>{
+  const meta=await startMeta(),silent=await startSilent();
+  try{
+    // Node's fetch, to a server it has no connection to yet.
+    const byFetch=await socketsOpenedBy(async()=>{await (await fetch(meta.origin+"/warm",{method:"POST",body:"{}"})).text()});
+    assert.equal(byFetch.length,1);
+    assert.deepEqual(keepAliveState(byFetch[0]),{kSetKeepAlive:true,kSetKeepAliveInitialDelay:60},"Node's fetch: keepalive after 60 s");
+    // The transport over http, a whole answer read, and over https, looked at once its connection is open, then stopped.
+    const byTransport=await socketsOpenedBy(async()=>{await (await providerLongRequestFetch(meta.origin+"/v1/responses",{method:"POST",body:"{}"})).text()});
+    const controller=new AbortController();
+    byTransport.push(...await socketsOpenedBy(async()=>{
+      const pending=providerLongRequestFetch(`https://127.0.0.1:${silent.port}/v1/responses`,{method:"POST",body:"{}",signal:controller.signal});
+      await silent.firstConnection;await new Promise(resolve=>setImmediate(resolve));controller.abort();
+      await assert.rejects(pending,error=>error.name==="AbortError");
+    }));
+    assert.equal(byTransport.length,2,"one connection a request");
+    for(const socket of byTransport)assert.deepEqual(keepAliveState(socket),keepAliveState(byFetch[0]),socket.constructor.name);
+    assert.equal(longRequest.PROVIDER_LONG_REQUEST_KEEPALIVE_DELAY_MS,60_000);
+  }finally{await meta.close();await silent.close()}
+});
+
+test("a connection the Meta stream's transport cannot make in 10 s fails as Node's fetch fails it, and the loop waits it out as it does Node fetch's",async()=>{
+  const silent=await startSilent();
+  try{
+    const url=`https://127.0.0.1:${silent.port}/v1/responses`;
+    // Each call is stopped after 20 s, so a transport with no connect timeout fails here instead of hanging.
+    const attempt=async send=>{
+      const controller=new AbortController(),guard=setTimeout(()=>controller.abort(new Error("no answer in 20 s")),20_000),started=Date.now();
+      try{await send({method:"POST",body:"{}",signal:controller.signal});return {error:null,ms:Date.now()-started}}
+      catch(error){return {error,ms:Date.now()-started}}
+      finally{clearTimeout(guard)}
+    };
+    const [transport,node]=await Promise.all([attempt(init=>providerLongRequestFetch(url,init)),attempt(init=>fetch(url,init))]);
+    for(const [name,{error,ms}] of [["the transport",transport],["Node's fetch",node]]){
+      assert.equal(error?.cause?.code,"UND_ERR_CONNECT_TIMEOUT",`${name} failed with ${error?.message} (${error?.cause?.code})`);
+      assert.ok(ms>=9_900&&ms<19_000,`${name} gave up at the 10 s connect timeout (${ms} ms)`);
+    }
+    // The same error: a TypeError "fetch failed" over undici's ConnectTimeoutError.
+    const shape=error=>({name:error.name,message:error.message,causeName:error.cause.name,causeCode:error.cause.code});
+    assert.deepEqual(shape(transport.error),shape(node.error));
+    for(const {error} of [transport,node])assert.match(error.cause.message,/^Connect Timeout Error \(attempted address: 127\.0\.0\.1:\d+, timeout: 10000ms\)$/);
+    // The loop's classes: a network failure, a connection that could not be made, retryable.
+    const classes=error=>({network:nativeProviderNetworkFailure(error),connect:nativeProviderConnectFailure(error),retryable:nativeProviderRetryable(error)});
+    assert.deepEqual(classes(transport.error),{network:true,connect:true,retryable:true});
+    assert.deepEqual(classes(transport.error),classes(node.error));
+    // In the loop: past the quick retries and the four stepped waits, a connection that could not be made is waited out every minute
+    // (5 ms here) until the request gets through, for this error as for Node fetch's.
+    const waitedOut=async failure=>{
+      const events=[];let attempts=0;
+      const result=await runNativeAgentTurn({model:MODEL,messages:[{role:"user",content:"through the outage"}],retryBaseDelayMs:0,networkRetryDelaysMs:[1,2,3,4],networkWaitIntervalMs:5,onEvent:event=>events.push(event),
+        providerTurn:async()=>{attempts++;if(attempts<=10)throw failure;return {text:"back",toolCalls:[],usage:{inputTokens:2,outputTokens:1,totalTokens:3}}},executeTool:async()=>""});
+      return {text:result.text,attempts,retries:events.filter(event=>event.name==="native.model.retrying").map(({data})=>({delayMs:data.delayMs,networkRetry:data.networkRetry??null,waitingForNetwork:data.waitingForNetwork??null}))};
+    };
+    const viaTransport=await waitedOut(transport.error),viaNode=await waitedOut(node.error);
+    assert.equal(viaTransport.text,"back");assert.equal(viaTransport.attempts,11);
+    assert.deepEqual(viaTransport.retries.map(item=>item.delayMs),[0,0,1,2,3,4,5,5,5,5]);
+    assert.deepEqual(viaTransport.retries.slice(6).map(item=>item.waitingForNetwork),[true,true,true,true],"waited out as a network that is away");
+    assert.deepEqual(viaTransport,viaNode);
+    assert.equal(longRequest.PROVIDER_LONG_REQUEST_CONNECT_TIMEOUT_MS,10_000);
+  }finally{await silent.close()}
 });
