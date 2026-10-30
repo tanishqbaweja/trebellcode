@@ -213,3 +213,32 @@ test("xAI keeps its JSON request even when a turn asks to stream",async()=>{
     assert.equal(requests[0].stream,false);assert.equal(result.telemetry.streaming,false);assert.equal(result.text,"208");
   }finally{rmSync(root,{recursive:true,force:true})}
 });
+
+// The recorded text answer's first `count` events, then silenceMs with no byte, then the rest and "data: [DONE]".
+const silentAfter=(recorded,count,silenceMs)=>async({signal})=>{
+  const list=recorded.events;let timer=null;
+  return new Response(new ReadableStream({
+    start(controller){
+      for(const item of list.slice(0,count))controller.enqueue(encoder.encode(frame(item)));
+      timer=setTimeout(()=>{for(const item of list.slice(count))controller.enqueue(encoder.encode(frame(item)));controller.enqueue(encoder.encode("data: [DONE]\n\n"));controller.close()},silenceMs);
+      signal?.addEventListener?.("abort",()=>{clearTimeout(timer);try{controller.error(signal.reason)}catch{}},{once:true});
+    },
+    cancel(){clearTimeout(timer)},
+  }),{status:200,headers:{"content-type":"text/event-stream","x-request-id":"req-meta-test"}});
+};
+
+test("Meta's stream is read with the lane's idle bound, not the provider's request timeout",async()=>{
+  const root=home();
+  try{
+    // A silence longer than requestTimeoutMs (100 ms) and shorter than the lane's bound (1,000 ms): the answer comes, from one request.
+    const quiet=metaApi([silentAfter(fixture.text,3,300)]);
+    const result=await managerFor(root,quiet.fetchFn,{requestTimeoutMs:100}).turn("meta",nativeRequest({messages:[{role:"user",content:fixture.text.prompt}]}),{...configuration.nativeProviderTurnOptions("meta"),streamIdleTimeoutMs:1_000});
+    assert.equal(result.text,"208");assert.equal(quiet.requests.length,1);
+    // A silence longer than the lane's bound (300 ms) and shorter than requestTimeoutMs (5 s): the lane's bound ends it.
+    const stalled=metaApi([silentAfter(fixture.text,3,1_500)]),started=Date.now();
+    await assert.rejects(managerFor(root,stalled.fetchFn,{requestTimeoutMs:5_000}).turn("meta",nativeRequest({messages:[{role:"user",content:fixture.text.prompt}]}),{...configuration.nativeProviderTurnOptions("meta"),streamIdleTimeoutMs:300}),
+      error=>error.name==="TimeoutError"&&/Meta Model API Responses stream idle timeout exceeded/.test(error.message)&&error.retryable===true);
+    const elapsed=Date.now()-started;
+    assert.ok(elapsed<1_200,`ended at the lane's 300 ms bound, not the silence's end or the request timeout (${elapsed} ms)`);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
