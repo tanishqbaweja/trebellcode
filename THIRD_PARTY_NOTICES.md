@@ -87,10 +87,11 @@ The app's harness code:
   (`claudeCapabilitiesProbeOptions`, `probeClaudeCapabilities`) and the check for an administrator's `managed-mcp.json`
   (`hasClaudeManagedMcpConfig`), from `apps/server/src/provider/ClaudeProvider.ts` and
   `apps/server/src/provider/Drivers/ClaudeHome.ts`.
-- `src/acp-agent-session.mjs`: Grok Build's and Antigravity's approval choices (`acpApprovalOptions`) and the attachment types and
-  size limits of an Antigravity prompt (`antigravityPromptParts` and its `ANTIGRAVITY_*` sets and limits), from
-  `packages/provider-grok/src/server/acpSupport.ts`, `apps/server/src/provider/acp/AntigravityProtocol.ts` and
-  `apps/server/src/provider/acp/AntigravityAcpSupport.ts`.
+- `src/acp-agent-session.mjs`: Grok Build's and Antigravity's approval choices (`acpApprovalOptions`), the answers to Grok
+  Build's questions (`grokQuestionResponse`), Antigravity's questions (`#antigravityQuestion`) and the attachment types and size
+  limits of an Antigravity prompt (`antigravityPromptParts` and its `ANTIGRAVITY_*` sets and limits), from
+  `packages/provider-grok/src/server/acpSupport.ts`, `packages/provider-grok/src/server/xaiAcpExtension.ts`,
+  `apps/server/src/provider/acp/AntigravityProtocol.ts` and `apps/server/src/provider/acp/AntigravityAcpSupport.ts`.
 - `src/cursor-transport-failure.mjs`, the whole file: the reading of a Cursor reply that is only Cursor's lost-connection
   diagnostic (`CursorTransportFailure`), from `packages/provider-cursor/src/server/transportFailure.ts`.
 - `src/acp-model-catalog.mjs`: the default pick among a Grok Build model's reasoning levels (`grokModelCatalog`), from
