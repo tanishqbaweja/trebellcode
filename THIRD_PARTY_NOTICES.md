@@ -84,9 +84,9 @@ The app's harness code:
   reasons it gives for a turn Claude Code ended (`terminalResultError`, `claudeResultFailure`), from
   `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
 - `src/claude-capabilities.mjs` and `src/claude-managed-mcp.mjs`: the capability probe's options and its never-ending prompt
-  (`claudeCapabilitiesProbeOptions`, `probeClaudeCapabilities`) and the check for an administrator's `managed-mcp.json`
-  (`hasClaudeManagedMcpConfig`), from `apps/server/src/provider/ClaudeProvider.ts` and
-  `apps/server/src/provider/Drivers/ClaudeHome.ts`.
+  (`claudeCapabilitiesProbeOptions`, `probeClaudeCapabilities`), the reading of a signed-out account (`claudeProbeSignedOut`)
+  and the check for an administrator's `managed-mcp.json` (`hasClaudeManagedMcpConfig`), from
+  `apps/server/src/provider/ClaudeProvider.ts` and `apps/server/src/provider/Drivers/ClaudeHome.ts`.
 - `src/acp-agent-session.mjs`: Grok Build's and Antigravity's approval choices (`acpApprovalOptions`), the answers to Grok
   Build's questions (`grokQuestionResponse`), Antigravity's questions (`#antigravityQuestion`) and the attachment types and size
   limits of an Antigravity prompt (`antigravityPromptParts` and its `ANTIGRAVITY_*` sets and limits), from
