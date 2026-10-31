@@ -112,6 +112,8 @@ The app's harness code:
 - `src/muse-maintenance.mjs` and `parseMuseVersion` in `src/agent-runtime-manager.mjs`: Muse Code's release channels, its version
   form and their order (`MUSE_CHANNELS`, `museChannelRelease`, `compareMuseVersions`), the launcher check and the update switches,
   from `packages/provider-muse/src/server/maintenance.ts`.
+- `src/harness-text-generation.mjs`: Muse Code's Git text turn, its replies kept by revision, the answer taken as the last reply
+  not taken back and its approvals and questions refused (`museText`), from `packages/provider-muse/src/server/textGeneration.ts`.
 - `src/muse-model-catalog.mjs`: a Muse model's name from a bare id, the fallback reasoning levels and the level a turn runs at
   (`museModelName`, `resolveMuseReasoningEffort`), from `packages/provider-muse/src/server/modelCatalog.ts`.
 - `src/opencode-agent-session.mjs`: the reading of OpenCode's file-read output (`openCodeReadOutput`) and a session's and a
