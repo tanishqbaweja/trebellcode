@@ -32,7 +32,7 @@ test("a status check waits for an OpenCode server that takes 25 seconds to start
   for(let second=0;second<27&&!status.done;second++){t.mock.timers.tick(1_000);await flush()}
   assert.equal(status.done,true,"the check ended");
   assert.equal(status.error,undefined,status.error?.message);
-  assert.deepEqual([status.value.available,status.value.authenticated,status.value.message],[true,true,"1 upstream provider connected through OpenCode."]);
+  assert.deepEqual([status.value.available,status.value.authenticated,status.value.message],[true,true,"OpenCode runs with 1 upstream provider connected, and lists its models."]);
 });
 
 test("a server that came up after 19 seconds still gets 20 seconds for OpenCode's answer",async t=>{

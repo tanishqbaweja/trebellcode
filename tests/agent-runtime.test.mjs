@@ -540,8 +540,8 @@ test("Trebell updates an OpenCode only the way it was installed, judged from whe
   assert.equal(commandOnPath("/opt/opencode",{platform:"linux",env:{},exists:exists([])}),null);
   assert.equal(commandOnPath("C:\\oc\\opencode.exe",{platform:"win32",env:{},exists:exists(["C:\\oc\\opencode.exe"])}),"C:\\oc\\opencode.exe");
   // The status wording, from the providers OpenCode's server reports connected.
-  assert.equal(openCodeStatusMessage(4),"4 upstream providers connected through OpenCode.");
-  assert.equal(openCodeStatusMessage(1,{external:true}),"1 upstream provider connected through the configured OpenCode server.");
+  assert.equal(openCodeStatusMessage(4),"OpenCode runs with 4 upstream providers connected, and lists their models.");
+  assert.equal(openCodeStatusMessage(1,{external:true}),"The configured OpenCode server answers with 1 upstream provider connected, and lists its models.");
   assert.equal(openCodeStatusMessage(0),"OpenCode runs, but no upstream provider is connected through it.");
 });
 
@@ -598,7 +598,7 @@ test("a local OpenCode's status counts the providers its own server connects, on
     manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:binary,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
     const serves=async()=>(await fixture.read()).calls.filter(call=>call[1]==="serve").length;
     const status=await manager.probe("opencode");
-    assert.deepEqual({available:status.available,authenticated:status.authenticated,account:status.account,message:status.message},{available:true,authenticated:true,account:{connectedProviders:2},message:"2 upstream providers connected through OpenCode."});
+    assert.deepEqual({available:status.available,authenticated:status.authenticated,account:status.account,message:status.message},{available:true,authenticated:true,account:{connectedProviders:2},message:"OpenCode runs with 2 upstream providers connected, and lists their models."});
     // Thread starts check the status again; they reuse that read, and a model list right after it does too.
     await manager.probe("opencode");
     const listed=await manager.models("opencode");
@@ -625,7 +625,7 @@ test("updating npm's global opencode-ai installs into the prefix that holds the 
     const plan=await manager.openCodeInstallPlan();
     assert.deepEqual({method:plan.method,installedVersion:plan.installedVersion,targetVersion:plan.targetVersion,command:plan.command,args:plan.args},{method:"npm",installedVersion:"1.18.30",targetVersion:"1.18.35",command:"npm",args:["install","-g","--prefix",realpathSync(prefix),"--allow-scripts=opencode-ai","opencode-ai@1.18.35"]});
     const installed=await manager.install("opencode");
-    assert.equal(installed.status.version,"1.18.35");assert.equal(installed.status.message,"2 upstream providers connected through OpenCode.");
+    assert.equal(installed.status.version,"1.18.35");assert.equal(installed.status.message,"OpenCode runs with 2 upstream providers connected, and lists their models.");
     // An OpenCode Trebell cannot tell who installed is left alone.
     const custom=join(root,"custom","opencode.cmd");await fixture.launcher(custom,"opencode.mjs");
     manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:custom,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});

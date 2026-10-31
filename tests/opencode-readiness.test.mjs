@@ -41,7 +41,7 @@ test("OpenCode with a connected provider that lists no models is not ready and s
   // OpenCode lists the provider's models now: Settings' Refresh shows it ready.
   fake.answer=catalog();
   const ready=await manager.probe("opencode",{fresh:true,refresh:true});
-  assert.deepEqual([ready.available,ready.authenticated,ready.message],[true,true,"1 upstream provider connected through OpenCode."]);
+  assert.deepEqual([ready.available,ready.authenticated,ready.message],[true,true,"OpenCode runs with 1 upstream provider connected, and lists its models."]);
   assert.equal(reads.length,5);
 });
 
@@ -54,7 +54,7 @@ test("a provider connected after OpenCode's last read shows on Settings' Refresh
   // The person signs in to a provider with OpenCode's own `opencode auth login`, then presses Refresh.
   fake.answer=catalog();
   const after=await manager.probe("opencode",{fresh:true,refresh:true});
-  assert.deepEqual([after.authenticated,after.message],[true,"1 upstream provider connected through OpenCode."]);
+  assert.deepEqual([after.authenticated,after.message],[true,"OpenCode runs with 1 upstream provider connected, and lists its models."]);
   assert.equal(reads.length,2);
   advance(10*60_000);await manager.probe("opencode");await manager.probe("opencode");
   assert.equal(reads.length,2,"a ready answer is not read again by the window's checks");

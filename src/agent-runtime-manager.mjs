@@ -258,7 +258,7 @@ export function parseOpenCodeAuthList(output){
 export function openCodeStatusMessage(connected,{external=false,models=null}={}){
   const count=Math.max(0,Number(connected)||0),where=external?"the configured OpenCode server":"OpenCode";
   if(count>0&&models===0)return `${count} upstream provider${count===1?" is":"s are"} connected through ${where}, but it lists no models yet. Press Refresh to check again.`;
-  if(count>0)return `${count} upstream provider${count===1?"":"s"} connected through ${where}.`;
+  if(count>0)return `${external?"The configured OpenCode server answers":"OpenCode runs"} with ${count} upstream provider${count===1?"":"s"} connected, and lists ${count===1?"its":"their"} models.`;
   return external?"The configured OpenCode server answers, but no upstream provider is connected through it.":"OpenCode runs, but no upstream provider is connected through it.";
 }
 // OpenCode is ready once upstream providers are connected and it lists models for them. Its answer is complete, and kept, when
