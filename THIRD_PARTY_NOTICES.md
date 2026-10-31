@@ -80,8 +80,9 @@ The app's harness code:
 - `src/claude-agent-session.mjs`: the usage merge of a request's stream (`mergedUsage`, `promptTokens`), the task-list tools
   (`claudeTaskList`, `readClaudeTaskStore`), "Allow for session" (`claudeSessionPermissionUpdates`), the command, path or input
   an approval prompt shows (`claudePermissionPrompt`), the usage-limit windows and overage reading (`CLAUDE_USAGE_LIMIT_WINDOWS`,
-  `describeClaudeUsageLimit`, `claudeRejectedLimit` and the reading of a `rate_limit_event`) and the reasons it gives for a turn
-  Claude Code ended (`terminalResultError`, `claudeResultFailure`), from `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
+  `describeClaudeUsageLimit`, `claudeRejectedLimit`, `claudeUsageLimited` and the reading of a `rate_limit_event`) and the
+  reasons it gives for a turn Claude Code ended (`terminalResultError`, `claudeResultFailure`), from
+  `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
 - `src/claude-capabilities.mjs` and `src/claude-managed-mcp.mjs`: the capability probe's options and its never-ending prompt
   (`claudeCapabilitiesProbeOptions`, `probeClaudeCapabilities`) and the check for an administrator's `managed-mcp.json`
   (`hasClaudeManagedMcpConfig`), from `apps/server/src/provider/ClaudeProvider.ts` and
