@@ -171,7 +171,7 @@ Near-term work is focused on four things:
 | [Product principles](docs/technical/PRODUCT_PRINCIPLES.md) | The product and architecture contract |
 | [Testing](docs/technical/TESTING.md) | Deterministic, UI, live-provider, and manual validation |
 | [Benchmark results](BENCHMARKS.md) | Verifier-grounded quality, cost, token, and execution-efficiency comparisons |
-| [v2.1.1 release notes](docs/releases/v2.1.1.md) | Current release notes |
+| [v2.1.2 release notes](docs/releases/v2.1.2.md) | Current release notes |
 
 ## Repository layout
 

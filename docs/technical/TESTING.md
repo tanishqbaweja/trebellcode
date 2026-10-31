@@ -2,7 +2,7 @@
 
 This file tracks the gap between **implemented + automated-tested** and **proven on real machines/accounts/services**.
 
-Current release target: **v2.1.1**
+Current release target: **v2.1.2**
 
 Current automated regression baseline on **2026-10-06**:
 
@@ -27,7 +27,7 @@ For every test, mark **Pass / Fail / Blocked** and capture:
 ## 1. Fresh Windows installer
 
 - [ ] Uninstall an older Trebell build if present.
-- [ ] Run **Trebell-Code-Setup-2.1.1.exe**.
+- [ ] Run **Trebell-Code-Setup-2.1.2.exe**.
 - [ ] Choose a non-default install directory.
 - [ ] Confirm Start Menu shortcut.
 - [ ] Launch Trebell from the installed shortcut.
@@ -534,9 +534,9 @@ Expected:
 
 ## 29. Release artifact integrity
 
-For v2.1.1:
+For v2.1.2:
 
-- [ ] Compare installer SHA-256 with release-artifacts/v2.1.1/release.json.
+- [ ] Compare installer SHA-256 with release-artifacts/v2.1.2/release.json.
 - [ ] Confirm byte size.
 - [ ] Confirm release.json Git commit matches the release commit.
 - [ ] Confirm GitHub release contains installer, latest.yml, release.json and blockmap.
