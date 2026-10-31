@@ -129,8 +129,8 @@ The app's harness code:
 - `src/agent-runtime-manager.mjs`: Grok Build's signed-in reading (`parseGrokModelsAuth`) and its launch arguments for each
   access level (the grok branch of `acpArgs`), from `packages/provider-grok/src/server/status.ts` and `acpSupport.ts`.
 - `src/harness-install-plan.mjs`: who installed a harness, from where its binary is: npm's global prefix, a Homebrew keg or cask,
-  mise, pnpm, Yarn and Vite+ (`npmGlobalPrefix`, `homebrewKeg`, `harnessInstallOwner`), from
-  `packages/provider-core/src/server/maintenanceResolver.ts`.
+  mise, pnpm, Yarn and Vite+ (`npmGlobalPrefix`, `homebrewKeg`, `harnessInstallOwner`), and npm's install with the package's
+  script allowed (`npmInstallArgs`), from `packages/provider-core/src/server/maintenanceResolver.ts`.
 - `src/codex-home-layout.mjs`, the whole file: a Codex profile's home and shadow home (`resolveCodexHomeLayout`,
   `materializeCodexShadowHome`), and in `src/environment-app-server.mjs` the folders a WSL or SSH host's shadow home shares
   (`REMOTE_CODEX_SHARED_DIRECTORIES`), from `apps/server/src/provider/Drivers/CodexHomeLayout.ts`.
