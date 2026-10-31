@@ -301,7 +301,7 @@ test("Antigravity runs each turn in its access level's mode and never sends the 
   const log=await fx.log();
   assert.deepEqual(requested(log,"session/set_config_option").map(entry=>[entry.params.configId,entry.params.value]),[["mode","yolo"],["mode","default"]]);
   const other=harness(t,await scenario(t,ANTIGRAVITY),{runtime:"antigravity"});
-  await assert.rejects(other.session.start({model:"gemini-9-ultra"}),/Antigravity model 'gemini-9-ultra' is unavailable for this Google account\. Select an available model\./);
+  await assert.rejects(other.session.start({model:"gemini-9-ultra"}),/Antigravity does not offer the model 'gemini-9-ultra' to this Google account\. Select an available model\./);
 });
 
 test("Read only runs in the harness's read-only mode, and a harness without one gets no prompt",async t=>{

@@ -642,7 +642,7 @@ export class AcpAgentSession{
     if(this.runtime==="antigravity"){
       const target=requestedModel("antigravity",requested);
       if(!target){this.model=current.current;return}
-      if(!current.choices.some(choice=>choice.value===target))throw new Error(`Antigravity model '${target}' is unavailable for this Google account. Select an available model.`);
+      if(!current.choices.some(choice=>choice.value===target))throw new Error(`Antigravity does not offer the model '${target}' to this Google account. Select an available model.`);
       try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"model",target)}
       catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
       this.model=target;return;
