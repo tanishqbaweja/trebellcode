@@ -208,6 +208,8 @@ export async function createHarborNativeRun({root=process.cwd(),instruction,env=
       backgroundProcessesAtEnd:backgroundProcesses.list("trebell-harbor",{limit:200}).data.map(item=>({handle:item.handle,command:item.command})),
       auditArtifacts:{toolCalls:toolCallsPath,finalDiff:finalDiff?{path:finalDiffPath,...finalDiff}:null},
       finalReply:assistantChunks.join("").trim().slice(-4000),
+      // How the turn ended, as the app's thread shows it: completed, cancelled, or failed with its error.
+      turnStatus:error?"failed":result?.stopReason==="cancelled"?"cancelled":"completed",
       error:error?String(error?.stack||error?.message||error).slice(-8000):null,
     };
     await eventWrites;
@@ -224,7 +226,14 @@ export async function createHarborNativeRun({root=process.cwd(),instruction,env=
       await session.close().catch(()=>{});
       manager.close();
     }
-    if(error)throw error;
+    // A turn that failed, its provider retries spent, ends with its error as the app ends it (agent-relay's settlePrompt: the turn is
+    // failed with its message): the metrics carry the error, one stderr line names it (with its HTTP status and code, which Harbor reads
+    // to class an invalid key, spent credits or a rate limit) and the run returns it, with no uncaught exception's stack. The runner
+    // (trebell-native-runner.mjs) then exits 1, so the adapter and Harbor still see the failure as the agent's, as they did before.
+    if(error){
+      const status=Number(error?.status||error?.statusCode||0)||null,code=error?.code!=null?String(error.code):"";
+      console.error("Trebell Native turn failed: "+String(error?.message||error)+(status?" (HTTP "+status+")":"")+(code?" ["+code+"]":""));
+    }
     return metrics;
   }
   return {config,tools,session,prompt,promptOptions,selected,executor,startCommit,run};

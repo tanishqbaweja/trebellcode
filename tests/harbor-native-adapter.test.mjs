@@ -26,6 +26,8 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.ok(source.includes('metrics_path.read_text(encoding="utf-8")'));
   assert.ok(source.includes('"cache_carryover": metrics.get("cacheCarryover") or {}'));
   assert.ok(source.includes('"strategy": metrics.get("strategy") or {}'));
+  assert.ok(source.includes('"turn_status": metrics.get("turnStatus")'),"Harbor's metadata says how the turn ended");
+  assert.ok(source.includes('"error": (str(metrics.get("error"))[:2000] if metrics.get("error") else None)'),"and a failed turn's error");
   assert.ok(source.includes('TREBELL_OPENAI_REASONING_CONTEXT'));
   assert.ok(source.includes('"reasoning_context": metrics.get("reasoningContext")'));
   assert.ok(source.includes('"effective_reasoning_contexts": metrics.get("effectiveReasoningContexts") or []'));

@@ -13,7 +13,7 @@
 // No imports and no work at load: the UI's first bundle reads the tool selection, the developer text and the effort default from
 // here, so everything else must tree-shake away (B11, tests/bundle-budgets.test.mjs).
 
-export const NATIVE_CONFIGURATION_VERSION="2026-10-30.1";
+export const NATIVE_CONFIGURATION_VERSION="2026-10-31.1";
 
 // The loop options every Native message runs with (runNativeAgentTurn in src/native-agent-loop.mjs). The semantic completion gate is
 // off, and with it every mid-task controller checkpoint (midTaskProgressEnabled) and the gate's recovery; one recovery epoch is kept
@@ -101,8 +101,30 @@ export function nativeDefaultModel(provider,models=[],catalogDefault=null){
 // could spend it all and come back empty. What a thread with no Thinking pick sent before 2026-10-29 (unmeasured).
 export const NATIVE_COMPACTION=/*#__PURE__*/Object.freeze({reasoningEffort:null,maxOutputTokens:4096});
 
-// The provider turn's transport options (src/native-provider-turn.mjs applies them, with the reasoning context).
+// How long Native waits for the next byte of Meta's Responses stream before it gives the request up as stalled and the loop sends it
+// again (a timed-out request's retry). Meta's stream has no keepalive and sends nothing while the model reasons or writes a tool call's
+// arguments, which come whole in one delta; only a reply's text comes in small deltas. The live checks of 2026-10-30 (muse-spark-1.3-
+// contributor at high, tests/fixtures/meta-responses-stream.json) saw no byte for 10.4 s of reasoning and 7.1 s of a 3,063-character
+// write_file argument, and 17.9 s of reasoning before a 14,449-token answer whose text came in 1,536 deltas. So the bound must outlast
+// the longest reasoning or tool call, not a gap between tokens. The Meta lane's 698 JSON turns on Terminal-Bench 2.0 took at most
+// 200 s whole (circuit-fibsqrt: 14,950 reasoning tokens in one item), at 44 to 108 output tokens a second (median 85); only the two
+// that hit the old 300 s whole-request timeout (regex-chess, adaptive-rejection-sampler) ran longer, and those 698 leave out exactly
+// the turns that could not finish in 300 s, so they do not show how long the longest item runs. One silent item can be as long as an
+// action turn's max_output_tokens (65,536), and at the slowest rate seen (44 a second) it takes about 1,490 s (770 s at the median 85);
+// regex-chess failed on exactly such a long tool call's arguments. So the bound is 1,800 s, above one such item at the slowest rate.
+// Only a genuine server stall waits it out: a connection that breaks fails the stream at once, and one that dies silently is found by
+// TCP keepalive (src/provider-long-request-fetch.mjs, probes after 60 s without traffic, as Node's fetch has). This bound is the stream's
+// only one: the stream goes through a fetch with no body deadline (src/provider-long-request-fetch.mjs), as Node's fetch ends a body
+// after 300 s without a byte, which held a silent item to about 20,000 tokens at 67 a second and 25,000 at the median whatever this
+// bound said.
+// Meta's docs: a stream has no server-side limit once its first event is sent (dev.meta.ai/docs/error-handling).
+export const NATIVE_META_STREAM_IDLE_TIMEOUT_MS=1_800_000;
+
+// The provider turn's transport options (src/native-provider-turn.mjs applies them, with the reasoning context). Meta's lane streams
+// its Responses: a JSON reply comes only once the whole answer is written, under the provider's 300 s whole-request timeout, which a
+// long answer exceeded on every attempt; a stream has its headers at once and is read with the idle bound above.
 export function nativeProviderTurnOptions(provider){
+  if(provider==="meta")return {promptCaching:false,streamResponses:true,streamIdleTimeoutMs:NATIVE_META_STREAM_IDLE_TIMEOUT_MS};
   return {promptCaching:provider==="anthropic",streamResponses:provider==="openai"};
 }
 
@@ -304,7 +326,7 @@ export function nativeConfigurationSnapshot(){
     defaultModels:{...NATIVE_DEFAULT_MODELS},
     compaction:{...NATIVE_COMPACTION},
     serviceTierDefault:NATIVE_SERVICE_TIER_DEFAULT,
-    providerTurnOptions:{openai:nativeProviderTurnOptions("openai"),anthropic:nativeProviderTurnOptions("anthropic")},
+    providerTurnOptions:{openai:nativeProviderTurnOptions("openai"),anthropic:nativeProviderTurnOptions("anthropic"),meta:nativeProviderTurnOptions("meta")},
     specializedTaskPatterns:{browser:BROWSER_TASK.source,computer:COMPUTER_TASK.source,sourceControl:SOURCE_CONTROL_TASK.source,delegation:DELEGATION_TASK.source},
     toolNamespaces:nativeToolNamespaceOptions({}),
     developerInstructions:trebellDeveloperInstructions({}),
@@ -334,4 +356,5 @@ export const NATIVE_SETTINGS_EVIDENCE=/*#__PURE__*/Object.freeze([
   {setting:"Default service tier",value:"none (Standard)",measured:false,basis:"app default",evidence:"The app's product default; Fast changes serving speed, not the model, and bills 2x. Benchmarks run every lane at the same tier."},
   {setting:"Repository knowledge",value:"the project's store (empty for a fresh project or a container)",measured:false,basis:"app default",evidence:"The app's product default."},
   {setting:"First message's continuity block",value:"no checkpoint not yet linked to a turn",measured:false,basis:"app default",evidence:"A defect fix toward the measured runner shape: the block restated the window's own pre-turn checkpoint as an artifact created."},
+  {setting:"Meta Responses streaming",value:"stream: true, read with a 1,800 s idle bound (no byte) through a fetch without Node fetch's 300 s body timeout but with its TCP keepalive (60 s) and 10 s connect timeout, a stalled or broken stream sent again as a timed-out request is",measured:false,basis:"new",evidence:"A defect fix found by the Muse Code comparison (2026-10-30, Terminal-Bench 2.0, muse-spark-1.3-contributor at high): Native's JSON request has a 300 s whole-request timeout and Meta's JSON reply comes only once the whole answer is written, so regex-chess timed out on all three attempts (302.8 s, 603.1 s and the third) and adaptive-rejection-sampler lost 300 s of a turn; Muse Code streams. Only the stream flag changes in the request; usage comes from the stream's final event (response.completed), the same object the JSON reply is. Meta sends no byte while one output item is written, and Node's fetch ends a body after 300 s without one, so the stream goes through Node's http client (src/provider-long-request-fetch.mjs) and the idle bound is its only limit; the bound's reasons are at NATIVE_META_STREAM_IDLE_TIMEOUT_MS. The 1,800 s holds one silent item as long as max_output_tokens (65,536) at the slowest rate seen (44 output tokens a second, about 1,490 s; the 698 turns that finished under the old 300 s limit leave out the longest), and regex-chess failed on exactly such a long tool call's arguments. A dead connection is found by TCP keepalive or fails at once when it breaks, so only a genuine server stall waits the full bound. Not compared on fresh tasks."},
 ]);
