@@ -652,7 +652,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
             {script.previewUrl&&<button title="Open preview" onClick={()=>onOpenPreview?.(script.previewUrl)}><ExternalLink size={12}/></button>}
             <button title="Edit action" onClick={()=>editScript(p,script)}><Pencil size={12}/></button>
             <button className="danger" title="Delete action" onClick={()=>deleteScript(p,script.id)}><Trash2 size={12}/></button>
-          </div>{cardAlert(p,"action:"+script.id)}</React.Fragment>)}</div>:<p className="project-actions-empty">Save repeatable commands here—dev server, tests, setup, migrations, whatever you run constantly.</p>}
+          </div>{cardAlert(p,"action:"+script.id)}</React.Fragment>)}</div>:<p className="project-actions-empty">Save repeatable commands here: dev server, tests, setup, migrations, whatever you run constantly.</p>}
           {editor?.projectId===p.id&&<div className="project-action-editor">
             <input value={editor.name} onChange={e=>setEditor({...editor,name:e.target.value})} placeholder="Action name (e.g. Dev server)"/>
             <input value={editor.command} onChange={e=>setEditor({...editor,command:e.target.value})} placeholder="Command (e.g. npm run dev)"/>

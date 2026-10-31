@@ -1194,7 +1194,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // A catalog that lists models but none chosen (Trebell Native on a provider that names no default) asks for one: Send stays on,
   // and a send opens the picker and says to choose first, keeping the draft (App's dispatchSend).
   const modelChoice=!modelReady&&models.length>0&&!setupRequired&&!modelsLoading;
-  const modelBlocker=runtimeSwitchLabel||(modelReady&&!setupRequired)||running||modelChoice?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
+  const modelBlocker=runtimeSwitchLabel||(modelReady&&!setupRequired)||running||modelChoice?"":modelsLoading?"Loading models…":modelError||"No models available. Check Settings.";
   // Send is off, and Enter with it, while the draft cannot go; the line under the composer and Send's title say why. A message waits
   // for the harness and a model (messageOff), but an app command typed out in full (/model, /palette) needs neither: Enter runs it.
   const messageOff=!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread,draftOff=!prompt.trim()||promptTooLong||uploadingFiles.length>0||Boolean(mentionWaits);
