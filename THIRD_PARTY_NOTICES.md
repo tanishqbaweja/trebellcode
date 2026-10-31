@@ -201,6 +201,9 @@ Test cases and inputs:
   `packages/provider-muse/src/server/status.test.ts`.
 - `tests/source-control-service.test.mjs`: the case of a later commit on the base branch, from
   `apps/server/src/git/GitManager.test.ts`.
+- `tests/acp-sign-in-url-redaction.test.mjs`, `tests/acp-client.test.mjs` and `tests/harness-text-generation.test.mjs`: the agent
+  log lines they redact (a Bearer token, a local pairing link, a sign-in address's state), from
+  `packages/provider-acp/src/server/stderr.test.ts`.
 
 Written from T3 Code's Cursor code at an earlier revision, `024d49520eadb24cc2f2cef0b0a82c33f0290813` (2026-10-02, the same
 license), `apps/server/src/provider/Layers/CursorProvider.ts`:
