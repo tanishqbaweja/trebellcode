@@ -83,11 +83,13 @@ Parts of Trebell Code were written from T3 Code's source:
 - `src/acp-agent-session.mjs`: Grok Build's approval choices follow `packages/provider-grok/src/server/acpSupport.ts`.
 - `src/agent-usage-limits.mjs`: the Grok Build and Claude Code usage readers follow
   `packages/provider-grok/src/server/usageLimits.ts` and `apps/server/src/provider/claudeUsageLimits.ts`.
-- `src/claude-agent-session.mjs`: the usage merge and the task-list tools follow
-  `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
+- `src/claude-agent-session.mjs`: the usage merge, the task-list tools and the reasons it gives for a turn Claude Code ended
+  follow `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
 - `src/secret-redactor.mjs`: the secret patterns follow `packages/provider-acp/src/server/stderr.ts`.
 - `src/source-control-service.mjs`: the reading of pull request templates follows
   `packages/source-control-github/src/server/gitHubChangeRequestTemplate.ts`.
+- `ui/src/reasoning-text.js`: the Markdown marks a collapsed thought's one-line preview leaves out follow
+  `packages/client-runtime/src/work-log/presentation.ts`.
 
 Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`)  
 License: MIT License, Copyright (c) 2026 T3 Tools Inc.
