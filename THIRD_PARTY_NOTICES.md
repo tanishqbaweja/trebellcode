@@ -73,8 +73,7 @@ shows them for that package:
 ## T3 Code
 
 Parts of Trebell Code were written from T3 Code's source. Each part below names the Trebell file and what in it was written that
-way, then the T3 Code file it was written from (paths in T3 Code's repository at the revision below). The rest of each Trebell
-file is Trebell's own.
+way, then the T3 Code file it was written from (paths in T3 Code's repository at the revision below).
 
 The app's harness code:
 
