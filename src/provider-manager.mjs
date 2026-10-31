@@ -130,9 +130,10 @@ export function normalizeProviderId(value) {
 
 // A turn for a provider whose tool_choice takes only "auto" (autoToolChoiceOnly). The Meta Model API answers any other choice with
 // HTTP 400: "only `\"auto\"` is supported for `tool_choice`. `\"none\"`, `\"required\"`, and named function choices are not currently
-// supported" (checked live 2026-10-31; a request with no tools is accepted). Native's controllers ask for "required", an allowed set
-// or a named tool when a step must call one, and for "none" when it must answer without one, so on such a provider a turn that must
-// call a tool asks for "auto" (the turn's own messages still say what to call) and one that must not is sent without its tools.
+// supported" (checked live 2026-10-31; a request with no tools is accepted, also when its input carries earlier tool calls and their
+// outputs, and the model answers it). Native's controllers ask for "required" or a named tool when a step must call one, so on such
+// a provider that step asks for "auto" (the step offers only the tools it needs, and its own messages still say what to call).
+// Native's steps that must answer without a tool already send no tools; a "none" from any other caller is sent without its tools.
 export function autoToolChoiceRequest(request={}){
   const choice=request?.toolChoice;
   if(choice==null||choice==="auto")return request;

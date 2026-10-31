@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { MODEL_PROVIDERS, ProviderManager, autoToolChoiceRequest } from "../src/provider-manager.mjs";
 
 // The Meta Model API takes tool_choice "auto" only: "none", "required" and a named tool are refused with HTTP 400 (checked live on
-// 2026-10-31; a request with no tools is accepted). Native's controllers ask for a call ("required", an allowed set or a named tool)
-// or for none ("none"), so on Meta a turn that did either failed: the runner exited 1 on Terminal-Bench Pro's
-// recover-and-sanitize-postgres-wal-secret three times out of three. The stand-in below answers as Meta does.
+// 2026-10-31; a request with no tools is accepted). Native's controllers ask for a call ("required" or a named tool) when a step
+// must call one, so on Meta such a turn failed: the runner exited 1 on Terminal-Bench Pro's recover-and-sanitize-postgres-wal-secret
+// three times out of three. Native's own steps that must answer without a tool already send no tools; the "none" case keeps any
+// other caller's from being refused. The stand-in below answers as Meta does.
 const META_REFUSAL={error:{code:null,message:'only `"auto"` is supported for `tool_choice`. `"none"`, `"required"`, and named function choices are not currently supported',param:"tool_choice",type:"invalid_request_error"}};
 const completed=model=>({id:"resp_test",object:"response",status:"completed",model,output:[{type:"message",id:"msg_test",role:"assistant",status:"completed",content:[{type:"output_text",text:"done",annotations:[]}]}],usage:{input_tokens:20,input_tokens_details:{cached_tokens:0},output_tokens:2,output_tokens_details:{reasoning_tokens:0},total_tokens:22}});
 function api(){
