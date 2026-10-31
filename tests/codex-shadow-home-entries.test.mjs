@@ -7,8 +7,8 @@ import { prepareCodexHome } from "../src/codex-home-layout.mjs";
 
 // Two entries a Codex shadow home meets in real use: Finder's .DS_Store, which macOS writes into every
 // folder it opens, the shadow home's too, and the SQLite maintenance lock Codex makes in a shadow home it starts in before the
-// shared home has one. With either one a real file in both homes, the profile could not start: "Cannot create Codex shadow home
-// entry … because … already exists and is not a symlink."
+// shared home has one. With either one a real file in both homes, the profile could not start: "The Codex shadow home cannot
+// link …: … is already there and is not a link."
 async function homes(prefix){
   const root=await mkdtemp(join(tmpdir(),prefix)),shared=join(root,"shared"),shadow=join(root,"shadow");
   await mkdir(shared,{recursive:true});await mkdir(shadow,{recursive:true});
@@ -57,6 +57,6 @@ test("a SQLite maintenance lock Codex made in a shadow home before the shared ho
     assert.equal(await linkedTo(shadowLock,sharedLock),true);
     // Any other entry Codex shares still refuses a local file in its place, as before.
     await writeFile(join(shared,"config.toml"),"shared\n");await writeFile(join(shadow,"config.toml"),"local\n");
-    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/Cannot create Codex shadow home entry 'config\.toml' because .* already exists and is not a symlink\./);
+    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/The Codex shadow home cannot link 'config\.toml': .* is already there and is not a link\./);
   }finally{await cleanup()}
 });

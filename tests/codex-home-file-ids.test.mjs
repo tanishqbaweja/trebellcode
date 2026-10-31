@@ -25,7 +25,7 @@ test("a shadow home's own file is refused even when its id and the shared file's
       return Object.assign(Object.create(Object.getPrototypeOf(stats)),stats,options?.bigint?{dev:7n,ino:id}:{dev:7,ino:Number(id)});
     };
     syncBuiltinESMExports();
-    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/Cannot create Codex shadow home entry 'config\.toml' because .* already exists and is not a symlink\./);
+    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/The Codex shadow home cannot link 'config\.toml': .* is already there and is not a link\./);
   }finally{
     fs.promises.lstat=realLstat;syncBuiltinESMExports();
     await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});

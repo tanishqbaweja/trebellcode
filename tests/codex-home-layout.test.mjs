@@ -27,12 +27,12 @@ test("Codex shadow home shares state but keeps auth private",async()=>{
 test("Codex shadow home refuses shared/private path conflicts",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-codex-shadow-conflict-")),shared=join(root,"shared"),shadow=join(root,"shadow");
   try{
-    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shared}),/must be different/i);
+    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shared}),/is the shared home .* itself; it needs a folder of its own/i);
     await mkdir(shared,{recursive:true});await mkdir(shadow,{recursive:true});await writeFile(join(shared,"config.toml"),"shared\n");await writeFile(join(shadow,"config.toml"),"local\n");
-    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/already exists and is not a symlink/i);
+    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/is already there and is not a link/i);
     await rm(join(shadow,"config.toml"),{force:true});
     const authTarget=join(root,"auth-target");await mkdir(authTarget,{recursive:true});await symlink(authTarget,join(shadow,"auth.json"),process.platform==="win32"?"junction":"dir");
-    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/auth\.json.*real file/i);
+    await assert.rejects(()=>prepareCodexHome({homePath:shared,shadowHomePath:shadow}),/auth\.json.*is a link; it has to be a file of its own/i);
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 

@@ -26,7 +26,7 @@ async function ensureLink({sharedHome,effectiveHome,name}){
       const [existing,targetStat]=await Promise.all([lstat(link,{bigint:true}),lstat(target,{bigint:true})]);
       if(existing.dev===targetStat.dev&&existing.ino&&existing.ino===targetStat.ino)return;
     }catch{}
-    if(!REPLACEABLE_SHARED_ENTRIES.has(name))throw new Error(`Cannot create Codex shadow home entry '${name}' because '${link}' already exists and is not a symlink.`);
+    if(!REPLACEABLE_SHARED_ENTRIES.has(name))throw new Error(`The Codex shadow home cannot link '${name}': '${link}' is already there and is not a link.`);
     await rm(link,{recursive:true,force:true});
   }else if(state.kind==="link"){
     const existing=resolve(dirname(link),state.target);if(existing===target)return;await rm(link,{force:true});
@@ -53,12 +53,12 @@ export async function materializeCodexShadowHome(layout){
   if(layout?.mode!=="authOverlay")return layout;
   const sharedHome=layout.sharedHomePath,effectiveHome=layout.effectiveHomePath;
   if(!effectiveHome)throw new Error("Codex shadow home path is missing");
-  if(resolve(sharedHome)===resolve(effectiveHome))throw new Error(`Codex shadow home path '${effectiveHome}' must be different from the shared home path '${sharedHome}'.`);
+  if(resolve(sharedHome)===resolve(effectiveHome))throw new Error(`The Codex shadow home '${effectiveHome}' is the shared home '${sharedHome}' itself; it needs a folder of its own.`);
   await Promise.all([mkdir(sharedHome,{recursive:true}),mkdir(effectiveHome,{recursive:true}),...SHARED_DIRECTORIES.map(name=>mkdir(join(sharedHome,name),{recursive:true}))]);
 
   for(const name of PRIVATE_ENTRIES){
     const path=join(effectiveHome,name);const state=await linkState(path);
-    if(name==="auth.json"&&state.kind==="link")throw new Error(`Codex shadow home private entry 'auth.json' at '${path}' must be a real file, not a symlink.`);
+    if(name==="auth.json"&&state.kind==="link")throw new Error(`The Codex shadow home's own 'auth.json' at '${path}' is a link; it has to be a file of its own.`);
     if(name!=="auth.json"&&state.kind==="link")await rm(path,{force:true});
   }
 
