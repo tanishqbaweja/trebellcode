@@ -116,8 +116,9 @@ The app's harness code:
   from `packages/provider-muse/src/server/maintenance.ts`.
 - `src/harness-text-generation.mjs`: Muse Code's Git text turn, its replies kept by revision, the answer taken as the last reply
   not taken back and its approvals and questions refused (`museText`), from `packages/provider-muse/src/server/textGeneration.ts`.
-- `src/muse-model-catalog.mjs`: a Muse model's name from a bare id, the fallback reasoning levels and the level a turn runs at
-  (`museModelName`, `resolveMuseReasoningEffort`), from `packages/provider-muse/src/server/modelCatalog.ts`.
+- `src/muse-model-catalog.mjs`: the model list read from a short read-only host, a Muse model's name from a bare id, the
+  fallback reasoning levels and the level a turn runs at (`readMuseModelCatalog`, `museModelCatalog`, `museModelName`,
+  `resolveMuseReasoningEffort`), from `packages/provider-muse/src/server/modelCatalog.ts`.
 - `src/opencode-agent-session.mjs`: the reading of OpenCode's file-read output (`openCodeReadOutput`), a session's and a
   subagent's permission rules (`openCodePermissionRules`, `openCodeChildPermissionRules`), the reasoning level a provider's
   models start on (`inferOpenCodeDefaultVariant`) and the comparison of two reads of OpenCode 2's model list
