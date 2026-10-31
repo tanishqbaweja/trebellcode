@@ -188,8 +188,9 @@ Test cases and inputs:
   `apps/server/src/provider/GrokProvider.test.ts`.
 - `tests/agent-usage-limits.test.mjs`: the Cursor usage report's reset time, from
   `packages/provider-cursor/src/server/usageLimits.test.ts`.
-- `tests/harness-install-plan.test.mjs`: the WinGet and Vite+ install paths and commands, from
-  `packages/provider-core/src/server/maintenanceResolver.test.ts`.
+- `tests/harness-install-plan.test.mjs`: the WinGet, Vite+, Homebrew and npm install paths and commands, from
+  `packages/provider-core/src/server/maintenanceResolver.test.ts`, `packages/shared/src/shell.test.ts` and
+  `packages/provider-opencode/src/server/driver.test.ts`.
 - `tests/codex-history-own-sessions.test.mjs`: the Codex session setup text and titles, from
   `apps/server/src/project/AgentSessionScanner.test.ts`.
 - `tests/codex-shadow-home-entries.test.mjs`: the Finder metadata cases, from
