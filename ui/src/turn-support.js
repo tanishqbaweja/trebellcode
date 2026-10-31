@@ -257,11 +257,11 @@ async function runCodexGoalCommand(deps,command){
       await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"},inputText:CODEX_GOAL_START+command.objective});
       return;
     }
-    if(!threadId||!rpc){note("No goal is set.");return}
+    if(!threadId||!rpc){note("This thread has no goal.");return}
     const current=(await rpc.request("thread/goal/get",{threadId}))?.goal||null;setGoal(current);
     const compacting=Boolean(running)&&compactionTurn(deps,current?.status),drives=running&&current?.status==="active"&&!compacting;
     if(command?.type==="clear"){if(drives)await stopForGoal(deps,threadId);const result=await rpc.request("thread/goal/clear",{threadId});setGoal(null);note(result?.cleared?"Goal cleared.":"No goal to clear.");return}
-    if(!current){note("No goal is set.");return}
+    if(!current){note("This thread has no goal.");return}
     if(command?.type==="pause"){if(drives)await stopForGoal(deps,threadId);const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});setGoal(paused?.goal||null);note("Goal paused. Send /goal resume to continue.");return}
     if(command?.type==="resume"){
       // A turn without new input continues the goal from the history.

@@ -73,7 +73,7 @@ export function splitCodexAttachmentText(text){
 const GOAL_STATUS_LABELS={active:"active",paused:"paused",blocked:"blocked",usageLimited:"usage limited",budgetLimited:"budget limited",complete:"complete"};
 export function codexGoalStatusLabel(status){return GOAL_STATUS_LABELS[status]||String(status||"")}
 export function describeCodexGoal(goal){
-  return goal?.objective?`Goal ${codexGoalStatusLabel(goal.status)}: ${goal.objective}`:"No goal is set.";
+  return goal?.objective?`Goal ${codexGoalStatusLabel(goal.status)}: ${goal.objective}`:"This thread has no goal.";
 }
 // A Codex without goals (an app-server from before them) refuses thread/goal/* as a method it does not have: "Invalid request:
 // unknown variant `thread/goal/get`, expected one of …", as Codex refuses any method it lacks, or JSON-RPC's Method not found.

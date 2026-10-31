@@ -29,7 +29,7 @@ function compactingWindow({goal=null,events=[compaction],messages=[],own=false}=
 
 test("/goal with an objective sent while Codex compacts the thread waits for the compaction to end, then starts the goal",async()=>{
   // A note of an earlier command, with no turn, is no row of the compaction's turn.
-  const app=compactingWindow({events:[{id:"goal-command-1",kind:"tool",title:"No goal is set.",status:"done"},compaction]});
+  const app=compactingWindow({events:[{id:"goal-command-1",kind:"tool",title:"This thread has no goal.",status:"done"},compaction]});
   const running=runSlashCommand(app.deps,"/goal Ship the release notes");
   await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(app.steps(),[],"nothing is stopped or started while the compaction runs");

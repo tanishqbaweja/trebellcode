@@ -60,7 +60,7 @@ test("/goal parses like the Codex TUI",()=>{
   assert.deepEqual(parseCodexGoalCommand("/goal Ship the release\nwith notes"),{type:"set",objective:"Ship the release\nwith notes"});
   assert.equal(parseCodexGoalCommand("/goals"),null);assert.equal(parseCodexGoalCommand("set a goal"),null);
   assert.equal(describeCodexGoal({objective:"Ship it",status:"budgetLimited"}),"Goal budget limited: Ship it");
-  assert.equal(describeCodexGoal(null),"No goal is set.");
+  assert.equal(describeCodexGoal(null),"This thread has no goal.");
   assert.equal(codexGoalStatusLabel("usageLimited"),"usage limited");
 });
 
