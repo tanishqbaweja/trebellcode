@@ -120,9 +120,8 @@ The app's harness code:
 - `src/opencode2-agent-session.mjs`: the reading and answering of OpenCode 2's forms (`openCode2FormQuestions`,
   `openCode2FormAnswer`) and the stop of a resumed session's leftover requests, from
   `packages/provider-opencode/src/server/v2/adapter.ts`.
-- `src/agent-runtime-manager.mjs`: Grok Build's signed-in reading (`parseGrokModelsAuth`) and OpenCode's connected-providers
-  message (`openCodeStatusMessage`), from `packages/provider-grok/src/server/status.ts` and
-  `packages/provider-opencode/src/server/status.ts`.
+- `src/agent-runtime-manager.mjs`: Grok Build's signed-in reading (`parseGrokModelsAuth`), from
+  `packages/provider-grok/src/server/status.ts`.
 - `src/harness-install-plan.mjs`: who installed a harness, from where its binary is: npm's global prefix, a Homebrew keg or cask,
   mise, pnpm, Yarn and Vite+ (`npmGlobalPrefix`, `homebrewKeg`, `harnessInstallOwner`), from
   `packages/provider-core/src/server/maintenanceResolver.ts`.
