@@ -113,9 +113,9 @@ The app's harness code:
   `packages/provider-muse/src/server/itemPresentation.ts`, `protocol.ts`, `usageLimits.ts` and `adapter.ts`.
 - `src/muse-host.mjs`: the `muse serve` flags for each access level and the Windows form of the workspace path
   (`museServeArgs`, `museVerbatimPath`, `museWorkspaceRoot`), from `packages/provider-muse/src/server/sdk.ts`.
-- `src/muse-maintenance.mjs` and `parseMuseVersion` in `src/agent-runtime-manager.mjs`: Muse Code's release channels, its version
-  form and their order (`MUSE_CHANNELS`, `museChannelRelease`, `compareMuseVersions`), the launcher check and the update switches,
-  from `packages/provider-muse/src/server/maintenance.ts`.
+- `src/muse-maintenance.mjs` and `parseMuseVersion` in `src/agent-runtime-manager.mjs`: Muse Code's release channels, the read of
+  a channel's newest release, its version form and their order (`MUSE_CHANNELS`, `latestMuseRelease`, `museChannelRelease`,
+  `compareMuseVersions`), the launcher check and the update switches, from `packages/provider-muse/src/server/maintenance.ts`.
 - `src/harness-text-generation.mjs`: Muse Code's Git text turn, its replies kept by revision, the answer taken as the last reply
   not taken back and its approvals and questions refused (`museText`), from `packages/provider-muse/src/server/textGeneration.ts`.
 - `src/muse-model-catalog.mjs`: the model list read from a short read-only host, a Muse model's name from a bare id, the
