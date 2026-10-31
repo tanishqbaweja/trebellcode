@@ -161,7 +161,7 @@ test("Claude user content sends images as base64 blocks and keeps the user's tex
     {type:"text",text:"Attached file: C:\\my repo\\a.js"},
     {type:"text",text:"/review what is in the picture?"},
   ]);
-  assert.throws(()=>claudeUserContent([{type:"image",mimeType:"image/bmp",data:"Qk0="}]),/Unsupported Claude image attachment type 'image\/bmp'/);
+  assert.throws(()=>claudeUserContent([{type:"image",mimeType:"image/bmp",data:"Qk0="}]),/Claude Code takes PNG, JPEG, GIF and WebP images, not 'image\/bmp'\./);
 });
 
 test("Claude model, effort, speed and plan mode reach the query, and a changed policy reopens it",async()=>{

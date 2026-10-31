@@ -233,7 +233,7 @@ export function claudeUserContent(parts=[]){
   for(const part of Array.isArray(parts)?parts:[]){
     if(part?.type==="image"){
       const mimeType=String(part.mimeType||part.mime_type||"").trim().toLowerCase();
-      if(!CLAUDE_IMAGE_TYPES.has(mimeType))throw new Error(`Unsupported Claude image attachment type '${mimeType||"unknown"}'`);
+      if(!CLAUDE_IMAGE_TYPES.has(mimeType))throw new Error(`Claude Code takes PNG, JPEG, GIF and WebP images, not '${mimeType||"unknown"}'.`);
       images.push({type:"image",source:{type:"base64",media_type:mimeType,data:String(part.data||"")}});
     }else if(part?.type==="resource_link")links.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??String(part.uri||"")}${textExtractedTo(part)}`});
     else if(part?.type==="text"){const text=String(part.text||"");if(text)texts.push({type:"text",text})}
