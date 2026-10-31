@@ -75,6 +75,8 @@ export const MODEL_PROVIDERS = Object.freeze({
     requiresKey: true,
     official: true,
     statelessResponses: true,
+    // Its tool_choice takes only "auto": "none", "required" and a named tool are refused with HTTP 400 (autoToolChoiceRequest).
+    autoToolChoiceOnly: true,
   },
   agentrouter: {
     id: "agentrouter",
@@ -124,6 +126,18 @@ export const MODEL_PROVIDERS = Object.freeze({
 export function normalizeProviderId(value) {
   const id = String(value || "").trim().toLowerCase();
   return Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS, id) ? id : DEFAULT_MODEL_PROVIDER;
+}
+
+// A turn for a provider whose tool_choice takes only "auto" (autoToolChoiceOnly). The Meta Model API answers any other choice with
+// HTTP 400: "only `\"auto\"` is supported for `tool_choice`. `\"none\"`, `\"required\"`, and named function choices are not currently
+// supported" (checked live 2026-10-31; a request with no tools is accepted). Native's controllers ask for "required", an allowed set
+// or a named tool when a step must call one, and for "none" when it must answer without one, so on such a provider a turn that must
+// call a tool asks for "auto" (the turn's own messages still say what to call) and one that must not is sent without its tools.
+export function autoToolChoiceRequest(request={}){
+  const choice=request?.toolChoice;
+  if(choice==null||choice==="auto")return request;
+  if(choice==="none")return {...request,tools:[],toolChoice:"auto"};
+  return {...request,toolChoice:"auto"};
 }
 
 // The official OpenAI /models list also returns embedding, audio, image, video (Sora), moderation, realtime, live voice,
@@ -1035,6 +1049,7 @@ export class ProviderManager {
   // streamIdleTimeoutMs: how long a streamed stateless provider's Responses stream may send nothing (its lane's, else requestTimeoutMs).
   async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false, streamChat=false, onStream=null, streamIdleTimeoutMs=null } = {}) {
     const provider=this.get(providerId),model=String(request.model||"").trim();
+    if(provider.autoToolChoiceOnly===true)request=autoToolChoiceRequest(request);
     const statelessStream=streamResponses===true&&provider.statelessResponses===true&&Object.hasOwn(STREAMED_STATELESS_RESPONSES,provider.id)?STREAMED_STATELESS_RESPONSES[provider.id]:null;
     const sink=typeof onStream==="function"?createStreamSink(onStream):null;
     if(!model)throw new Error("Provider turn requires a model.");

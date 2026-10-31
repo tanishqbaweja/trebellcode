@@ -66,7 +66,8 @@ test("xAI and the Meta Model API are official Native providers on their Response
   const ids=Object.keys(MODEL_PROVIDERS);
   assert.deepEqual(ids.slice(0,5),["openai","anthropic","gemini","xai","meta"]);
   assert.deepEqual(MODEL_PROVIDERS.xai,{id:"xai",name:"xAI API",baseUrl:"https://api.x.ai/v1",wireApi:"responses",protocolCompatibility:["openai-responses"],envKey:"XAI_API_KEY",requiresKey:true,official:true,modelsPath:"/language-models",statelessResponses:true});
-  assert.deepEqual(MODEL_PROVIDERS.meta,{id:"meta",name:"Meta Model API",baseUrl:"https://api.meta.ai/v1",wireApi:"responses",protocolCompatibility:["openai-responses"],envKey:"META_API_KEY",requiresKey:true,official:true,statelessResponses:true});
+  // Meta's tool_choice takes only "auto" (tests/native-meta-tool-choice.test.mjs).
+  assert.deepEqual(MODEL_PROVIDERS.meta,{id:"meta",name:"Meta Model API",baseUrl:"https://api.meta.ai/v1",wireApi:"responses",protocolCompatibility:["openai-responses"],envKey:"META_API_KEY",requiresKey:true,official:true,statelessResponses:true,autoToolChoiceOnly:true});
   // The browser-safe labels list the same providers, in the same order, by the same names.
   assert.deepEqual(MODEL_PROVIDER_LABELS,Object.fromEntries(Object.values(MODEL_PROVIDERS).map(provider=>[provider.id,provider.name])));
   for(const id of ["xai","meta"]){
