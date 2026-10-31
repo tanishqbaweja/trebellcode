@@ -79,7 +79,8 @@ file is Trebell's own.
 The app's harness code:
 
 - `src/claude-agent-session.mjs`: the usage merge of a request's stream (`mergedUsage`, `promptTokens`), the task-list tools
-  (`claudeTaskList`, `readClaudeTaskStore`), "Allow for session" (`claudeSessionPermissionUpdates`), the usage-limit windows and
+  (`claudeTaskList`, `readClaudeTaskStore`), "Allow for session" (`claudeSessionPermissionUpdates`), the command, path or input
+  an approval prompt shows (`claudePermissionPrompt`), the usage-limit windows and
   overage reading (`CLAUDE_USAGE_LIMIT_WINDOWS`, `describeClaudeUsageLimit`, `claudeRejectedLimit` and the reading of a
   `rate_limit_event`) and the reasons it gives for a turn Claude Code ended (`terminalResultError`, `claudeResultFailure`), from
   `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
@@ -116,9 +117,10 @@ The app's harness code:
   not taken back and its approvals and questions refused (`museText`), from `packages/provider-muse/src/server/textGeneration.ts`.
 - `src/muse-model-catalog.mjs`: a Muse model's name from a bare id, the fallback reasoning levels and the level a turn runs at
   (`museModelName`, `resolveMuseReasoningEffort`), from `packages/provider-muse/src/server/modelCatalog.ts`.
-- `src/opencode-agent-session.mjs`: the reading of OpenCode's file-read output (`openCodeReadOutput`) and a session's and a
-  subagent's permission rules (`openCodePermissionRules`, `openCodeChildPermissionRules`), from
-  `packages/provider-opencode/src/server/toolItems.ts` and `adapter.ts`.
+- `src/opencode-agent-session.mjs`: the reading of OpenCode's file-read output (`openCodeReadOutput`), a session's and a
+  subagent's permission rules (`openCodePermissionRules`, `openCodeChildPermissionRules`), the reasoning level a provider's
+  models start on (`inferOpenCodeDefaultVariant`) and the comparison of two reads of OpenCode 2's model list
+  (`openCode2CatalogFingerprint`), from `packages/provider-opencode/src/server/toolItems.ts`, `adapter.ts` and `status.ts`.
 - `src/opencode2-agent-session.mjs`: the reading and answering of OpenCode 2's forms (`openCode2FormQuestions`,
   `openCode2FormAnswer`) and the stop of a resumed session's leftover requests, from
   `packages/provider-opencode/src/server/v2/adapter.ts`.
