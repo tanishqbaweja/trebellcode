@@ -106,7 +106,8 @@ The app's harness code:
   `packages/provider-cursor/src/server/usageLimits.ts` and `packages/provider-core/src/server/usageLimits.ts`.
 - `src/muse-agent-session.mjs`: the tool rows (`museToolUpdate`), item statuses (`museToolStatus`, `museWorkStatus`), to-do rows
   (`musePlanEntries`), workflow agents' rows (`museWorkflowAgentUpdates`), which turn an event belongs to, the approval choices
-  (`museApprovalDecision`, `museApprovalChoices`, `museApprovalOptions`) and the usage-limit reset (`museUsageLimitResetAt`), from
+  (`museApprovalDecision`, `museApprovalChoices`, `museApprovalOptions`), the questions and their answers (`museQuestions`,
+  `museUserInputAnswers`) and the usage-limit reset (`museUsageLimitResetAt`), from
   `packages/provider-muse/src/server/itemPresentation.ts`, `protocol.ts`, `usageLimits.ts` and `adapter.ts`.
 - `src/muse-host.mjs`: the `muse serve` flags for each access level and the Windows form of the workspace path
   (`museServeArgs`, `museVerbatimPath`, `museWorkspaceRoot`), from `packages/provider-muse/src/server/sdk.ts`.
