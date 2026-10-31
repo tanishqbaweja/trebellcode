@@ -130,6 +130,8 @@ The app's harness code:
 - `src/codex-home-layout.mjs`, the whole file: a Codex profile's home and shadow home (`resolveCodexHomeLayout`,
   `materializeCodexShadowHome`), and in `src/environment-app-server.mjs` the folders a WSL or SSH host's shadow home shares
   (`REMOTE_CODEX_SHARED_DIRECTORIES`), from `apps/server/src/provider/Drivers/CodexHomeLayout.ts`.
+- `src/codex-turn-usage.mjs`: a Codex turn's usage as the growth of the thread's running total, falling back to the newest
+  request's when a counter went down (`createCodexTurnUsage`), from `apps/server/src/provider/CodexTurnTokenUsage.ts`.
 - `src/codex-account-probe.mjs`: the account and plan labels (`codexAccountLabel`), from
   `apps/server/src/provider/CodexProvider.ts`.
 - `src/model-service-tier.mjs`: Codex's service-tier choices and the configured tier (`codexServiceTierOptions`,
