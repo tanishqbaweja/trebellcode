@@ -202,7 +202,16 @@ Test cases and inputs:
 - `tests/source-control-service.test.mjs`: the case of a later commit on the base branch, from
   `apps/server/src/git/GitManager.test.ts`.
 
-Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`)  
+Written from T3 Code's Cursor code at an earlier revision, `024d49520eadb24cc2f2cef0b0a82c33f0290813` (2026-10-02, the same
+license), `apps/server/src/provider/Layers/CursorProvider.ts`:
+
+- `src/acp-model-catalog.mjs`: Cursor's effort levels, its effort option, its Fast switch and its model list (`cursorEffortValue`,
+  `cursorEffortOption`, `cursorFastOption`, `cursorModelCatalog`).
+- `src/acp-agent-session.mjs`: the Cursor model options a turn applies after its model (`#applyCursorOptions`).
+- `src/agent-runtime-manager.mjs`: Cursor's signed-in reading (`parseCursorAboutResult`).
+
+Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`, and
+`024d49520eadb24cc2f2cef0b0a82c33f0290813` for the Cursor parts named above)  
 License: MIT License, Copyright (c) 2026 T3 Tools Inc.
 Local modifications: rewritten in Trebell's own JavaScript, with its own names, messages and structure around them.
 
