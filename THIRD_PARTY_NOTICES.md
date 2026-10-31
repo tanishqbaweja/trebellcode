@@ -128,13 +128,15 @@ The app's harness code:
   mise, pnpm, Yarn and Vite+ (`npmGlobalPrefix`, `homebrewKeg`, `harnessInstallOwner`), from
   `packages/provider-core/src/server/maintenanceResolver.ts`.
 - `src/codex-home-layout.mjs`, the whole file: a Codex profile's home and shadow home (`resolveCodexHomeLayout`,
-  `materializeCodexShadowHome`), from `apps/server/src/provider/Drivers/CodexHomeLayout.ts`.
+  `materializeCodexShadowHome`), and in `src/environment-app-server.mjs` the folders a WSL or SSH host's shadow home shares
+  (`REMOTE_CODEX_SHARED_DIRECTORIES`), from `apps/server/src/provider/Drivers/CodexHomeLayout.ts`.
 - `src/codex-account-probe.mjs`: the account and plan labels (`codexAccountLabel`), from
   `apps/server/src/provider/CodexProvider.ts`.
 - `src/model-service-tier.mjs`: Codex's service-tier choices and the configured tier (`codexServiceTierOptions`,
   `codexConfiguredServiceTier`), from `apps/server/src/provider/CodexProvider.ts`.
-- `src/codex-model-catalog.mjs`: the preferred default Codex models and a model's family (`PREFERRED_DEFAULT_CODEX_MODELS`,
-  `codexModelFamily`), from `packages/contracts/src/model.ts` and `packages/shared/src/model.ts`.
+- `src/codex-model-catalog.mjs`: the preferred default Codex models, a model's family and the reasoning levels' labels
+  (`PREFERRED_DEFAULT_CODEX_MODELS`, `codexModelFamily`, `codexReasoningEffortLabel`), from `packages/contracts/src/model.ts`,
+  `packages/shared/src/model.ts` and `apps/server/src/provider/CodexProvider.ts`.
 - `ui/src/codex-goal-command.js`, the whole file: the reading of a `/goal` message (`parseCodexGoalCommand`), from
   `packages/contracts/src/orchestrationV2.ts`.
 - `ui/src/codex-turn-options.js`: a goal's one-line description, a Codex error's code and a retry's attempt count
