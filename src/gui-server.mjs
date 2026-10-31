@@ -50,6 +50,7 @@ import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { localHomePath } from "./local-home-path.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
+import { plainTerminalText } from "./terminal-log-text.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { createNativeSourceControlExecutor, sourceControlEnvironmentKeys } from "./native-source-control.mjs";
 import { offlineE2eClaudeCapabilities, offlineE2eDiscoveryRun, offlineE2eHarnessRun, offlineE2eSourceControlExecutor } from "./offline-e2e-host.mjs";
@@ -348,7 +349,8 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
   const args=["app-server","--listen",`ws://127.0.0.1:${appPort}`,...auth.args];
   const logs=[];
   const pushLog=(chunk,stream)=>{
-    const line=boundDiagnosticText(redactSecretText(chunk,{environment:runtimeEnv}));
+    // The Diagnostics runtime log is a page, not a terminal: the app-server's colour and cursor codes are dropped first.
+    const line=boundDiagnosticText(redactSecretText(plainTerminalText(chunk),{environment:runtimeEnv}));
     logs.push({at:Date.now(),stream,text:line});
     if(logs.length>250) logs.splice(0,logs.length-250);
     if(env.TREBELL_GUI_DEBUG==="1") (stream==="stderr"?process.stderr:process.stdout).write(line);
