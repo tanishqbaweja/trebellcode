@@ -29,7 +29,7 @@ test("the login shell prints each name between its own markers, and a name a she
   assert.equal(command,"printf '%s\\n' '__TREBELL_ENV_PATH_START__'; printenv PATH || true; printf '%s\\n' '__TREBELL_ENV_PATH_END__'; "
     +"printf '%s\\n' '__TREBELL_ENV___MISE_DIFF_START__'; printenv __MISE_DIFF || true; printf '%s\\n' '__TREBELL_ENV___MISE_DIFF_END__'");
   assert.match(loginShellCommand(),/printenv PATH \|\| true.*printenv JAVA_HOME \|\| true.*printenv __MISE_DIFF \|\| true/);
-  for(const name of ["PATH; rm -rf ~","$(id)","path"])assert.throws(()=>loginShellCommand([name]),/Unsupported environment variable name/);
+  for(const name of ["PATH; rm -rf ~","$(id)","path"])assert.throws(()=>loginShellCommand([name]),/reads login shell variables by plain names/);
 });
 
 test("the values are read from between their markers whatever the profile prints, multiline and spaced ones whole, empty and missing ones left out",()=>{

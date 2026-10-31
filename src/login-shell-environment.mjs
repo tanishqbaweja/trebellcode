@@ -15,7 +15,7 @@ const startMarker=name=>`__TREBELL_ENV_${name}_START__`,endMarker=name=>`__TREBE
 // One printenv for each name between its markers: an unset name prints nothing, and `|| true` keeps the command's exit code 0.
 export function loginShellCommand(names=LOGIN_SHELL_NAMES){
   return names.map(name=>{
-    if(!/^[A-Z0-9_]+$/.test(name))throw new Error(`Unsupported environment variable name: ${name}`);
+    if(!/^[A-Z0-9_]+$/.test(name))throw new Error(`Trebell reads login shell variables by plain names (A-Z, 0-9 and _), not '${name}'.`);
     return `printf '%s\\n' '${startMarker(name)}'; printenv ${name} || true; printf '%s\\n' '${endMarker(name)}'`;
   }).join("; ");
 }
