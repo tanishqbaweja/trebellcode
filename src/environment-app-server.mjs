@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { hashedCodexAppServerToken } from "./codex-app-server-auth.mjs";
 import { remoteCommandWords, remoteEnvironmentCommand, remoteHomeGuard, remotePathExpression, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
+import { plainTerminalText } from "./terminal-log-text.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { isHarnessCredentialName, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 
@@ -80,7 +81,7 @@ export function remoteCodexArgs({listen,auth=[]}){
 
 function attachLogs(child,logs,{debug=false,environment=process.env}={}){
   const push=(chunk,stream)=>{
-    const text=boundDiagnosticText(redactSecretText(chunk,{environment}));
+    const text=boundDiagnosticText(redactSecretText(plainTerminalText(chunk),{environment}));
     logs.push({at:Date.now(),stream,text});
     if(logs.length>250)logs.splice(0,logs.length-250);
     if(debug)(stream==="stderr"?process.stderr:process.stdout).write(text);
