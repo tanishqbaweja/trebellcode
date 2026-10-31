@@ -72,24 +72,128 @@ shows them for that package:
 
 ## T3 Code
 
-Parts of Trebell Code were written from T3 Code's source:
+Parts of Trebell Code were written from T3 Code's source. Each part below names the Trebell file and what in it was written that
+way, then the T3 Code file it was written from (paths in T3 Code's repository at the revision below). The rest of each Trebell
+file is Trebell's own.
 
-- `src/document-text-extract.mjs`, the reader of attached documents' text: its Excel (.xlsx) and RTF readers, its limits and its
-  checks follow `apps/server/src/provider/documentTextWorker.ts`.
-- `src/muse-agent-session.mjs`: the tool rows, item statuses, approval choices and usage-limit reading follow
-  `packages/provider-muse/src/server/itemPresentation.ts`, `protocol.ts` and `usageLimits.ts`.
-- `src/opencode-agent-session.mjs`: the reading of OpenCode's file-read output follows
-  `packages/provider-opencode/src/server/toolItems.ts`.
-- `src/acp-agent-session.mjs`: Grok Build's approval choices follow `packages/provider-grok/src/server/acpSupport.ts`.
-- `src/agent-usage-limits.mjs`: the Grok Build and Claude Code usage readers follow
-  `packages/provider-grok/src/server/usageLimits.ts` and `apps/server/src/provider/claudeUsageLimits.ts`.
-- `src/claude-agent-session.mjs`: the usage merge, the task-list tools and the reasons it gives for a turn Claude Code ended
-  follow `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
-- `src/secret-redactor.mjs`: the secret patterns follow `packages/provider-acp/src/server/stderr.ts`.
-- `src/source-control-service.mjs`: the reading of pull request templates follows
-  `packages/source-control-github/src/server/gitHubChangeRequestTemplate.ts`.
-- `ui/src/reasoning-text.js`: the Markdown marks a collapsed thought's one-line preview leaves out follow
+The app's harness code:
+
+- `src/claude-agent-session.mjs`: the usage merge of a request's stream (`mergedUsage`, `promptTokens`), the task-list tools
+  (`claudeTaskList`, `readClaudeTaskStore`), "Allow for session" (`claudeSessionPermissionUpdates`), the usage-limit windows and
+  overage reading (`CLAUDE_USAGE_LIMIT_WINDOWS`, `describeClaudeUsageLimit`, `claudeRejectedLimit` and the reading of a
+  `rate_limit_event`) and the reasons it gives for a turn Claude Code ended (`terminalResultError`, `claudeResultFailure`), from
+  `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
+- `src/claude-capabilities.mjs` and `src/claude-managed-mcp.mjs`: the capability probe's options and its never-ending prompt
+  (`claudeCapabilitiesProbeOptions`, `probeClaudeCapabilities`) and the check for an administrator's `managed-mcp.json`
+  (`hasClaudeManagedMcpConfig`), from `apps/server/src/provider/ClaudeProvider.ts` and
+  `apps/server/src/provider/Drivers/ClaudeHome.ts`.
+- `src/acp-agent-session.mjs`: Grok Build's and Antigravity's approval choices (`acpApprovalOptions`) and the attachment types and
+  size limits of an Antigravity prompt (`antigravityPromptParts` and its `ANTIGRAVITY_*` sets and limits), from
+  `packages/provider-grok/src/server/acpSupport.ts`, `apps/server/src/provider/acp/AntigravityProtocol.ts` and
+  `apps/server/src/provider/acp/AntigravityAcpSupport.ts`.
+- `src/cursor-transport-failure.mjs`, the whole file: the reading of a Cursor reply that is only Cursor's lost-connection
+  diagnostic (`CursorTransportFailure`), from `packages/provider-cursor/src/server/transportFailure.ts`.
+- `src/acp-model-catalog.mjs`: the default pick among a Grok Build model's reasoning levels (`grokModelCatalog`), from
+  `packages/provider-grok/src/server/status.ts`.
+- `src/antigravity-auth.mjs`: the Google variables an Antigravity launch leaves out (`antigravityEnvironment`), from
+  `apps/server/src/provider/antigravityAuthSupport.ts`.
+- `src/runtime-environment.mjs`: the list of Grok Build variables a profile may pass on, from
+  `packages/provider-grok/src/server/usageLimits.ts`.
+- `src/agent-usage-limits.mjs`: the Grok Build, Claude Code and Cursor usage readers and their percentages
+  (`grokUsageResponseToLimits`, `claudeUsageResponseToLimits`, `cursorUsageResponseToLimits`), from
+  `packages/provider-grok/src/server/usageLimits.ts`, `apps/server/src/provider/claudeUsageLimits.ts`,
+  `packages/provider-cursor/src/server/usageLimits.ts` and `packages/provider-core/src/server/usageLimits.ts`.
+- `src/muse-agent-session.mjs`: the tool rows (`museToolUpdate`), item statuses (`museToolStatus`, `museWorkStatus`), to-do rows
+  (`musePlanEntries`), workflow agents' rows (`museWorkflowAgentUpdates`), which turn an event belongs to, the approval choices
+  (`museApprovalDecision`, `museApprovalChoices`, `museApprovalOptions`) and the usage-limit reset (`museUsageLimitResetAt`), from
+  `packages/provider-muse/src/server/itemPresentation.ts`, `protocol.ts`, `usageLimits.ts` and `adapter.ts`.
+- `src/muse-host.mjs`: the `muse serve` flags for each access level and the Windows form of the workspace path
+  (`museServeArgs`, `museVerbatimPath`, `museWorkspaceRoot`), from `packages/provider-muse/src/server/sdk.ts`.
+- `src/muse-maintenance.mjs` and `parseMuseVersion` in `src/agent-runtime-manager.mjs`: Muse Code's release channels, its version
+  form and their order (`MUSE_CHANNELS`, `museChannelRelease`, `compareMuseVersions`), the launcher check and the update switches,
+  from `packages/provider-muse/src/server/maintenance.ts`.
+- `src/muse-model-catalog.mjs`: a Muse model's name from a bare id, the fallback reasoning levels and the level a turn runs at
+  (`museModelName`, `resolveMuseReasoningEffort`), from `packages/provider-muse/src/server/modelCatalog.ts`.
+- `src/opencode-agent-session.mjs`: the reading of OpenCode's file-read output (`openCodeReadOutput`) and a session's and a
+  subagent's permission rules (`openCodePermissionRules`, `openCodeChildPermissionRules`), from
+  `packages/provider-opencode/src/server/toolItems.ts` and `adapter.ts`.
+- `src/opencode2-agent-session.mjs`: the reading and answering of OpenCode 2's forms (`openCode2FormQuestions`,
+  `openCode2FormAnswer`) and the stop of a resumed session's leftover requests, from
+  `packages/provider-opencode/src/server/v2/adapter.ts`.
+- `src/agent-runtime-manager.mjs`: Grok Build's signed-in reading (`parseGrokModelsAuth`) and OpenCode's connected-providers
+  message (`openCodeStatusMessage`), from `packages/provider-grok/src/server/status.ts` and
+  `packages/provider-opencode/src/server/status.ts`.
+- `src/harness-install-plan.mjs`: who installed a harness, from where its binary is: npm's global prefix, a Homebrew keg or cask,
+  mise, pnpm, Yarn and Vite+ (`npmGlobalPrefix`, `homebrewKeg`, `harnessInstallOwner`), from
+  `packages/provider-core/src/server/maintenanceResolver.ts`.
+- `src/codex-home-layout.mjs`, the whole file: a Codex profile's home and shadow home (`resolveCodexHomeLayout`,
+  `materializeCodexShadowHome`), from `apps/server/src/provider/Drivers/CodexHomeLayout.ts`.
+- `src/codex-account-probe.mjs`: the account and plan labels (`codexAccountLabel`), from
+  `apps/server/src/provider/CodexProvider.ts`.
+- `src/model-service-tier.mjs`: Codex's service-tier choices and the configured tier (`codexServiceTierOptions`,
+  `codexConfiguredServiceTier`), from `apps/server/src/provider/CodexProvider.ts`.
+- `src/codex-model-catalog.mjs`: the preferred default Codex models and a model's family (`PREFERRED_DEFAULT_CODEX_MODELS`,
+  `codexModelFamily`), from `packages/contracts/src/model.ts` and `packages/shared/src/model.ts`.
+- `ui/src/codex-goal-command.js`, the whole file: the reading of a `/goal` message (`parseCodexGoalCommand`), from
+  `packages/contracts/src/orchestrationV2.ts`.
+- `ui/src/codex-turn-options.js`: a goal's one-line description, a Codex error's code and a retry's attempt count
+  (`describeCodexGoal`, `codexErrorInfoCode`, `parseCodexRetryProgress`), from
+  `apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts`.
+- `src/agent-history-import.mjs`: the setup text a Codex session's title leaves out (`CODEX_TITLE_PREAMBLE`), from
+  `apps/server/src/project/AgentSessionScanner.ts`.
+- `src/thread-history-handoff.mjs`: the order in which earlier messages fill a handoff's budget (`selectThreadHistory`), from
+  `packages/provider-core/src/server/handoffBudget.ts`.
+- `ui/src/tool-activity.js`: the argument names a tool call's path, query, file pattern and folder are read from, and the order
+  of a search's label (`searchToolLabel`), from `packages/shared/src/toolActivity.ts`.
+- `ui/src/reasoning-text.js`: the Markdown marks a collapsed thought's one-line preview leaves out, from
   `packages/client-runtime/src/work-log/presentation.ts`.
+
+The app's other code:
+
+- `src/document-text-extract.mjs`, the reader of attached documents' text: its Excel (.xlsx) and RTF readers, its limits, its
+  checks and the headings it writes for sheets, slides, chapters and notebook cells, from
+  `apps/server/src/provider/documentTextWorker.ts`.
+- `src/document-text.mjs`: the reuse of a document's extracted text, the size limit and the wait after a failed extraction
+  (`ensureDocumentText`), from `apps/server/src/provider/DocumentText.ts`.
+- `src/secret-redactor.mjs` and `src/acp-client.mjs`: the secret and sign-in address patterns, and the tail of an agent's log
+  (`appendAcpStderrTail`, `sanitizeAcpStderrExcerpt`), from `packages/provider-acp/src/server/stderr.ts`.
+- `src/source-control-service.mjs`: the reading of pull request templates (`parseTemplateTreeEntries`, `readTemplateBlob`), from
+  `packages/source-control-github/src/server/gitHubChangeRequestTemplate.ts`.
+- `src/checkpoint-service.mjs`: the Git errors a checkpoint tries again after (`isTransientCheckpointGitError`), from
+  `apps/server/src/vcs/VcsProcess.ts`.
+- `src/login-shell-environment.mjs`: the reading of the login shell's variables between markers and the merge of PATH entries
+  (`loginShellCommand`, `parseLoginShellOutput`, `mergePathEntries`), from `packages/shared/src/shell.ts` and
+  `apps/desktop/src/shell/DesktopShellEnvironment.ts`.
+- `src/windows-command-shim.mjs`: the reading of the Windows command shim npm writes for a package's binary
+  (`windowsCommandShimTarget`), from `packages/shared/src/shell.ts`.
+- `desktop/firefox-import.mjs`: the reading of Firefox's `profiles.ini` (`parseFirefoxProfiles`), from
+  `apps/desktop/src/preview/BrowserImport/Sources.ts`.
+- `desktop/chromium-import.mjs`: the reading of a Chromium profile's cookie database (`readChromiumCookieDatabase`,
+  `decryptWindowsChromiumValue`, `webkitExpirySeconds`), from `apps/desktop/src/preview/BrowserImport/ChromiumCookies.ts`.
+
+Test cases and inputs:
+
+- `tests/claude-turn-errors.test.mjs`, `tests/claude-notices-compaction.test.mjs`, `tests/claude-forwarded-approvals.test.mjs`,
+  `tests/claude-task-plan.test.mjs`, `ui/e2e/claude-plan-context.spec.js` and `ui/e2e/claude-forwarded-approvals.spec.js`: the
+  Claude Code messages, errors, hook and compaction notices and approval prompts they replay, from
+  `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts`.
+- `tests/grok-zero-usage.test.mjs`: the Grok Build usage reports and their times, from
+  `apps/server/src/provider/GrokProvider.test.ts`.
+- `tests/agent-usage-limits.test.mjs`: the Cursor usage report's reset time, from
+  `packages/provider-cursor/src/server/usageLimits.test.ts`.
+- `tests/harness-install-plan.test.mjs`: the WinGet and Vite+ install paths and commands, from
+  `packages/provider-core/src/server/maintenanceResolver.test.ts`.
+- `tests/codex-history-own-sessions.test.mjs`: the Codex session setup text and titles, from
+  `apps/server/src/project/AgentSessionScanner.test.ts`.
+- `tests/codex-shadow-home-entries.test.mjs`: the Finder metadata cases, from
+  `apps/server/src/provider/Drivers/CodexHomeLayout.test.ts`.
+- `tests/opencode-read-output.test.mjs`: OpenCode's file-read outputs, from
+  `packages/provider-opencode/src/server/adapter.test.ts`.
+- `tests/muse-background.test.mjs`: the workflow item it starts from, from `packages/provider-muse/src/server/adapter.test.ts`;
+  `tests/muse-model-catalog.test.mjs` and `tests/muse-runtime.test.mjs`: the Muse model row they list, from
+  `packages/provider-muse/src/server/status.test.ts`.
+- `tests/source-control-service.test.mjs`: the case of a later commit on the base branch, from
+  `apps/server/src/git/GitManager.test.ts`.
 
 Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`)  
 License: MIT License, Copyright (c) 2026 T3 Tools Inc.
