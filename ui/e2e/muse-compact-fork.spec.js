@@ -344,7 +344,7 @@ test("a message that fails while Muse Code compacts the thread is no end of the 
     // A message sent meanwhile in the thread's own mode goes to Muse, and its turn fails on the account's quota: an error of the
     // thread, not of the compaction. Soft, so that the old code also shows what the compaction's row says.
     await send(page,"This one hits the quota");
-    await expect(page.locator(".tool-event.kind-error summary strong").filter({hasText:/^Muse Code usage limit reached/}).first()).toBeVisible({timeout:20_000});
+    await expect(page.locator(".tool-event.kind-error summary strong").filter({hasText:/^Muse Code is out of usage/}).first()).toBeVisible({timeout:20_000});
     await expect.soft(rows,"the compaction's row only").toHaveCount(1);
     await expect.soft(rows.locator("summary strong")).toHaveText(["Compacting context"]);
     await expect.soft(rows).toHaveClass([/status-running/]);

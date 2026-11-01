@@ -12,11 +12,14 @@ const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent
 
 const MAX_CODEX_SCAN_FILES=240;
 const MAX_CODEX_SCAN_BYTES=1024*1024;
-// Before a rollout counts toward the 240 read, its own session_meta (its first line) says whether Codex ran it for itself: read in
-// 8 KiB pieces, for at most 5,000 rollouts and 64 MiB in all per scan.
-const CODEX_META_READ_BYTES=8*1024;
-const MAX_CODEX_CLASSIFIED_FILES=5000;
-const MAX_CODEX_CLASSIFIED_BYTES=64*1024*1024;
+// Before a rollout counts toward the 240 read, its own session_meta (its first line) says whether Codex ran it for itself. Trebell's
+// own bounds: pieces of 16 KiB, which hold a short first line in one read and a long one (with the instructions Codex keeps in it)
+// in a few; at most ten rollouts looked at for each of the 240 read, room for a person whose sessions each spawned subagents,
+// reviews and compactions; and one piece's worth of reading for each of those in all, so one long first line spends what the
+// short ones leave.
+const CODEX_META_READ_BYTES=16*1024;
+const MAX_CODEX_CLASSIFIED_FILES=10*MAX_CODEX_SCAN_FILES;
+const MAX_CODEX_CLASSIFIED_BYTES=MAX_CODEX_CLASSIFIED_FILES*CODEX_META_READ_BYTES;
 const MAX_CLAUDE_SESSIONS=80;
 const MAX_IMPORTED_TURNS=120;
 const MAX_MESSAGE_CHARS=32_000;
@@ -98,9 +101,62 @@ function codexText(value){
 function codexSubagentSource(source){
   return Boolean(source)&&typeof source==="object"&&!Array.isArray(source)&&(Object.hasOwn(source,"subagent")||Object.hasOwn(source,"subAgent"));
 }
-// The setup text Codex records as user text ahead of a request: its context and instruction blocks,
-// the AGENTS.md heading and the IDE's request heading. A title is taken after it; the session itself is imported as it is.
-const CODEX_TITLE_PREAMBLE=/^(?:\s*(?:<(recommended_plugins|environment_context|user_instructions|INSTRUCTIONS|in-app-browser-context)(?:\s[^>]*)?>[\s\S]*?<\/\1>|# AGENTS\.md instructions\b[^\n]*|## My request for Codex:))+/;
+// Codex writes setup into a person's user text ahead of what they asked: context and instruction elements, a line naming the
+// AGENTS.md file it read, and the IDE extension's heading in front of the request. An imported session is titled by what was
+// asked, so that setup is passed over at the start of the text; the session's own records are imported as they are. The names are
+// the ones Codex's source writes (github.com/openai/codex at 67f0994b, codex-rs/): <environment_context> and <user_instructions>
+// (protocol/src/protocol.rs, ENVIRONMENT_CONTEXT_OPEN_TAG and USER_INSTRUCTIONS_OPEN_TAG), the AGENTS.md line and its <INSTRUCTIONS>
+// (core/src/context/user_instructions.rs), <recommended_plugins> (core/src/context/recommended_plugins_instructions.rs), and the
+// IDE heading (tui/src/ide_context/prompt.rs).
+const CODEX_SETUP_ELEMENTS=["environment_context","user_instructions","INSTRUCTIONS","recommended_plugins"];
+const AGENTS_FILE_LINE="# AGENTS.md instructions";
+const IDE_REQUEST_HEADING="## My request for Codex:";
+// White space as trim() sees it, line breaks included.
+const isBlankChar=char=>char!==undefined&&char.trim()==="";
+const isAsciiWordCode=code=>code===95||(code>=48&&code<=57)||(code>=65&&code<=90)||(code>=97&&code<=122);
+// Each reader looks at the text from `at` and gives the index just past the setup part of its kind that starts there, or -1.
+function setupElementEnd(text,at){
+  if(text[at]!=="<")return -1;
+  const name=CODEX_SETUP_ELEMENTS.find(candidate=>text.startsWith(candidate,at+1));
+  if(name===undefined)return -1;
+  // The start tag closes right after the name, or at the first ">" after white space and attributes.
+  let startTagEnd=at+1+name.length;
+  if(isBlankChar(text[startTagEnd]))startTagEnd=text.indexOf(">",startTagEnd);
+  if(startTagEnd<0||text[startTagEnd]!==">")return -1;
+  // The element ends with the first end tag of its name; without one it is not setup.
+  const endTag=`</${name}>`,endTagAt=text.indexOf(endTag,startTagEnd+1);
+  return endTagAt<0?-1:endTagAt+endTag.length;
+}
+function agentsFileLineEnd(text,at){
+  const after=at+AGENTS_FILE_LINE.length;
+  if(!text.startsWith(AGENTS_FILE_LINE,at)||isAsciiWordCode(text.charCodeAt(after)))return -1;
+  const lineBreak=text.indexOf("\n",after);
+  return lineBreak<0?text.length:lineBreak;
+}
+const ideRequestHeadingEnd=(text,at)=>text.startsWith(IDE_REQUEST_HEADING,at)?at+IDE_REQUEST_HEADING.length:-1;
+const SETUP_PART_READERS=[setupElementEnd,agentsFileLineEnd,ideRequestHeadingEnd];
+// The index just past the setup part of any kind that starts at `at`, or -1 when none starts there.
+function setupPartEnd(text,at){
+  for(const read of SETUP_PART_READERS){
+    const end=read(text,at);
+    if(end>=0)return end;
+  }
+  return -1;
+}
+// The first index from `from` on that is not white space.
+function skipBlank(text,from){
+  let at=from;
+  while(isBlankChar(text[at]))at++;
+  return at;
+}
+// What a person asked in a Codex user text: the text after the setup parts at its start, trimmed ("" when it is only setup).
+// Setup that follows anything else is part of the request.
+export function codexRequestAfterSetup(text){
+  const value=String(text??"");
+  let setupEnd=0,partEnd;
+  while((partEnd=setupPartEnd(value,skipBlank(value,setupEnd)))>=0)setupEnd=partEnd;
+  return value.slice(setupEnd).trim();
+}
 export function parseCodexHistoryPrefix(text,{path="",updatedAt=0,createdAt=0}={}){
   let sessionId=null,cwd=null,model=null,request=null,timestamp=null;
   for(const line of String(text||"").split(/\r?\n/)){
@@ -120,7 +176,7 @@ export function parseCodexHistoryPrefix(text,{path="",updatedAt=0,createdAt=0}={
       model=String(payload.model||model||"").trim()||model;
     }else if(record.type==="event_msg"&&payload.type==="user_message"&&!request){
       // A message that is only setup text names nothing; the next one may.
-      request=codexText(payload.message||payload.content).replace(CODEX_TITLE_PREAMBLE,"").trim()||null;
+      request=codexRequestAfterSetup(codexText(payload.message||payload.content))||null;
     }
     if(sessionId&&cwd&&request&&model)break;
   }

@@ -15,10 +15,11 @@ const DOCX="application/vnd.openxmlformats-officedocument.wordprocessingml.docum
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 // The lines Codex's message names the attached documents by, with each one's saved path and the file its text was extracted to.
 const LINES={
-  report:/\[Attached file "report\.docx" is saved at: ([^\n]+?report\.docx) \(text extracted to: ([^\n]+?report\.docx\.txt)\)\]/,
-  deck:/\[Attached file "deck\.pptx" is saved at: ([^\n]+?deck\.pptx) \(text extracted to: ([^\n]+?deck\.pptx\.txt)\)\]/,
+  report:/\[File attachment "report\.docx" at ([^\n]+?report\.docx), readable as text at ([^\n]+?report\.docx\.txt)\]/,
+  deck:/\[File attachment "deck\.pptx" at ([^\n]+?deck\.pptx), readable as text at ([^\n]+?deck\.pptx\.txt)\]/,
 };
-const TEXTS={report:/^# Quarterly Harbor Report\nCargo volume rose 12 percent/,deck:/^## Slide 1\n\nDeparture plan\nFerries leave at 06:40/};
+// The opening of each fixture's text as the document reader writes it (tests/document-text.test.mjs holds the whole of each).
+const TEXTS={report:/^# Quarterly Harbor Report\nCargo volume rose 12 percent/,deck:/^## Slide 1 of 2\nCrossing schedule\nFirst sailing 05:50\n/};
 
 test("a message with two documents whose text is not there yet extracts each one's text once as it goes, in the first of its two checks, and Codex's message names that text",async({page})=>{
   test.setTimeout(90_000);

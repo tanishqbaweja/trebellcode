@@ -9,13 +9,13 @@ import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
-// A Cursor turn that loses its backend connection, which Cursor streams as its reply's last message ("Error: ConnectError:
-// [unavailable] ...", with a stack line) before it ends the turn normally. The turn fails with that error. The dump is
+// A Cursor turn that loses its backend connection, which Cursor streams as its reply's last message (here its Connect deadline,
+// "Error: ConnectError: [deadline_exceeded] ...", with a stack line) before it ends the turn normally. The turn fails with that error. The dump is
 // the turn's error, not its answer: a turn keeps what Cursor wrote before it as its reply, whose failed pill says that error once the
 // card that said it is gone, and a turn whose only message is the dump keeps none and ends with a row of its own under the failed
 // pill, its error in it.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
-const COMMENTARY="Checking the notes file first.",FAILURE="Error: ConnectError: [unavailable] upstream connect error or disconnect/reset before headers";
+const COMMENTARY="Checking the notes file first.",FAILURE="Error: ConnectError: [deadline_exceeded] the operation timed out";
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 
 // Dark and light screenshots at 1280x800 and 900x800, switched with the header's toggle as a person switches them.
@@ -54,7 +54,7 @@ readline.createInterface({input:process.stdin}).on("line",line=>{
       update(id,{sessionUpdate:"tool_call",toolCallId:"read-notes",title:"Read notes.txt",kind:"read",status:"pending"});
       update(id,{sessionUpdate:"tool_call_update",toolCallId:"read-notes",status:"completed"});
     }
-    update(id,{sessionUpdate:"agent_message_chunk",content:{type:"text",text:${JSON.stringify(FAILURE)}+"\n    at Http2Stream.<anonymous> (index.js:1:1)\n"}});
+    update(id,{sessionUpdate:"agent_message_chunk",content:{type:"text",text:${JSON.stringify(FAILURE)}+"\n    at Timeout._onTimeout (node:internal/timers:594:17)\n"}});
     return reply({stopReason:"end_turn"});
   }
   reply({});
@@ -96,7 +96,7 @@ async function cursorTurn(page,scenario,run){
     await page.getByRole("button",{name:/Notes check/}).click();
     const composer=page.getByTestId("composer");await expect(composer).toBeEnabled();
     await composer.click();await page.keyboard.type("What do the notes say?",{delay:8});await page.getByTestId("send").click();
-    await expect(page.locator(".agent-block .tool-event.kind-error").filter({hasText:"ConnectError: [unavailable]"}),"the card shows the turn's error").toBeVisible({timeout:20_000});
+    await expect(page.locator(".agent-block .tool-event.kind-error").filter({hasText:"[deadline_exceeded] the operation timed out"}),"the card shows the turn's error").toBeVisible({timeout:20_000});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
     await expect.poll(()=>threadStore.get(seed.id).turns.at(-1).status,{message:"the turn failed"}).toBe("failed");
     expect(threadStore.get(seed.id).turns.at(-1).error?.message).toBe(FAILURE);

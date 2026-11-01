@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { configuredModelServiceTier, modelServiceTierKey, normalizeModelServiceTier, supportedModelServiceTiers } from "../src/model-service-tier.mjs";
+import { CODEX_STANDARD_SERVICE_TIER, codexConfiguredServiceTier, codexDefaultServiceTier, codexServiceTierForTurn, codexServiceTierOptions, codexServiceTierPickerValue, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, normalizeModelServiceTier, normalizeRuntimeModelServiceTier, supportedModelServiceTiers } from "../src/model-service-tier.mjs";
 
 test("OpenAI Native exposes Fast as a processing tier for GPT-6 Luna and Sol",()=>{
   assert.deepEqual(supportedModelServiceTiers("native","openai","gpt-6-luna"),["fast"]);
@@ -31,10 +31,9 @@ test("Claude Code offers Fast mode only for models its model list marks as suppo
   assert.deepEqual(supportedModelServiceTiers("claude","claude","haiku",{supportsFastMode:false}),[]);
 });
 
-test("Codex speed options are its catalog's service tiers by id, with Standard as Codex's default tier",async()=>{
-  const {CODEX_STANDARD_SERVICE_TIER,codexDefaultServiceTier,codexServiceTierForTurn,codexServiceTierOptions,codexServiceTierPickerValue,modelServiceTierLabel,normalizeRuntimeModelServiceTier}=await import("../src/model-service-tier.mjs");
-  const metadata={serviceTiers:[{id:"priority",name:"Fast",description:"Faster responses"},{id:"default",name:"Standard"},{id:"flex",name:"Flex"}],defaultServiceTier:"default"};
+test("Codex speed options are its catalog's service tiers by id, with Standard as Codex's default tier",()=>{
   assert.equal(CODEX_STANDARD_SERVICE_TIER,"default");
+  const metadata={serviceTiers:[{id:"priority",name:"Fast",description:"Faster responses"},{id:"default",name:"Standard"},{id:"flex",name:"Flex"}],defaultServiceTier:"default"};
   assert.deepEqual(codexServiceTierOptions(metadata),[{id:"priority",label:"Fast",description:"Faster responses"},{id:"flex",label:"Flex",description:""}]);
   assert.deepEqual(supportedModelServiceTiers("codex","openai","gpt-6-luna",metadata),["priority","flex"],"Codex's own ids, not Trebell's fast");
   assert.deepEqual(codexServiceTierOptions({additionalSpeedTiers:["fast"]}),[{id:"fast",label:"Fast",description:""}],"the older additionalSpeedTiers list");
@@ -57,4 +56,31 @@ test("Codex speed options are its catalog's service tiers by id, with Standard a
   assert.equal(modelServiceTierLabel("native","fast"),"Fast");
   const key=modelServiceTierKey("codex","openai","gpt-6-luna");
   assert.equal(configuredModelServiceTier({modelServiceTiers:{[key]:"priority"}},"codex","openai","gpt-6-luna"),"priority");
+});
+
+test("a Codex model's speed options come from serviceTiers alone when it lists any, else from the older additionalSpeedTiers",()=>{
+  const option=(id,label,description="")=>({id,label,description});
+  assert.deepEqual(codexServiceTierOptions({serviceTiers:[],additionalSpeedTiers:["fast","flex"]}),[option("fast","Fast"),option("flex","flex")],"an empty serviceTiers falls back to the older ids, and only fast has a display name");
+  assert.deepEqual(codexServiceTierOptions({serviceTiers:[{id:"priority",name:"Fast"}],additionalSpeedTiers:["fast","flex"]}),[option("priority","Fast")],"the newer list wins");
+  assert.deepEqual(codexServiceTierOptions({serviceTiers:[{id:"default",name:"Standard"}],additionalSpeedTiers:["fast"]}),[],"a non-empty serviceTiers is used alone, even with nothing but Standard");
+  // Bare ids, trimmed and lower-cased; entries that name no tier are skipped.
+  assert.deepEqual(codexServiceTierOptions({serviceTiers:[" Priority ",null,5,true,{name:"No id"},{id:"has space",name:"Bad"},["flex"],"flex"]}),[option("priority","priority"),option("flex","flex")]);
+  // A tier listed twice keeps its first label and description.
+  assert.deepEqual(codexServiceTierOptions({serviceTiers:[{id:"priority",name:"Fast",description:"First"},{id:"PRIORITY",name:"Again",description:"Second"}]}),[option("priority","Fast","First")]);
+  assert.deepEqual(codexServiceTierOptions({serviceTiers:[{id:"flex",name:"",description:null}]}),[option("flex","flex")],"an empty name shows the id");
+  for(const row of [undefined,null,{},"fast",{serviceTiers:"priority"},{additionalSpeedTiers:"fast"}])assert.deepEqual(codexServiceTierOptions(row),[],JSON.stringify(row)??"undefined");
+});
+
+test("the tier a Codex config names is read without case or spaces, Standard is every model's, and fast answers the first listed of priority and fast",()=>{
+  assert.equal(codexConfiguredServiceTier({serviceTiers:[{id:"priority",name:"Fast"}]}," FAST "),"priority");
+  assert.equal(codexConfiguredServiceTier({serviceTiers:[{id:"priority",name:"Fast"}]},"Priority"),"priority");
+  assert.equal(codexConfiguredServiceTier({},"default"),"default","Standard needs no listing");
+  assert.equal(codexConfiguredServiceTier(null,"default"),"default");
+  assert.equal(codexConfiguredServiceTier({serviceTiers:["priority","fast"]},"fast"),"priority");
+  assert.equal(codexConfiguredServiceTier({serviceTiers:["fast","priority"]},"fast"),"fast");
+  assert.equal(codexConfiguredServiceTier({serviceTiers:["fast","priority"]},"priority"),"priority","priority names only priority");
+  assert.equal(codexConfiguredServiceTier({additionalSpeedTiers:["flex"]},"flex"),"flex");
+  assert.equal(codexConfiguredServiceTier({additionalSpeedTiers:["flex"]},"fast"),null);
+  assert.equal(codexConfiguredServiceTier({serviceTiers:[{id:"priority",name:"Fast"}]},"Fast!"),null);
+  assert.equal(codexConfiguredServiceTier({serviceTiers:[{id:"priority",name:"Fast"}]}),null,"a config with no tier names none");
 });

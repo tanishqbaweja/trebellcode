@@ -257,8 +257,8 @@ test("a harness's own retry is one running row per turn, not a failed step, and 
   const row=retryActivityRow(native,{turnId:"t1",threadId:"th",raw:{turnId:"t1"}});
   assert.deepEqual(row,{id:"retry-t1",kind:"retry",title:"Retrying: Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s.",status:"running",output:"Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s.",raw:{turnId:"t1"},turnId:"t1"});
   assert.equal(toolEventFailed(row),false);
-  const codex=retryActivityRow(codexErrorNotice({willRetry:true,error:{message:"Reconnecting... 2/5"}}),{turnId:7});
-  assert.equal(codex.title,"Retrying (2/5): Reconnecting... 2/5");assert.equal(codex.turnId,"7");assert.equal(codex.id,"retry-7");
+  const codex=retryActivityRow(codexErrorNotice({willRetry:true,error:{message:"Reconnecting... 1/5"}}),{turnId:7});
+  assert.equal(codex.title,"Retrying (1/5): Reconnecting... 1/5");assert.equal(codex.turnId,"7");assert.equal(codex.id,"retry-7");
   // A notice with no turn is the thread's.
   assert.equal(retryRowId(null,"th"),"retry-th");assert.equal(retryActivityRow({},{threadId:"th"}).title,"Retrying");
   const other={...row,id:"retry-t0",turnId:"t0"},step={id:"c",kind:"commandExecution",status:"running",turnId:"t1"};

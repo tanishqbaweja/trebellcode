@@ -3,23 +3,23 @@ import assert from "node:assert/strict";
 import { lstat, mkdtemp, mkdir, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { prepareCodexHome, resolveCodexHomeLayout } from "../src/codex-home-layout.mjs";
+import { planCodexHomes, prepareCodexHome } from "../src/codex-home-layout.mjs";
 
 test("Codex direct home preserves continuation identity",()=>{
-  const layout=resolveCodexHomeLayout({homePath:"/tmp/shared-codex"});
+  const layout=planCodexHomes({homePath:"/tmp/shared-codex"});
   assert.equal(layout.mode,"direct");assert.equal(layout.sharedHomePath,resolve("/tmp/shared-codex"));assert.equal(layout.continuationKey,`codex:home:${resolve("/tmp/shared-codex")}`);
 });
 
 test("Codex shadow home shares state but keeps auth private",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-codex-shadow-")),shared=join(root,"shared"),shadow=join(root,"shadow");
   try{
-    await mkdir(shared,{recursive:true});await mkdir(shadow,{recursive:true});await writeFile(join(shared,"config.toml"),'model="shared"\n');await writeFile(join(shadow,"auth.json"),'{"shadow":true}\n');await writeFile(join(shadow,"models_cache.json"),"private-cache\n");
+    await mkdir(shared,{recursive:true});await mkdir(shadow,{recursive:true});await writeFile(join(shared,"config.toml"),'model="shared"\n');await writeFile(join(shadow,"auth.json"),'{"signed_in_as":"work profile"}\n');await writeFile(join(shadow,"models_cache.json"),"private-cache\n");
     const layout=await prepareCodexHome({homePath:shared,shadowHomePath:shadow});assert.equal(layout.mode,"authOverlay");assert.equal(layout.effectiveHomePath,resolve(shadow));
     const configPath=join(shadow,"config.toml"),sharedConfig=join(shared,"config.toml");
     if((await lstat(configPath)).isSymbolicLink())assert.equal(resolve(dirname(configPath),await readlink(configPath)),resolve(sharedConfig));
     else{const [a,b]=await Promise.all([lstat(configPath,{bigint:true}),lstat(sharedConfig,{bigint:true})]);assert.equal(a.ino,b.ino)}
     const sessionsPath=join(shadow,"sessions");assert.equal(resolve(dirname(sessionsPath),await readlink(sessionsPath)),resolve(join(shared,"sessions")));
-    assert.equal(await readFile(join(shadow,"auth.json"),"utf8"),'{"shadow":true}\n');
+    assert.equal(await readFile(join(shadow,"auth.json"),"utf8"),'{"signed_in_as":"work profile"}\n');
     assert.equal(await readFile(join(shadow,"models_cache.json"),"utf8"),"private-cache\n");
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
@@ -41,7 +41,7 @@ test("Codex shadow home refuses shared/private path conflicts",async()=>{
 // Unix systems, any user /etc/passwd names), and a user Trebell cannot find is refused with a message before any folder is made.
 const ownName=(()=>{try{return userInfo().username}catch{return ""}})();
 test("a local Codex home under the person's own user name is in their home folder, as one under ~ is",{skip:!/^[A-Za-z0-9._][A-Za-z0-9._-]*$/.test(ownName)&&"this user name is not one a shell spells after ~"},()=>{
-  const layout=resolveCodexHomeLayout({homePath:`~${ownName}/.codex-shared`,shadowHomePath:`~${ownName}/.codex-work`});
+  const layout=planCodexHomes({homePath:`~${ownName}/.codex-shared`,shadowHomePath:`~${ownName}/.codex-work`});
   assert.equal(layout.sharedHomePath,join(homedir(),".codex-shared"));
   assert.equal(layout.effectiveHomePath,join(homedir(),".codex-work"));
   assert.equal(layout.continuationKey,`codex:home:${join(homedir(),".codex-shared")}`);
@@ -60,7 +60,7 @@ test("a local Codex home under a user Trebell cannot find is refused with a mess
     assert.deepEqual(await readdir(work),[],"no folder is made: neither one named ~trebell-no-such-user-7f3a where Trebell runs nor the shared home");
     assert.equal(shadowed?.message,message);
     assert.equal(direct?.message,message);
-    assert.equal(resolveCodexHomeLayout({homePath:path}).error,message,"the layout says why it cannot be used");
+    assert.equal(planCodexHomes({homePath:path}).error,message,"the layout says why it cannot be used");
   }finally{process.chdir(previous);await rm(work,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
 });
 

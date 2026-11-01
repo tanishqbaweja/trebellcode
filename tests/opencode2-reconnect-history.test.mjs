@@ -69,6 +69,24 @@ test("an OpenCode 2 turn whose run failed while its stream was lost fails with O
   }finally{await session.close()}
 });
 
+test("an OpenCode 2 turn whose run failed while its stream was lost, with no error kept in OpenCode's history, fails saying so in Trebell's words",{timeout:30_000},async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  const fake=fakeOpenCode2Client({overrides:{
+    "session.prompt":async()=>({id:"msg_user_2"}),"session.active":async()=>({}),
+    // The run's end says it failed, and its one step kept no error.
+    "message.list":async()=>({data:[{id:"msg_idle_2",type:"idle",outcome:"failed"},text("msg_a2","Looking at the parser"),{id:"msg_user_2",type:"user",text:"Fix the parser"},...EARLIER]}),
+  }});
+  const {session}=await startedSession(t,fake);
+  try{
+    const turn=running(session);
+    await eventually(()=>fake.called("session.prompt").length===1);await settle();
+    fake.breakStreams();
+    await eventually(()=>turn.value!=="running");
+    assert.equal(turn.value,"OpenCode says this turn failed while Trebell was reconnecting, and it kept no reason for the failure.");
+    assert.notEqual(turn.error.usageLimit,true,"no usage limit is read into it");
+  }finally{await session.close()}
+});
+
 test("an OpenCode 2 turn whose run ended while its stream was lost ends with the rest of its own reply, shown once",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
   const fake=fakeOpenCode2Client({overrides:{

@@ -11,19 +11,25 @@ const execFileAsync=promisify(execFile);
 // off ("Disable this message with …"). A failure says git's reason without them; one that is all hints keeps them. A color git was
 // set to give its hints (color.advice=always) is taken off first, so they are known as hints too.
 // Some refusals the Git panel meets often give their reason only in those hints, or only as commands to type, so these say it in
-// plain words instead: a Pull from a branch that has diverged or has no upstream, and anything from no branch at all. A Push the
-// remote refused for its newer commits says it before git's other lines, which name the branch and the remote.
+// plain words instead: a Pull from a branch that has diverged or has no upstream, and anything from no branch at all.
 const PLAIN_REASONS=[
-  {test:/^ ! \[rejected\] .*\((?:fetch first|non-fast-forward)\)$/m,reason:"The remote has commits this branch does not have. Pull them first, then push again.",before:true},
   {test:/^fatal: Not possible to fast-forward, aborting\.$/m,reason:"This branch and its upstream have diverged, each with commits the other does not have."},
   {test:/^There is no tracking information for the current branch\.$/m,reason:"This branch has no upstream yet. Push it first to create one."},
   {test:/^(?:fatal: )?You are not currently on a branch\.$/m,reason:"Not on a branch: switch to a branch first."},
 ];
+// A Push that the branch on the remote is ahead of. git push reports each ref on a line of its own (git-push(1), OUTPUT):
+// " <flag> <summary> <from> -> <to> (<reason>)". A ref git did not send at all has the flag "!" and the summary "[rejected]", and two
+// of git's reasons for that mean the branch on the remote holds commits the pushed one lacks: "non-fast-forward" (this branch is
+// behind it or has diverged from it) and "fetch first" (commits this repository has not even fetched). git says so only in its
+// hints, so the Git panel says it in plain words, ahead of git's own lines, which name the branch and the remote.
+const REMOTE_AHEAD_REASONS=new Set(["non-fast-forward","fetch first"]);
+const REMOTE_AHEAD="The branch on the remote holds commits that are not in this branch yet. Bring them in first, then push.";
+const remoteAheadLine=line=>line.startsWith(" ! [rejected] ")&&line.endsWith(")")&&REMOTE_AHEAD_REASONS.has(line.slice(line.lastIndexOf("(")+1,-1));
 export function gitReason(text){
-  const all=String(text??"").replace(/\x1b\[[0-9;]*[A-Za-z]/g,"").replace(/\r\n?/g,"\n").trim();
-  const reason=all.split("\n").filter(line=>!line.startsWith("hint:")).join("\n").trim()||all;
-  const plain=PLAIN_REASONS.find(item=>item.test.test(all));
-  return plain?(plain.before?plain.reason+"\n"+reason:plain.reason):reason;
+  const all=String(text??"").replace(/\x1b\[[0-9;]*[A-Za-z]/g,"").replace(/\r\n?/g,"\n").trim(),lines=all.split("\n");
+  const reason=lines.filter(line=>!line.startsWith("hint:")).join("\n").trim()||all;
+  if(lines.some(remoteAheadLine))return REMOTE_AHEAD+"\n"+reason;
+  return PLAIN_REASONS.find(item=>item.test.test(all))?.reason??reason;
 }
 // git writes its messages in English, the C locale's, whatever locale the person's own is: the Git panel is in English, and
 // gitReason reads git's English, "hint:" among it (git translates that too). Only the messages change: an LC_ALL, which would

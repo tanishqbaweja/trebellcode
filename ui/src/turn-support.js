@@ -6,7 +6,7 @@
 // a desktop SnapShot attached. Nothing on the first screen or in opening and reading a thread needs it, so App loads this module at
 // idle after the first paint (B11). Each function takes what it reads of App's render as deps, as App's own functions read it.
 import { api } from "./api.js";
-import { codexGoalsMissing, describeCodexGoal } from "./codex-turn-options.js";
+import { codexGoalLine, codexGoalsMissing } from "./codex-turn-options.js";
 import { parseCodexGoalCommand } from "./codex-goal-command.js";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
@@ -27,7 +27,7 @@ import { nativeTurnContextOptions } from "../../src/native-configuration.mjs";
 import { harnessThreadOptions, harnessTurnOptions } from "./harness-turn-options.js";
 import { queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion } from "./native-queue.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
-import { CODEX_GOAL_START } from "../../src/codex-goal-start.mjs";
+import { codexGoalFirstMessage } from "../../src/codex-goal-start.mjs";
 
 export { repositoryContextEntries } from "./context-provenance.js";
 
@@ -219,9 +219,6 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
   }
 }
 
-// The first turn of a Codex goal asks for the work (codex-goal-start.mjs): Codex gets CODEX_GOAL_START before the objective, while the
-// person's message, its checkpoint and the Goal panel keep the objective as written.
-export { CODEX_GOAL_START };
 // The running turn is a compaction of the thread's own (a run whose message is /compact), which a goal command never stops: the
 // one this window asked for (compactionWaiters), or a turn that shows nothing but a compaction (its rows in
 // events are compactions alone, as turn-activity.js storeCompactionTurnIds reads a stored one, and messages hold no message, reply or
@@ -254,7 +251,9 @@ async function runCodexGoalCommand(deps,command){
   try{
     if(command?.type==="set"){
       if(running&&threadId)await stopForGoal(deps,threadId,{waitForEnd:true,compacting:compactionTurn(deps,goal?.status)});
-      await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"},inputText:CODEX_GOAL_START+command.objective});
+      // Codex gets the objective behind an instruction to begin (codex-goal-start.mjs); the message, its checkpoint and the goal
+      // keep the objective as typed.
+      await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"},inputText:codexGoalFirstMessage(command.objective)});
       return;
     }
     if(!threadId||!rpc){note("This thread has no goal.");return}
@@ -269,7 +268,7 @@ async function runCodexGoalCommand(deps,command){
       await startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true});
       return;
     }
-    openRightPanel("goal");note(describeCodexGoal(current));
+    openRightPanel("goal");note(codexGoalLine(current));
   }catch(error){
     // A Stop before the goal's first turn started keeps the draft with no note, as a send does (dispatchSend). A request Codex has not
     // answered may still go through, and a new goal whose first turn did not start stays set (paused): each is said as it is.

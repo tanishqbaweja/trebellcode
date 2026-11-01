@@ -1,3 +1,5 @@
+import { attachmentLine } from "./attachment-line.mjs";
+import { fileUriPath } from "./file-uri.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
 
 // The files a message carries, as the relay hands them to a harness's session (agent-relay acpPrompt).
@@ -7,7 +9,7 @@ import { SessionRefusalError } from "./session-refusal.mjs";
 export const PROMPT_IMAGE_PATH=Symbol.for("trebell.prompt.image-path");
 export const PROMPT_AUDIO_PATH=Symbol.for("trebell.prompt.audio-path");
 // A document's link keeps the file its text was extracted to (document-text.mjs), which each harness's prompt names after the
-// document's path: "(text extracted to: <file>)".
+// document's path (attachment-line.mjs).
 export const PROMPT_TEXT_PATH=Symbol.for("trebell.prompt.text-path");
 function withPath(part,key,path){
   if(part&&typeof part==="object"&&path)Object.defineProperty(part,key,{value:String(path),enumerable:false,configurable:true});
@@ -16,7 +18,14 @@ function withPath(part,key,path){
 export const withPromptImagePath=(part,path)=>withPath(part,PROMPT_IMAGE_PATH,path);
 export const withPromptAudioPath=(part,path)=>withPath(part,PROMPT_AUDIO_PATH,path);
 export const withPromptTextPath=(part,path)=>withPath(part,PROMPT_TEXT_PATH,path);
-export const textExtractedTo=part=>part?.[PROMPT_TEXT_PATH]?` (text extracted to: ${part[PROMPT_TEXT_PATH]})`:"";
+// The line Claude Code and Muse Code get for a linked file: Trebell's attachment line, as every other harness gets it. It names the
+// file by the link's own name, else by the name the composer shows, and gives the path the file: URI holds (any other URI as it
+// is), with the file holding a document's text when the link keeps one.
+export function linkedFileLine(part){
+  const address=String(part?.uri??""),path=fileUriPath(address)??address,ownName=part?.name;
+  const shownAs=typeof ownName==="string"&&ownName.trim()!==""?ownName:attachmentName(path);
+  return attachmentLine("file",shownAs,path,part?.[PROMPT_TEXT_PATH]);
+}
 
 // The name a person attached a file under: Trebell saves uploads and pastes as <time>-<id>-<name> (gui-server), and the composer
 // shows them without that prefix (App.jsx attachmentDisplayName).

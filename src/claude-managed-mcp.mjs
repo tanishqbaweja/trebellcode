@@ -1,16 +1,28 @@
-import { access } from "node:fs/promises";
+import { stat } from "node:fs/promises";
+import { posix, win32 } from "node:path";
 
-// An administrator's managed-mcp.json, where Claude Code reads it (its managed settings folder). Next to that file Claude Code
-// loads only the managed MCP servers and exits at startup on --strict-mcp-config, so a run
-// that wants no MCP servers of its own (the capability probe, Git text) leaves the flag out there.
-export function claudeManagedMcpPath(platform=process.platform){
-  if(platform==="darwin")return "/Library/Application Support/ClaudeCode/managed-mcp.json";
-  if(platform==="win32")return "C:\\Program Files\\ClaudeCode\\managed-mcp.json";
-  return "/etc/claude-code/managed-mcp.json";
+// Claude Code reads the settings an administrator manages for the whole machine from one folder per platform, and an
+// administrator's managed-mcp.json from that same folder. While that file is there Claude Code starts only the servers it lists
+// and stops at startup when handed --strict-mcp-config, so a run that wants no MCP server of its own (the capability probe, Git
+// text) leaves that flag out there. Each entry: the platform's path rules, then the folder.
+const MANAGED_SETTINGS_FOLDERS=new Map([
+  ["darwin",[posix,"/Library/Application Support/ClaudeCode"]],
+  ["win32",[win32,"C:\\Program Files\\ClaudeCode"]],
+]);
+// Linux, WSL and any platform not named above.
+const UNIX_MANAGED_SETTINGS=[posix,"/etc/claude-code"];
+
+export function adminMcpFilePath(platform=process.platform){
+  const [paths,folder]=MANAGED_SETTINGS_FOLDERS.get(platform)??UNIX_MANAGED_SETTINGS;
+  return paths.join(folder,"managed-mcp.json");
 }
 
-const fileExists=path=>access(path).then(()=>true,()=>false);
-// exists(path) says whether the file is there (tests pass their own); a check that fails counts as no file.
-export async function hasClaudeManagedMcpConfig({platform=process.platform,exists=fileExists}={}){
-  try{return Boolean(await exists(claudeManagedMcpPath(platform)))}catch{return false}
+// Whether something is at path on this machine, through links; a look that fails counts as nothing there.
+const somethingAt=path=>stat(path).then(()=>true,()=>false);
+
+// Whether the administrator's file is there. exists(path) may answer in place of the look (tests pass their own); whatever it
+// answers counts as yes or no, and one that throws or rejects counts as no, so this never fails.
+export function adminMcpFilePresent({platform=process.platform,exists=somethingAt}={}){
+  const path=adminMcpFilePath(platform);
+  return Promise.resolve().then(()=>exists(path)).then(Boolean,()=>false);
 }

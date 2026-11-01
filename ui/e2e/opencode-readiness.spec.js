@@ -45,7 +45,7 @@ test("Settings shows OpenCode connected after a provider sign-in and Refresh, no
     const said=row.locator("button").first().locator("small"),action=row.locator("button").first().locator("em");
     const refresh=async()=>{const asked=listings;await page.locator(".agent-runtime-settings").getByRole("button",{name:"Refresh",exact:true}).click();await expect.poll(()=>listings).toBeGreaterThan(asked)};
     // No provider connected yet: OpenCode runs, and Settings offers its sign-in.
-    await expect(said).toHaveText("OpenCode runs, but no upstream provider is connected through it.");
+    await expect(said).toHaveText("No provider is connected to OpenCode yet. Add one with opencode auth login, then press Refresh.");
     await expect(action).toHaveText("Needs setup");await expect(row.getByRole("button",{name:"Sign in",exact:true})).toBeVisible();
     // The person connects a provider with OpenCode's own sign-in, then presses Refresh: Settings reads OpenCode again.
     opencode.answer=catalog();
@@ -55,7 +55,7 @@ test("Settings shows OpenCode connected after a provider sign-in and Refresh, no
     expect(opencode.reads).toBeGreaterThan(reads);
     // OpenCode has the provider but lists no models for it: not ready over an empty model list, and the row says why.
     opencode.answer=catalog({models:[]});await refresh();
-    await expect(said).toHaveText("1 upstream provider is connected through OpenCode, but it lists no models yet. Press Refresh to check again.");
+    await expect(said).toHaveText("OpenCode is connected to 1 provider but lists no models yet. Press Refresh to look again.");
     await expect(action).toHaveText("Needs setup");
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);await row.scrollIntoViewIfNeeded();await expect(row).toBeInViewport({ratio:1});
@@ -64,7 +64,7 @@ test("Settings shows OpenCode connected after a provider sign-in and Refresh, no
     await switchMode(page,"dark");
     // The profile runs on a server of its own, which asks for a password: Trebell sends none to an OpenCode 1.x server it did not start.
     instance.serverUrl="http://127.0.0.1:4010";opencode.answer=new Error("Unauthorized");await refresh();
-    await expect(said).toHaveText("The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or leave it empty so Trebell Code starts OpenCode itself.");
+    await expect(said).toHaveText("The OpenCode server at this profile's URL wants a password, and Trebell Code gives one only to an OpenCode 1.x server it starts itself. Check the URL, or leave it empty so Trebell Code starts OpenCode for you.");
     await expect(action).toHaveText("Not ready");
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);await row.scrollIntoViewIfNeeded();await expect(row).toBeInViewport({ratio:1});

@@ -627,6 +627,7 @@ test("Escape on an item of a row's menu closes the menu with the keyboard back o
       // Tab from the row to its menu button, Enter opens the menu, Tab goes down to the item, and Escape closes the menu.
       await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(button).toBeFocused();
       await page.keyboard.press("Enter");await expect(menu).toHaveAttribute("open","");
+      await expect(row.getByRole("button",{name:"Copy ID",exact:true})).toBeVisible();
       const target=row.getByRole("button",{name:item,exact:true});
       for(let step=0;step<14&&!await target.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
       await expect(target).toBeFocused();

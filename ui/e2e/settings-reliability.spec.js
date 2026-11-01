@@ -353,7 +353,7 @@ test("SnapShots switches flipped while a save is on its way all stick, with the 
   });
   await openSettings(page,request,"SnapShots Saves Workspace");
   await page.getByRole("button",{name:/Desktop/}).click();
-  const card=page.locator(".snapshot-settings"),enable=card.getByLabel("Enable global SnapShot shortcut"),flash=card.getByLabel("Flash captured window"),animate=card.getByLabel("Animate capture feedback");
+  const card=page.locator(".snapshot-settings"),enable=card.getByLabel("Enable global SnapShot shortcut"),flash=card.getByLabel("Light up the window on capture"),animate=card.getByLabel("Animate capture feedback");
   await expect(enable).not.toBeChecked();await expect(flash).not.toBeChecked();await expect(animate).toBeChecked();
   const hold=()=>page.evaluate(()=>{window.__snapshotsBusy=new Promise(resolve=>{window.__snapshotsFree=resolve})});
   const free=()=>page.evaluate(()=>window.__snapshotsFree());
@@ -464,7 +464,7 @@ test("a double click or Enter held on Capture now takes one SnapShot, and a pres
   // The line of the card's other actions stays through a capture: a save that failed is still not saved.
   const reserved="Shortcut CommandOrControl+Shift+S is already reserved by another application.";
   await page.evaluate(reason=>{window.__configureFails=reason},reserved);
-  await card.getByLabel("Flash captured window").click();
+  await card.getByLabel("Light up the window on capture").click();
   await expect(failed).toHaveText(reserved);
   await page.evaluate(()=>{window.__configureFails=null});
   capturesBefore=await captures();
@@ -492,7 +492,7 @@ test("the scoped After inactive days field keeps every digit typed and saves the
     let typedFrom=0;const daysSaved=()=>saves.slice(typedFrom).map(body=>body.patch?.worktreeCleanup?.rules?.worktreeAfterDays);
     await page.getByRole("button",{name:/Workspace/}).click();
     const card=page.getByTestId("scoped-settings-card");
-    await card.getByLabel("Automatic worktree cleanup").selectOption("custom");
+    await card.getByLabel("Remove worktrees automatically").selectOption("custom");
     const days=card.getByLabel("After inactive days");
     await expect(days).toHaveValue("30");
     const typeDays=async(text,delay)=>{await days.click();await page.keyboard.press("Control+A");await page.keyboard.press("Delete");await page.keyboard.type(text,{delay})};
@@ -527,7 +527,7 @@ test("the scoped After inactive days field keeps every digit typed and saves the
     expect(daysSaved()).toEqual([45,45]);
     // A project's own rule is typed the same way, faster.
     await page.getByRole("combobox",{name:"Project scope"}).selectOption({label:"Scoped Days Workspace"});
-    await card.getByLabel("Automatic worktree cleanup").selectOption("custom");
+    await card.getByLabel("Remove worktrees automatically").selectOption("custom");
     await expect(days).toHaveValue("45");
     const project=(await (await request.get("/api/projects")).json()).projects.find(item=>item.name==="Scoped Days Workspace");
     typedFrom=saves.length;await typeDays("120",60);
@@ -959,7 +959,7 @@ test("failed saves from inline settings controls stay in the alert without unhan
   await expect(page.getByRole("button",{name:"dark",exact:true})).toHaveClass(/active/);
   // A harness caller still learns about the failure: the custom model editor stays open with its draft.
   await page.getByRole("button",{name:/Agents & models/}).click();
-  await page.getByRole("button",{name:"Add custom model",exact:true}).click();
+  await page.getByRole("button",{name:"Add a model by ID",exact:true}).click();
   await page.getByLabel("Model ID").fill("fixture-model-x");
   await page.getByRole("button",{name:"Save custom model",exact:true}).click();
   await expect(alert).toContainText("Deliberate inline save failure");
@@ -1035,7 +1035,7 @@ test("the custom model form says what is wrong with a draft by the form",async({
     await page.setViewportSize({width:1280,height:800});
     await page.getByRole("button",{name:/Agents & models/}).click();
     const card=page.locator('[data-setting-target="agents-models"]'),harness=page.locator('[data-setting-target="agents-harness"]');
-    await card.getByRole("button",{name:"Add custom model",exact:true}).click();
+    await card.getByRole("button",{name:"Add a model by ID",exact:true}).click();
     await typeInto(page,card.getByLabel("Model ID"),"gpt-lane-d-mini");
     await typeInto(page,card.getByLabel("Input / 1M"),"-2");
     const save=card.getByRole("button",{name:"Save custom model",exact:true});
@@ -1090,7 +1090,7 @@ async function openCodeSettings(page){
 test("the custom model form says by the form that an OpenCode model needs provider/model",async({page})=>{
   const fixture=await openCodeSettings(page);
   const card=page.locator('[data-setting-target="agents-models"]'),harness=page.locator('[data-setting-target="agents-harness"]');
-  await card.getByRole("button",{name:"Add custom model",exact:true}).click();
+  await card.getByRole("button",{name:"Add a model by ID",exact:true}).click();
   await typeInto(page,card.getByLabel("Model ID"),"lane-model");
   const save=card.getByRole("button",{name:"Save custom model",exact:true});
   await wheelUntilShown(page,save);
@@ -1113,7 +1113,7 @@ test("an OpenCode custom model's refusal is scrolled into view with a strip of r
   const problem=card.getByRole("alert").filter({hasText:"OpenCode custom models must use provider/model format."});
   for(const [mode,width,keys] of [["dark",1280,false],["light",1280,true],["dark",900,true],["light",900,false]]){
     await page.setViewportSize({width,height:800});await switchMode(page,mode);
-    await card.getByRole("button",{name:"Add custom model",exact:true}).click();
+    await card.getByRole("button",{name:"Add a model by ID",exact:true}).click();
     await typeInto(page,card.getByLabel("Model ID"),"lane-model");
     await wheelUntilShown(page,save);
     if(keys){await card.getByLabel("Cache write / 1M").click();await page.keyboard.press("Tab");await expect(save).toBeFocused();await page.keyboard.press("Enter")}
@@ -1175,7 +1175,7 @@ test("the panel animation slider follows a drag and saves once with the final va
   await page.getByRole("button",{name:/Appearance/}).click();
   const saves=[];
   page.on("request",item=>{if(item.method()==="POST"&&/\/api\/settings$/.test(item.url())){const body=item.postDataJSON();if(body&&"panelAnimationMs" in body)saves.push(body.panelAnimationMs)}});
-  const slider=page.getByLabel("Panel animations",{exact:true});
+  const slider=page.getByLabel("Panel motion",{exact:true});
   const label=page.locator(".theme-settings label").filter({has:slider});
   const box=await slider.boundingBox();const y=box.y+box.height/2;
   await page.mouse.move(box.x+3,y);await page.mouse.down();
@@ -1220,7 +1220,7 @@ test("a setting saved while Trebell is still starting keeps its saved value once
   const harness=page.locator(".sidebar-provider strong");
   await expect(harness).toHaveText("Starting…");
   await page.getByRole("button",{name:/Appearance/}).click();
-  const slider=page.getByLabel("Panel animations",{exact:true});
+  const slider=page.getByLabel("Panel motion",{exact:true});
   const label=page.locator(".theme-settings label").filter({has:slider});
   const saved=page.waitForResponse(response=>response.request().method()==="POST"&&/\/api\/settings$/.test(response.url()));
   await slider.focus();await slider.press("ArrowRight");await slider.press("ArrowRight");

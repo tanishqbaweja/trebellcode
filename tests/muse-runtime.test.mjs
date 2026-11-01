@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import spawn from "cross-spawn";
 import { WebSocket } from "ws";
 import * as runtimes from "../src/agent-runtime-manager.mjs";
+import { harnessReleaseSupport } from "../src/harness-releases.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -15,7 +16,7 @@ import { createGuiServer } from "../src/gui-server.mjs";
 // Muse Code as a harness of Trebell's: its registration, where Meta's installers put it, the environment it runs with, its status
 // check and model list, its sign-in and install text, and a thread that runs on it through the relay. The status check and the
 // threads run a stand-in Muse Code (fixtures/muse/fake-muse.cjs) behind a launcher laid out as Meta's installers lay theirs out.
-const {AgentRuntimeManager,normalizeAgentRuntime,runtimeCompatibility,runtimeExecutableCandidates}=runtimes;
+const {AgentRuntimeManager,normalizeAgentRuntime,runtimeExecutableCandidates}=runtimes;
 const parseMuseVersion=output=>runtimes.parseMuseVersion(output),museInstallCommand=platform=>runtimes.museInstallCommand(platform);
 const FAKE_MUSE=fileURLToPath(new URL("./fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("./fixtures/muse/model-list-1.4.13.json",import.meta.url));
@@ -113,19 +114,25 @@ test("Muse Code runs with its release channel and MUSE_NO_AUTO_UPDATE=1, and a M
   assert.equal(manager.childEnv({id:"muse-updates",kind:"muse",environment:{MUSE_NO_AUTO_UPDATE:"0"}}).MUSE_NO_AUTO_UPDATE,"0","a profile's own value wins");
 });
 
-test("Muse Code's X.Y.Z-R<revision> version is read as Muse names it, and 1.4.2 and later are supported with the revision left out",()=>{
+test("Muse Code's X.Y.Z-R<revision> version is read as Muse names it, and 1.4.8 and later are supported with the revision left out",()=>{
   assert.equal(parseMuseVersion("1.4.13-R6996.1"),"1.4.13-R6996.1");
   assert.equal(parseMuseVersion("muse 1.4.6-R5018"),"1.4.6-R5018");
   assert.equal(parseMuseVersion("Muse Code 1.4.13 (1.4.13-R6996.1)\n"),"1.4.13-R6996.1","Muse 1.4.13's own --version");
   assert.equal(parseMuseVersion("muse 1.4.2"),"1.4.2");
   assert.equal(parseMuseVersion("no version here"),null);
-  const supported=runtimeCompatibility("muse","1.4.13-R6996.1");
-  assert.deepEqual([supported.status,supported.version,supported.recommendedRange],["supported","1.4.13",">=1.4.2"]);
-  assert.equal(runtimeCompatibility("muse","muse 1.4.6-R5018").status,"supported");
-  assert.equal(runtimeCompatibility("muse","1.4.2").status,"supported");
-  const older=runtimeCompatibility("muse","1.4.1-R4100.2");
-  assert.deepEqual([older.status,older.message],["unknown",null],"an older Muse Code is not refused, only not known to work");
-  assert.equal(runtimeCompatibility("muse",null).status,"unknown");
+  assert.equal(parseMuseVersion("\u001b[1mMuse Code\u001b[0m 1.4.13 (\u001b[32m1.4.13-R6996.1\u001b[0m)"),"1.4.13-R6996.1","its terminal colours left out");
+  assert.equal(parseMuseVersion(undefined),null);
+  assert.equal(harnessReleaseSupport("muse","Muse Code 1.4.13 (1.4.13-R6996.1)").version,"1.4.13");
+  const supported=harnessReleaseSupport("muse","1.4.13-R6996.1");
+  assert.deepEqual([supported.status,supported.version,supported.tested],["supported","1.4.13","1.4.8 or later"]);
+  assert.equal(harnessReleaseSupport("muse","muse 1.4.8-R5600").status,"supported");
+  // 1.4.8 is the first release whose session protocol has all Trebell's Muse client uses (permissionProfile on session/resume,
+  // the narration as agentMessage items); the floor was 1.4.2, which nothing of Trebell's own showed working.
+  for(const said of ["muse 1.4.6-R5018","1.4.2","1.4.1-R4100.2"]){
+    const older=harnessReleaseSupport("muse",said);
+    assert.deepEqual([older.status,older.message],["unknown",null],"an older Muse Code is not refused, only not known to work: "+said);
+  }
+  assert.equal(harnessReleaseSupport("muse",null).status,"unknown");
 });
 
 test("Muse Code's status check: not found, a failed --version (no host, nothing it printed), no models (not ready, sign in), and models (ready, sign-in unknown)",{timeout:60_000},async()=>{
@@ -133,7 +140,7 @@ test("Muse Code's status check: not found, a failed --version (no host, nothing 
   const missing=new AgentRuntimeManager({state:museState(),env:{PATH:""},platform:"linux",runFn:async()=>({ok:false,code:null,error:"spawn muse ENOENT",stdout:"",stderr:""})});
   const notFound=await missing.probe("muse",{fresh:true});
   assert.deepEqual([notFound.available,notFound.installed,notFound.authenticated],[false,false,null]);
-  assert.equal(notFound.message,"Muse Code (muse) was not found. Install it with curl -fsSL https://dev.meta.ai/install.sh | sh (https://dev.meta.ai/docs/muse-code), then sign in with muse login.");
+  assert.equal(notFound.message,"Trebell Code cannot find Muse Code's muse command. Install Muse Code with curl -fsSL https://dev.meta.ai/install.sh | sh (see https://dev.meta.ai/docs/muse-code), then run muse login.");
   const fixture=await museFixture("trebell-muse-status-",{environment:{MUSE_FAKE_VERSION:"muse failed: token=abc123secret",MUSE_FAKE_VERSION_EXIT:"3"}});
   try{
     const failed=await fixture.manager.probe("muse",{fresh:true});
@@ -174,7 +181,7 @@ test("Muse Code's models are its own list, read once per binary and version: pol
     const listed=await fixture.manager.models("muse");
     assert.equal(listed.source,"live");
     assert.deepEqual(listed.models,["muse-wonder-1.0","muse-spark-1.3","muse-spark-1.2","muse-spark-1.3-contributor"]);
-    assert.deepEqual(listed.metadata.map(row=>row.name),["Muse Wonder 1.0","Muse Spark 1.3","Muse Spark 1.2","Muse Spark 1.3 Contributor"]);
+    assert.deepEqual(listed.metadata.map(row=>row.name),["Wonder 1.0 Preview","Muse Spark 1.3","Muse Spark 1.2","Muse Spark 1.3 Contributor"]);
     assert.equal(listed.preferred,"muse-spark-1.2","Muse's own default row");
     assert.equal((await hosts(fixture.log)).length,1);
     // The 5-second polls, a thread start and the model list again: no host.

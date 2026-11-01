@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OpenCodeAgentSession, configureOpenCodeMcpServers, connectedOpenCodeModels, inferOpenCodeDefaultVariant, openCode2ModelId, openCodeChildPermissionRules, openCodeLongRequestFetch, openCodeMessageId, openCodeMessageTime, openCodeModelVariants, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRulesEndWith, openCodeTrustedDirectories, waitForOpenCode2Models } from "../src/opencode-agent-session.mjs";
+import { OpenCodeAgentSession, configureOpenCodeMcpServers, connectedOpenCodeModels, openCodeStartingVariant, openCode2ModelId, openCodeSubagentRules, openCodeLongRequestFetch, openCodeMessageId, openCodeMessageTime, openCodeModelVariants, openCodePermissionDisposition, openCodeSessionRules, openCodePrimaryAgents, openCodeRulesEndWith, openCodeSlashCommand, openCodeTrustedDirectories, waitForOpenCode2Models } from "../src/opencode-agent-session.mjs";
 
 test("OpenCode 2 model ids keep the provider plus the model's native id verbatim",()=>{
   assert.equal(openCode2ModelId({providerID:"opencode",id:"big-pickle"}),"opencode/big-pickle");
@@ -90,7 +90,7 @@ test("OpenCode appends bounded Trebell runtime context through its native system
   const result=await session.prompt([{type:"text",text:"Fix the parser"}],{messageId:"user-1"});
   assert.equal(calls.length,1);
   assert.equal(calls[0].body.parts[0].text,"Fix the parser");
-  assert.match(calls[0].body.messageID,/^msg_[0-9a-f]{12}/,"Trebell names the user message in OpenCode's own ID format");
+  assert.notEqual(openCodeMessageTime(calls[0].body.messageID),null,"Trebell names the user message in OpenCode's own ID format");
   assert.equal(result.providerMessageId,calls[0].body.messageID);
   assert.equal(calls[0].fetch,openCodeLongRequestFetch);
   assert.match(calls[0].body.system,/Trebell Code/);
@@ -121,7 +121,7 @@ test("each Trebell mode is a set of OpenCode session rules",()=>{
   const glob=value=>new RegExp("^"+String(value).replace(/[.+^${}()|[\]\\]/g,"\\$&").replace(/\*/g,".*").replace(/\?/g,".")+"$");
   const decide=(rules,permission,pattern="src/app.js")=>[{permission:"*",pattern:"*",action:"allow"},...rules].findLast(rule=>glob(rule.permission).test(permission)&&glob(rule.pattern).test(pattern)).action;
   const table=mode=>{
-    const rules=openCodePermissionRules(mode,{allowedTools:["trebell_repository_*"],trustedDirectories:["/tmp/opencode/*"]});
+    const rules=openCodeSessionRules(mode,{allowedTools:["trebell_repository_*"],trustedDirectories:["/tmp/opencode/*"]});
     return {
       bash:decide(rules,"bash","npm test"),edit:decide(rules,"edit"),read:decide(rules,"read"),env:decide(rules,"read","app/.env"),envExample:decide(rules,"read","app/.env.example"),
       webfetch:decide(rules,"webfetch","https://example.test"),outside:decide(rules,"external_directory","/elsewhere/*"),trusted:decide(rules,"external_directory","/tmp/opencode/*"),
@@ -137,12 +137,12 @@ test("each Trebell mode is a set of OpenCode session rules",()=>{
   // OpenCode leaves out of the request a tool whose last "*" rule denies it, and OpenCode Zen's free tier refuses a request without
   // the shell or read tool, so no mode removes them from the session itself.
   const removedTools=rules=>["bash","read","edit"].filter(permission=>rules.findLast(rule=>glob(rule.permission).test(permission)&&rule.pattern==="*")?.action==="deny");
-  for(const mode of ["supervised","edits","auto","read-only","full"])assert.deepEqual(removedTools(openCodePermissionRules(mode)).filter(tool=>tool!=="edit"),[],mode);
-  assert.deepEqual(removedTools(openCodePermissionRules("read-only")),["edit"],"read only removes the edit tools");
+  for(const mode of ["supervised","edits","auto","read-only","full"])assert.deepEqual(removedTools(openCodeSessionRules(mode)).filter(tool=>tool!=="edit"),[],mode);
+  assert.deepEqual(removedTools(openCodeSessionRules("read-only")),["edit"],"read only removes the edit tools");
   assert.deepEqual(table("full"),{bash:"allow",edit:"allow",read:"allow",env:"allow",envExample:"allow",webfetch:"allow",outside:"allow",trusted:"allow",repository:"allow",mcp:"allow",task:"allow"});
   // A subagent's session starts with only the parent's denies and folder rules: in the asking modes it gets no commands or edits, since
   // nobody could be asked for them there, and it keeps its read tools.
-  const child=mode=>openCodePermissionRules(mode).filter(rule=>rule.action==="deny"||rule.permission==="external_directory");
+  const child=mode=>openCodeSessionRules(mode).filter(rule=>rule.action==="deny"||rule.permission==="external_directory");
   assert.deepEqual({bash:decide(child("supervised"),"bash"),edit:decide(child("supervised"),"edit"),read:decide(child("supervised"),"read")},{bash:"deny",edit:"deny",read:"allow"});
   assert.deepEqual({bash:decide(child("edits"),"bash"),edit:decide(child("edits"),"edit")},{bash:"deny",edit:"allow"});
   assert.deepEqual({bash:decide(child("read-only"),"bash"),edit:decide(child("read-only"),"edit"),read:decide(child("read-only"),"read")},{bash:"deny",edit:"deny",read:"allow"});
@@ -150,30 +150,140 @@ test("each Trebell mode is a set of OpenCode session rules",()=>{
 });
 
 test("OpenCode rule updates are sent only when they change something, and a subagent keeps OpenCode's own rules last",()=>{
-  const rules=openCodePermissionRules("supervised");
+  const rules=openCodeSessionRules("supervised");
   assert.equal(openCodeRulesEndWith([{permission:"read",pattern:"*",action:"allow"},...rules],rules),true);
   assert.equal(openCodeRulesEndWith(rules.slice(1),rules),false);
   assert.equal(openCodeRulesEndWith([],[]),false);
   const nativeChild=[{permission:"bash",pattern:"*",action:"deny"},{permission:"todowrite",pattern:"*",action:"deny"},{permission:"task",pattern:"*",action:"deny"}];
-  assert.deepEqual(openCodeChildPermissionRules(rules,nativeChild),[...rules,{permission:"todowrite",pattern:"*",action:"deny"},{permission:"task",pattern:"*",action:"deny"}]);
+  assert.deepEqual(openCodeSubagentRules(rules,nativeChild),[...rules,{permission:"todowrite",pattern:"*",action:"deny"},{permission:"task",pattern:"*",action:"deny"}]);
   assert.deepEqual(openCodeTrustedDirectories([
     {name:"build",permission:[{permission:"external_directory",pattern:"*",action:"ask"},{permission:"external_directory",pattern:"/tmp/opencode/*",action:"allow"}]},
     {name:"plan",permission:[{permission:"external_directory",pattern:"/tmp/opencode/*",action:"allow"},{permission:"external_directory",pattern:"/skills/*",action:"allow"},{permission:"edit",pattern:"*",action:"deny"}]},
   ]),["/skills/*","/tmp/opencode/*"],"sorted, whatever order OpenCode lists its folders in");
 });
 
+test("a mode's rules come in layers: a subagent's denies, then ask for the rest, each gated tool, the unasked tools, secrets, edits and trusted folders",()=>{
+  const rule=(permission,action,pattern="*")=>({permission,pattern,action});
+  // Each run of keys is sorted by name (the rules of distinct keys decide independently, so the order is Trebell's choice).
+  const gated=["bash","codesearch","doom_loop","edit","external_directory","webfetch","websearch"];
+  const unasked=["glob","grep","list","lsp","question","read","skill","task","todoread","todowrite"].map(tool=>rule(tool,"allow"));
+  const secrets=action=>[rule("read",action,"*.env"),rule("read",action,"*.env.*"),rule("read","allow","*.env.example")];
+  assert.deepEqual(openCodeSessionRules("supervised"),[...gated.map(tool=>rule(tool,"deny")),rule("*","ask"),...gated.map(tool=>rule(tool,"ask")),...unasked,...secrets("ask")]);
+  assert.deepEqual(openCodeSessionRules("edits"),[...gated.filter(tool=>tool!=="edit").map(tool=>rule(tool,"deny")),rule("*","ask"),...gated.map(tool=>rule(tool,"ask")),...unasked,...secrets("ask"),rule("edit","allow")]);
+  assert.deepEqual(openCodeSessionRules("auto"),[rule("*","ask"),...gated.map(tool=>rule(tool,"ask")),...unasked,...secrets("ask")]);
+  const removed=gated.filter(tool=>tool!=="webfetch");
+  assert.deepEqual(openCodeSessionRules("read-only"),[...removed.map(tool=>rule(tool,"deny")),rule("*","ask"),...removed.map(tool=>rule(tool,tool==="bash"?"ask":"deny")),...unasked,...secrets("deny")]);
+  // The repository tools follow OpenCode's own unasked tools; trusted folders come last, each once in the order first given, as text,
+  // with empty ones left out. Full mode allows everything and takes neither.
+  const options={allowedTools:["trebell_repository_*"],trustedDirectories:["/b/*","","/a/*","/b/*"]};
+  assert.deepEqual(openCodeSessionRules("edits",options).slice(-8),[rule("todowrite","allow"),rule("trebell_repository_*","allow"),...secrets("ask"),rule("edit","allow"),rule("external_directory","allow","/b/*"),rule("external_directory","allow","/a/*")]);
+  assert.deepEqual(openCodeSessionRules("supervised",options).filter(item=>item.permission==="external_directory"&&item.pattern!=="*"),[rule("external_directory","allow","/b/*"),rule("external_directory","allow","/a/*")]);
+  assert.deepEqual(openCodeSessionRules("full",options),[rule("*","allow"),rule("external_directory","allow")]);
+  // A list option that is not a list counts as none, and the mode is read as the permission policy reads it.
+  assert.deepEqual(openCodeSessionRules("supervised",{allowedTools:"bash",trustedDirectories:"/tmp/*"}),openCodeSessionRules("supervised"));
+  assert.deepEqual(openCodeSessionRules("workspace-write"),openCodeSessionRules("edits"));
+  assert.deepEqual(openCodeSessionRules("isolated"),openCodeSessionRules("auto"));
+  assert.deepEqual(openCodeSessionRules("readonly"),openCodeSessionRules("read-only"));
+  for(const mode of [undefined,"","something else"])assert.deepEqual(openCodeSessionRules(mode),openCodeSessionRules("supervised"),String(mode));
+});
+
+test("every OpenCode permission key is either one a mode decides or one that runs unasked, and each mode decides each key the same way whatever the order",()=>{
+  const auto=openCodeSessionRules("auto"),pivot=auto.findIndex(rule=>rule.permission==="*");
+  // The keys by where they are written down: OpenCode's permissions page, the SDK's PermissionConfig, and earlier releases.
+  const documentedBy={
+    permissionsPage:["read","edit","glob","grep","bash","task","todowrite","skill","lsp","question","webfetch","websearch","external_directory","doom_loop"],
+    sdkPermissionConfig:["list","codesearch"],
+    earlierReleases:["todoread"],
+  };
+  const documented=Object.values(documentedBy).flat();
+  const decided=auto.filter((rule,index)=>index>pivot&&rule.action==="ask"&&rule.pattern==="*").map(rule=>rule.permission);
+  const unasked=auto.filter(rule=>rule.action==="allow"&&rule.pattern==="*").map(rule=>rule.permission);
+  assert.deepEqual([...decided,...unasked].sort(),[...documented].sort(),"each key once, in one of the two runs");
+  // The last rule whose key and pattern match decides (OpenCode's "last matching rule winning"); anything unmatched is allowed.
+  const decide=(rules,key)=>rules.findLast(rule=>(rule.permission==="*"||rule.permission===key)&&rule.pattern==="*")?.action??"allow";
+  // What each mode decides, written per key: the guarded keys by name, the rest run unasked.
+  const guarded=new Set(["bash","codesearch","doom_loop","edit","external_directory","webfetch","websearch"]);
+  const expected={
+    supervised:key=>guarded.has(key)?"ask":"allow",
+    edits:key=>key==="edit"?"allow":guarded.has(key)?"ask":"allow",
+    auto:key=>guarded.has(key)?"ask":"allow",
+    "read-only":key=>key==="bash"||key==="webfetch"?"ask":guarded.has(key)?"deny":"allow",
+    full:()=>"allow",
+  };
+  // A subagent starts with the parent's denials and folder rules: no guarded key where nobody could be asked, except edits in edits
+  // mode and a URL fetch in read only mode, and other folders as the parent's session answers them.
+  const forSubagent={
+    supervised:key=>key==="external_directory"?"ask":guarded.has(key)?"deny":"allow",
+    edits:key=>key==="external_directory"?"ask":guarded.has(key)&&key!=="edit"?"deny":"allow",
+    auto:key=>key==="external_directory"?"ask":"allow",
+    "read-only":key=>guarded.has(key)&&key!=="webfetch"?"deny":"allow",
+    full:()=>"allow",
+  };
+  for(const mode of Object.keys(expected)){
+    const rules=openCodeSessionRules(mode),child=rules.filter(rule=>rule.action==="deny"||rule.permission==="external_directory");
+    for(const key of documented){
+      assert.equal(decide(rules,key),expected[mode](key),`${mode}: ${key}`);
+      assert.equal(decide(child,key),forSubagent[mode](key),`${mode} subagent: ${key}`);
+    }
+  }
+});
+
+test("a subagent keeps the parent's rules and then only the rules OpenCode added for it that it did not inherit",()=>{
+  const rule=(permission,action,pattern="*")=>({permission,pattern,action});
+  const parent=openCodeSessionRules("supervised",{trustedDirectories:["/tmp/opencode/*"]});
+  // Inherited: the parent's denies and folder rules. An allow rule that only matches a parent's allow is OpenCode's own and stays,
+  // as do repeats; a rule that is not a rule (null) stays too.
+  const fromOpenCode=[rule("bash","deny"),rule("external_directory","allow","/tmp/opencode/*"),rule("read","allow"),rule("task","deny"),rule("task","deny"),null,rule("edit","deny","*.lock")];
+  assert.deepEqual(openCodeSubagentRules(parent,fromOpenCode),[...parent,rule("read","allow"),rule("task","deny"),rule("task","deny"),null,rule("edit","deny","*.lock")]);
+  // Only an exact match counts: the same tool with another pattern or action is OpenCode's own.
+  assert.deepEqual(openCodeSubagentRules(parent,[rule("bash","ask"),rule("bash","deny","rm *")]),[...parent,rule("bash","ask"),rule("bash","deny","rm *")]);
+  // Lists that are not lists count as empty.
+  assert.deepEqual(openCodeSubagentRules(parent,null),parent);
+  assert.deepEqual(openCodeSubagentRules(null,[rule("task","deny")]),[rule("task","deny")]);
+  assert.deepEqual(openCodeSubagentRules(),[]);
+});
+
+test("a model starts on its only level, else on the level its provider starts on, else on none",()=>{
+  assert.equal(openCodeStartingVariant("google",["low","high"]),"high");
+  assert.equal(openCodeStartingVariant("google-vertex-anthropic",["high","max"]),"high");
+  assert.equal(openCodeStartingVariant("vertex-google",["low","high"]),null,"a provider whose id only contains google");
+  assert.equal(openCodeStartingVariant("anthropic",["low","medium"]),null);
+  assert.equal(openCodeStartingVariant("openai",["low","medium","high"]),"medium");
+  assert.equal(openCodeStartingVariant("opencode",["low","max"]),null);
+  assert.equal(openCodeStartingVariant("anthropic",["max"]),"max","a single level whatever the provider");
+  assert.equal(openCodeStartingVariant(null,["only"]),"only");
+  for(const provider of ["openai","anthropic","nvidia",null,""])assert.equal(openCodeStartingVariant(provider,[]),null,String(provider));
+  assert.equal(openCodeStartingVariant("openai","medium"),null,"levels that are not a list are none");
+  assert.equal(openCodeStartingVariant("openai"),null);
+  assert.equal(openCodeStartingVariant("Anthropic",["low","high"]),null,"provider ids are OpenCode's, compared as they are");
+});
+
+test("a message asks for a command when it is a slash, a name without another slash, and maybe arguments after a space",()=>{
+  assert.deepEqual(openCodeSlashCommand("/review"),{name:"review",arguments:""});
+  assert.deepEqual(openCodeSlashCommand("/review the diff"),{name:"review",arguments:"the diff"});
+  assert.deepEqual(openCodeSlashCommand("/review   the diff\nand the tests"),{name:"review",arguments:"the diff\nand the tests"});
+  assert.deepEqual(openCodeSlashCommand("/review\n\tsrc/a b"),{name:"review",arguments:"src/a b"},"a line break or tab ends the name too");
+  assert.deepEqual(openCodeSlashCommand("/review "),{name:"review",arguments:""});
+  assert.deepEqual(openCodeSlashCommand("/init.v2 a/b"),{name:"init.v2",arguments:"a/b"},"the arguments can hold slashes");
+  for(const text of ["review","/","/ review","/src/app.js","/a/b c"," /review","",null,undefined])assert.equal(openCodeSlashCommand(text),null,String(text));
+});
+
 test("OpenCode model variants, default levels, primary agents and message IDs follow OpenCode",()=>{
   assert.deepEqual(openCodeModelVariants({variants:{low:{},high:{},"bad name":{},off:{disabled:true},"x.high_2":{}}}),["low","high","x.high_2"]);
   assert.deepEqual(openCodeModelVariants({}),[]);
-  assert.equal(inferOpenCodeDefaultVariant("opencode",["minimal","low","medium","high"]),"medium");
-  assert.equal(inferOpenCodeDefaultVariant("openai",["low","high"]),"high");
-  assert.equal(inferOpenCodeDefaultVariant("anthropic",["low","high","max"]),"high");
-  assert.equal(inferOpenCodeDefaultVariant("google-vertex",["low","medium"]),null);
-  assert.equal(inferOpenCodeDefaultVariant("nvidia",["thinking"]),"thinking");
-  assert.equal(inferOpenCodeDefaultVariant("nvidia",["a","b"]),null);
+  assert.equal(openCodeStartingVariant("opencode",["minimal","low","medium","high"]),"medium");
+  assert.equal(openCodeStartingVariant("openai",["low","high"]),"high");
+  assert.equal(openCodeStartingVariant("anthropic",["low","high","max"]),"high");
+  assert.equal(openCodeStartingVariant("google-vertex",["low","medium"]),null);
+  assert.equal(openCodeStartingVariant("nvidia",["thinking"]),"thinking");
+  assert.equal(openCodeStartingVariant("nvidia",["a","b"]),null);
   assert.deepEqual(openCodePrimaryAgents([{name:"build",mode:"primary"},{name:"plan",mode:"all"},{name:"explore",mode:"subagent"},{name:"title",mode:"primary",hidden:true},null]).map(agent=>agent.name),["build","plan"]);
+  // Re-pinned 2026-11-01: 14 base62 characters after the time, as OpenCode's own IDs carry (id.ts: its length of 26 less the 12 hex
+  // digits). It was 28, a length that is not OpenCode's. A clock above 48 bits keeps its low 48, as OpenCode's six bytes do.
   const id=openCodeMessageId(0x123456789abn);
-  assert.match(id,/^msg_0123456789ab[0-9A-Za-z]{28}$/);assert.equal(openCodeMessageTime(id),0x123456789abn);
+  assert.match(id,/^msg_0123456789ab[0-9A-Za-z]{14}$/);assert.equal(openCodeMessageTime(id),0x123456789abn);
+  assert.equal(openCodeMessageTime(openCodeMessageId((1n<<48n)+5n)),5n);
+  assert.equal(new Set(Array.from({length:50},()=>openCodeMessageId(1n).slice(16))).size,50,"each ID's random part is its own");
   assert.equal(openCodeMessageTime("101b36f4-70d2-447a-b28f-b0dff2796f59"),null);
 });
 

@@ -1179,12 +1179,12 @@ test("a palette whose message search cannot load says it could not search thread
 });
 
 // Nor can that search run again before a reload, the browser keeping the script that failed, so the notice and its Reload stay while
-// names are typed, the results in their place under them, and the search box does not say 'Searching messages…'. Both went at every
-// key, 'Searching messages…' showing meanwhile, and came back as the search tried again failed, about 0.1 s after the last key, the
+// names are typed, the results in their place under them, and the search box does not say 'Looking through messages…'. Both went at every
+// key, 'Looking through messages…' showing meanwhile, and came back as the search tried again failed, about 0.1 s after the last key, the
 // results moving 61 px down with them; Tab pressed straight after typing went past Reload. Repair of that fix: a palette opened again
 // in the same page started from nothing, so its first typing did all that again; it knows from the start now (the palette's own chunk
 // keeps it), and the second pass, a palette opened again, is watched from its first frame, before anything is typed.
-test("a palette whose message search cannot load keeps its notice and Reload in place while names are typed, without 'Searching messages…', by keyboard and by mouse, also in a palette opened again",async({page})=>{
+test("a palette whose message search cannot load keeps its notice and Reload in place while names are typed, without 'Looking through messages…', by keyboard and by mouse, also in a palette opened again",async({page})=>{
   test.setTimeout(90_000);
   const needle="violet-harbor-207";
   let refused=0;
@@ -1195,7 +1195,7 @@ test("a palette whose message search cannot load keeps its notice and Reload in 
     const palette=page.getByTestId("command-palette"),said=palette.getByRole("alert"),reload=said.getByRole("button",{name:"Reload",exact:true});
     const notice=/^Could not search thread messages: Part of Trebell could not load\. Reload Trebell to get it back\.\s*Reload$/;
     const search=palette.getByPlaceholder("Search commands, threads, and messages…"),item=text=>palette.locator(".command-palette-item").filter({hasText:text});
-    // Each frame from then on: the search, whether the notice shows with its Reload, whether the box says 'Searching messages…', and
+    // Each frame from then on: the search, whether the notice shows with its Reload, whether the box says 'Looking through messages…', and
     // where the results start.
     const watch=()=>page.evaluate(()=>{
       const frames=window.__paletteFrames=[];
@@ -1229,7 +1229,7 @@ test("a palette whose message search cannot load keeps its notice and Reload in 
       await page.waitForTimeout(500);
       const frames=await page.evaluate(()=>window.__paletteFrames),searches=list=>[...new Set(list.map(frame=>frame.query))];
       expect.soft(searches(frames.filter(frame=>!frame.reload)),"the searches shown without the notice and its Reload").toEqual([]);
-      expect.soft(searches(frames.filter(frame=>frame.searching)),"the searches shown with 'Searching messages…'").toEqual([]);
+      expect.soft(searches(frames.filter(frame=>frame.searching)),"the searches shown with 'Looking through messages…'").toEqual([]);
       expect([...new Set(frames.map(frame=>frame.top))],"where the results started").toHaveLength(1);
       await expect(said).toHaveText(notice);
       await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);

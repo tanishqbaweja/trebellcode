@@ -14,7 +14,7 @@ test("full repository evidence drops only the header line that repeats the visib
     const task="Reply with exactly TREBELL_TOUR_OK and nothing else.\nDo not use any tools.";
     const packet=await new ContextEngine().buildPacket({root,task});
     const evidence=repositoryContextEntries(packet,{currentTask:task})["trebell.repo_evidence"].value;
-    assert.ok(evidence.includes("\nTask: "+task+"\n"),"the packet still names its task for the inspector and Codex additional context");
+    assert.ok(evidence.includes("\nTask: "+task+"\n"),"the packet still names its task for the inspector and the extra context sent to Codex");
     const stripped=repositoryEvidenceWithoutVisibleTask(evidence,task);
     assert.equal(stripped,evidence.replace("\nTask: "+task,""));
     assert.equal(stripped.includes("TREBELL_TOUR_OK"),false);

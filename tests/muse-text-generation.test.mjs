@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { HARNESS_TEXT_INSTRUCTIONS, generateTextWithHarness } from "../src/harness-text-generation.mjs";
 import { MuseHost } from "../src/muse-host.mjs";
 import { museModelCatalog } from "../src/muse-model-catalog.mjs";
-import { FakeMuse, fakeChild, fakeStop, until } from "./fixtures/muse/fake-host.mjs";
+import { FakeMuse, fakeChild, fakeStop, mspError, settlesWithin, until } from "./fixtures/muse/fake-host.mjs";
 
 // Git text (a commit subject, a pull request's title and body) written by Muse Code: one
 // turn in a fresh session on a read-only host of Trebell's own in an empty folder. Meta's SDK (a real Connection) drives a fake
@@ -30,9 +30,10 @@ function museManager({catalog=CATALOG,recheck={available:true}}={}){
     museModelCatalog:()=>catalog,
   };
 }
-// One Git text request on a fake host. turn(params, fake) answers turn/start (undefined: no answer) and plays the turn's events.
-async function museText({turn=null,models=["muse-wonder-1.0"],catalog=CATALOG,recheck=undefined,signal=null,timeoutMs=undefined}={}){
-  const child=fakeChild(),muse=new FakeMuse(child,{handlers:turn?{"turn/start":(params,fake)=>turn(params,fake)}:{}}),hosts=[],spawned=[];
+// One Git text request on a fake host. turn(params, fake) answers turn/start (undefined: no answer) and plays the turn's events;
+// handlers answer other requests.
+async function museText({turn=null,handlers={},models=["muse-wonder-1.0"],catalog=CATALOG,recheck=undefined,signal=null,timeoutMs=undefined}={}){
+  const child=fakeChild(),muse=new FakeMuse(child,{handlers:{...handlers,...(turn?{"turn/start":(params,fake)=>turn(params,fake)}:{})}}),hosts=[],spawned=[];
   const manager=museManager({catalog,...(recheck?{recheck}:{})});
   const deps={museHost:options=>{hosts.push(options);return new MuseHost({...options,stopTree:fakeStop,spawnFn:(command,args,spawnOptions)=>{spawned.push({command,args,options:spawnOptions});return child}})}};
   const result=generateTextWithHarness({runtimeManager:manager,prompt:PROMPT,cwd:process.cwd(),models,version:"1.6.0",deps,signal,...(timeoutMs?{timeoutMs}:{})});
@@ -187,4 +188,111 @@ test("a Git text request stopped while Muse Code writes it closes Muse Code's ho
   const {result,muse}=await museText({signal:controller.signal,turn:params=>{setImmediate(()=>controller.abort());return ACCEPTED(params)}});
   await assert.rejects(result,error=>error.code==="HARNESS_TEXT_CANCELLED");
   await until(()=>muse.stdinEnded,"the host to close");
+});
+
+test("Muse Code's Git text fails when Muse takes the request into another turn, and gives Muse's words when it refuses the turn",async()=>{
+  const moved=await museText({turn:params=>({...ACCEPTED(params),turnId:"another-turn"})});
+  await assert.rejects(moved.result,/Muse Code could not write the Git text: Muse Code took the Git text request into another turn than the one Trebell started\./);
+  await until(()=>moved.muse.stdinEnded,"the host to close");
+  const refused=await museText({turn:()=>{throw mspError("commandRejected","the session is busy")}});
+  await assert.rejects(refused.result,/Muse Code could not write the Git text: the session is busy/);
+  await until(()=>refused.muse.stdinEnded,"the host to close");
+});
+
+test("Muse Code's Git text reads each reply at its highest revision and no other kind of item",async()=>{
+  const stale=await museText({turn:(params,fake)=>{
+    turnEvents(fake,params,
+      ["item/completed",reply(params,"answer",3,"fix: the final revision")],
+      ["item/updated",reply(params,"answer",2,"fix: a stale revision",{status:"inProgress"})],
+      ["item/completed",{item:{itemId:"thinking",kind:"reasoning",turnId:params.commandId,revision:5,status:"completed",text:"Not the answer"}}],
+      completed(params));
+    return ACCEPTED(params);
+  }});
+  assert.equal((await stale.result).text,"fix: the final revision");
+  // A first copy that carries no revision counts as revision 0, so the reply's next copy replaces it.
+  const unnumbered=await museText({turn:(params,fake)=>{
+    turnEvents(fake,params,
+      ["item/started",{item:{itemId:"answer",kind:"agentMessage",turnId:params.commandId,status:"inProgress",text:"fix: the wh"}}],
+      ["item/completed",reply(params,"answer",1,"fix: the whole reply")],
+      completed(params));
+    return ACCEPTED(params);
+  }});
+  assert.equal((await unnumbered.result).text,"fix: the whole reply");
+});
+
+test("Muse Code's Git text names how a turn ended without an answer, and a completed turn with no reply is an empty reply",async()=>{
+  const cases=[
+    [{terminal:"cancelled"},/Muse Code could not write the Git text: Muse Code cancelled the Git text request\./],
+    [{terminal:"failed",reason:"the host is shutting down"},/Muse Code could not write the Git text: the host is shutting down/],
+    [{terminal:"interrupted"},/Muse Code could not write the Git text: Muse Code ended the turn interrupted\./],
+    [{terminal:""},/Muse Code could not write the Git text: Muse Code ended the turn without an answer\./],
+    // Muse's own words come first: the failure's message before the turn's reason, a blank message counting as none, and either
+    // before Trebell's words for a cancelled turn. A failure that is not an object carries no words and no kind.
+    [{terminal:"failed",error:{kind:"modelError",message:"the model is busy"},reason:"the runtime stopped"},{message:"Muse Code could not write the Git text: the model is busy"}],
+    [{terminal:"failed",error:{kind:"modelError",message:"  "},reason:"the runtime stopped"},{message:"Muse Code could not write the Git text: the runtime stopped"}],
+    [{terminal:"cancelled",reason:"the person stopped the turn in Muse"},{message:"Muse Code could not write the Git text: the person stopped the turn in Muse"}],
+    [{terminal:"failed",error:"authRequired"},{message:"Muse Code could not write the Git text: Muse Code ended the turn failed."}],
+  ];
+  for(const [end,expected] of cases){
+    const {result}=await museText({turn:(params,fake)=>{turnEvents(fake,params,["turn/completed",{turnId:params.commandId,...end}]);return ACCEPTED(params)}});
+    await assert.rejects(result,expected,JSON.stringify(end));
+  }
+  const empty=await museText({turn:(params,fake)=>{turnEvents(fake,params,completed(params));return ACCEPTED(params)}});
+  await assert.rejects(empty.result,error=>error.code==="HARNESS_TEXT_EMPTY"&&error.message==="Muse Code returned an empty reply. Try again.");
+});
+
+test("Muse Code's Git text cancels a question it gets both ways once, decides nothing without a denied choice, and refuses other requests",async()=>{
+  const question=await museText({turn:(params,fake)=>{
+    const ask={sessionId:params.sessionId,userInputId:"question-2",turnId:params.commandId,questions:[{id:"style",question:"Which style?",options:[{label:"Short"}],selection:{mode:"single"}}]};
+    setImmediate(()=>{fake.write({jsonrpc:"2.0",id:903,method:"userInput/request",params:ask});fake.notify("userInput/requested",ask)});
+    return ACCEPTED(params);
+  }});
+  await assert.rejects(question.result,error=>error.message.includes("Muse Code asked a question while writing the Git text, and Trebell cancelled it: Git text generation cannot ask the user."));
+  await until(()=>question.muse.stdinEnded,"the host to close");
+  assert.deepEqual(question.muse.sent("userInput/cancel").map(frame=>frame.params.userInputId),["question-2"],"one cancel for the request and its notification");
+  assert.deepEqual(question.muse.frames.find(frame=>frame.id===903&&"result" in frame)?.result,{},"the server request gets its receipt");
+  const allowOnly=await museText({turn:(params,fake)=>{
+    setImmediate(()=>fake.notify("approval/requested",{sessionId:params.sessionId,approvalId:"approval-2",turnId:params.commandId,currentRequirementId:{approvalId:"approval-2",sourceIndex:0},availableChoices:[{choiceId:"allow-1",label:"Allow once",decision:"approved",scope:"once"}],subject:{kind:"fileAccess",access:"read",path:"notes.txt"}}));
+    return ACCEPTED(params);
+  }});
+  await assert.rejects(allowOnly.result,/Muse Code asked for permission \(notes\.txt\) while writing the Git text, and Trebell declined it: Git text generation is read-only and tool-less\./);
+  await until(()=>allowOnly.muse.stdinEnded,"the host to close");
+  assert.equal(allowOnly.muse.sent("approval/decide").length,0,"no decision without a denied choice among Muse's");
+  const other=await museText({turn:(params,fake)=>{
+    setImmediate(async()=>{
+      fake.write({jsonrpc:"2.0",id:904,method:"session/somethingNew",params:{sessionId:params.sessionId}});
+      await until(()=>fake.frames.some(frame=>frame.id===904&&"error" in frame),"the refusal");
+      turnEvents(fake,params,["item/completed",reply(params,"answer",1,"docs: keep going")],completed(params));
+    });
+    return ACCEPTED(params);
+  }});
+  assert.equal((await other.result).text,"docs: keep going","another request does not end the Git text");
+  const refusal=other.muse.frames.find(frame=>frame.id===904&&"error" in frame).error;
+  assert.deepEqual({code:refusal.code,kind:refusal.data?.kind},{code:-32601,kind:"methodNotFound"});
+});
+
+test("Muse Code's Git text fails at once on a frame it cannot read, also while Muse has not answered session/start",async()=>{
+  const garbled=await museText({turn:(params,fake)=>{setImmediate(()=>fake.child.stdout.write("{not json\n"));return ACCEPTED(params)}});
+  await assert.rejects(garbled.result,/Muse Code could not write the Git text: Muse Code sent a frame Trebell could not read: inbound frame is not valid JSON/);
+  await until(()=>garbled.muse.stdinEnded,"the host to close");
+  const unanswered=await museText({timeoutMs:20_000,handlers:{"session/start":(params,fake)=>{setImmediate(()=>fake.child.stdout.write("{not json\n"));return undefined}}});
+  await assert.rejects(settlesWithin(unanswered.result,5000,"the Git text request"),/Muse Code sent a frame Trebell could not read: inbound frame is not valid JSON/);
+  assert.equal(unanswered.muse.sent("turn/start").length,0,"no turn without a session");
+  await until(()=>unanswered.muse.stdinEnded,"the host to close");
+});
+
+test("Muse Code's Git text takes a frame named like a built-in key of every object for any other unknown frame",async()=>{
+  const odd=await museText({turn:(params,fake)=>{
+    setImmediate(async()=>{
+      for(const method of ["toString","constructor","__proto__"])fake.notify(method,{sessionId:params.sessionId,approvalId:"approval-9",userInputId:"question-9"});
+      fake.write({jsonrpc:"2.0",id:905,method:"hasOwnProperty",params:{sessionId:params.sessionId,approvalId:"approval-9"}});
+      await until(()=>fake.frames.some(frame=>frame.id===905&&("error" in frame||"result" in frame)),"the answer to the request");
+      turnEvents(fake,params,["item/completed",reply(params,"answer",1,"chore: tidy the imports")],completed(params));
+    });
+    return ACCEPTED(params);
+  }});
+  assert.equal((await odd.result).text,"chore: tidy the imports","neither frame is an ask, so the turn's answer stands");
+  const refusal=odd.muse.frames.find(frame=>frame.id===905).error;
+  assert.deepEqual({code:refusal?.code,kind:refusal?.data?.kind},{code:-32601,kind:"methodNotFound"});
+  assert.equal(odd.muse.sent("approval/decide").length+odd.muse.sent("userInput/cancel").length,0,"nothing turned down");
 });

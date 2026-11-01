@@ -9,6 +9,7 @@ import { hydrateLoginShellEnvironment } from "../src/login-shell-environment.mjs
 import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
 import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
 import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-config.mjs";
+import { captureCueLifetime, captureCuePage } from "./capture-cue.mjs";
 import { listEditors, startEditor } from "./editor-discovery.mjs";
 import { createUpdaterController } from "./updater-controller.mjs";
 import { decodePowerShellJsonBase64, decodePowerShellStderr } from "./powershell-output.mjs";
@@ -619,12 +620,10 @@ function showSnapshotFeedback(meta){
   const b=meta?.bounds;if(!b||!Number.isFinite(Number(b.x))||!Number.isFinite(Number(b.y))||Number(b.width)<20||Number(b.height)<20)return;
   let overlay;
   try{
-    const flash=snapshotConfig.flash?"background:rgba(255,255,255,.10);box-shadow:inset 0 0 0 3px rgba(139,108,255,.9)":"box-shadow:inset 0 0 0 2px rgba(139,108,255,.62)";
-    const animation=snapshotConfig.animations?"animation:trebellCapture .42s cubic-bezier(.2,.8,.2,1) both":"";
-    const html=`<!doctype html><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}body{${flash};${animation}}@keyframes trebellCapture{0%{opacity:.22;transform:scale(.992)}28%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.003)}}</style>`;
+    const cue={flash:Boolean(snapshotConfig.flash),animations:Boolean(snapshotConfig.animations)},html=captureCuePage(cue);
     overlay=new BrowserWindow({x:Math.round(Number(b.x)),y:Math.round(Number(b.y)),width:Math.max(20,Math.round(Number(b.width))),height:Math.max(20,Math.round(Number(b.height))),show:false,frame:false,transparent:true,resizable:false,movable:false,focusable:false,alwaysOnTop:true,skipTaskbar:true,hasShadow:false,webPreferences:{contextIsolation:true,sandbox:true}});
     overlay.setIgnoreMouseEvents(true);overlay.setAlwaysOnTop(true,"screen-saver");overlay.once("ready-to-show",()=>overlay?.showInactive());overlay.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(()=>{});
-    setTimeout(()=>{try{if(overlay&&!overlay.isDestroyed())overlay.destroy()}catch{}},snapshotConfig.animations?520:170).unref?.();
+    setTimeout(()=>{try{if(overlay&&!overlay.isDestroyed())overlay.destroy()}catch{}},captureCueLifetime(cue)).unref?.();
   }catch{try{if(overlay&&!overlay.isDestroyed())overlay.destroy()}catch{}}
 }
 

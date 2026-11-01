@@ -34,7 +34,7 @@ const LiveCode=createContext(null);
 function CodeBlock({children,node}){
   const code=React.Children.toArray(children)[0],language=/language-([\w+#.-]+)/.exec(code?.props?.className||"")?.[1]||"";
   const live=useContext(LiveCode),start=node?.position?.start?.offset,at=live&&Number.isInteger(start)?live.from+start:null,kept=at==null?null:live.kept.get(at);
-  // A refused copy (a browser that blocks the clipboard) says so beside the button, as the row menu's Copy thread ID does, until
+  // A refused copy (a browser that blocks the clipboard) says so beside the button, as the row menu's Copy ID does, until
   // the next copy; Copied shows for 1.5 s.
   const [copied,setCopied]=useState(()=>kept?.copiedUntil>Date.now()),[refused,setRefused]=useState(()=>Boolean(kept?.refused)),timer=useRef(null),button=useRef(null);
   useEffect(()=>{

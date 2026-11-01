@@ -75,7 +75,7 @@ import { configuredReasoningEffort, modelReasoningEffortKey, reasoningEffortPick
 import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
-import { codexErrorNotice, codexGoalsMissing, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal } from "./codex-turn-options.js";
+import { codexErrorNotice, codexGoalLine, codexGoalsMissing, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput } from "./codex-turn-options.js";
 import { documentTextNote, noteDocumentTexts } from "./codex-turn-options.js";
 import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayThreadPreferredModel, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
@@ -169,7 +169,7 @@ const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>i
 let earlierPageWait=null;const pressWaits={};
 // load: what a part drawn before the chunk is in waits for (the chunk itself, or the idle load for the Cite button).
 const idlePart=(name,load=loadIdleParts)=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:load().then(parts=>({default:parts[name]})));
-const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar",()=>idleReached.then(loadIdleParts)),ThreadFindBar=idlePart("ThreadFindBar"),RuntimeSurface=idlePart("RuntimeSurface"),ThreadHistoryPage=idlePart("ThreadHistoryPage");
+const ReplyCiteButton=idlePart("ReplyCiteButton",()=>idleReached.then(loadIdleParts)),ThreadFindBar=idlePart("ThreadFindBar"),RuntimeSurface=idlePart("RuntimeSurface"),ThreadHistoryPage=idlePart("ThreadHistoryPage");
 // A send's context packet comes only from turn-support.js (prepareTurnContext), so a send with one has that module; one without
 // carries no repository context.
 function repositoryContextEntries(packet,options){return packet?turnSupport.repositoryContextEntries(packet,options):{}}
@@ -295,7 +295,7 @@ class LazySlot extends React.Component{
   }
 }
 // The Cite button's code (idle-parts.js) that could not load says so only where the button would come, above text selected in a
-// reply (AssistantSelectionToolbar's rule), for as long as that selection lasts, with Reload. The end of the conversation, where
+// reply (ReplyCiteButton's rule), for as long as that selection lasts, with Reload. The end of the conversation, where
 // the button's slot is, says nothing: no reply reads as failed to show, and nothing there is announced or in Tab's order. Reload,
 // like Cite, is reached from the selection, and the keys go on from it beside the selection (selection-focus.js).
 function CiteUnavailable({containerRef}){
@@ -305,7 +305,7 @@ function CiteUnavailable({containerRef}){
     let frame=0;const clear=()=>{cancelAnimationFrame(frame);setAt(null)};
     const update=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
       const selection=window.getSelection(),range=selection?.rangeCount&&!selection.isCollapsed&&selection.toString().trim()?selection.getRangeAt(0):null;
-      const node=range?.startContainer,source=(node?.nodeType===Node.ELEMENT_NODE?node:node?.parentElement)?.closest("[data-assistant-citation-source]");
+      const node=range?.startContainer,source=(node?.nodeType===Node.ELEMENT_NODE?node:node?.parentElement)?.closest("[data-cite-reply]");
       if(!source||!container.contains(source)){setAt(null);return}
       const beyond=range.cloneRange();beyond.setStart(source,source.childNodes.length);
       const rect=range.getBoundingClientRect(),view=(host||container).getBoundingClientRect();
@@ -388,7 +388,9 @@ function attachmentSizeError(file){
   const image=String(file?.type||"").toLowerCase().startsWith("image/"),megabytes=image?10:50;
   return Number(file?.size)>megabytes*1024*1024?new Error(`${image?"Image":"Attachment"} is larger than ${megabytes} MB`):null;
 }
-const MAX_COMPOSER_CHARS=120_000;
+// The longest draft Send takes: Trebell's own 200,000 characters, about 50,000 tokens at the four characters a token OpenAI gives
+// for English text, a quarter of a 200,000-token window, so the model keeps room for what it reads.
+const MAX_COMPOSER_CHARS=200_000;
 // A draft this long is a long one: the composer says so in its class (long-draft), and App in the workspace shell's (with-long-draft),
 // for the error toast's place beside it where the browser cannot anchor the toast to the composer (styles.css).
 const LONG_DRAFT_CHARS=32768;
@@ -490,8 +492,8 @@ function appServerExitText(exit){
   const how=exit?.signal?"was stopped by "+exit.signal:Number.isInteger(exit?.code)?"exited with code "+exit.code:"exited";
   return "The Codex app-server running this thread "+how+(exit?.turnRunning?", so the turn that was running ended":"")+". Trebell started it again.";
 }
-function historyFromThread(thread,checkpointByTurn={}){
-  return historyFromTurns(thread?.turns||[],checkpointByTurn);
+function historyFromThread(thread,checkpointByTurn={},goalObjective=null){
+  return historyFromTurns(thread?.turns||[],checkpointByTurn,goalObjective);
 }
 function presetFor(mode){
   if(mode==="full")return {sandbox:"danger-full-access",approvalPolicy:"never"};
@@ -606,7 +608,7 @@ const ConversationMessageRow=memo(function ConversationMessageRow({message,activ
   if(message.role==="handoff")return <SessionHandoffRow message={message}/>;
   // A message sent with files names them under its text, as the composer's chips did.
   if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{message.attachments?.length>0&&<div className="user-attachments">{message.attachments.map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/><bdi>{attachmentDisplayName(path)}</bdi></span>)}</div>}{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
-  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=><InlineVisualization key={(visualization.path||visualization.file)+":"+index} visualization={visualization} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})}/>)}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}{outcomeMessage&&<p className={"turn-outcome-message tone-"+outcomeTone}>{outcomeMessage}</p>}</div></div>;
+  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-cite-reply={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=><InlineVisualization key={(visualization.path||visualization.file)+":"+index} visualization={visualization} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})}/>)}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}{outcomeMessage&&<p className={"turn-outcome-message tone-"+outcomeTone}>{outcomeMessage}</p>}</div></div>;
 },sameConversationMessageRowProps);
 // How a turn that failed, was stopped or completed before any reply ended (turn-outcome.js turnTrailers), where its reply would
 // have been: the heading and pill on one line, then the error it ended with in full ("Finished without a reply." for a completed
@@ -710,7 +712,7 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   // A page that did not load says so under the button pressed, which stays there to try again, with the keyboard still on it.
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" aria-disabled={historyBusy||undefined} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button>{historyError?.at==="top"&&<p className="history-page-error" role="alert">{historyError.text}</p>}</div>}{renderTrailers(trailers.after.get(""))}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk||selectedChunks.includes(chunk.key)} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
-    :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<LazySlot failed={()=><CiteUnavailable containerRef={historyRef}/>}><AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></LazySlot></div>;
+    :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<LazySlot failed={()=><CiteUnavailable containerRef={historyRef}/>}><ReplyCiteButton containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></LazySlot></div>;
 });
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
 // A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2, or it lands where
@@ -735,7 +737,8 @@ function ApprovalCard({request,onResolve,threadLabel=""}){
   const showCommand=!permissions&&Boolean(commandText.trim())&&detail!==commandText;
   const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
   return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}{(detail||!files.length)&&<p>{detail||p.reason||request.method}</p>}{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{files.length>0&&<pre className="approval-command" data-testid="approval-files"><code>{files.map(file=>file.movePath?"Move "+file.path+" to "+file.movePath:({add:"Add",delete:"Delete"}[file.kind]||"Edit")+" "+file.path).join("\n")+(p.trebellFileChangesMore>0?"\n…and "+p.trebellFileChangesMore+" more file"+(p.trebellFileChangesMore>1?"s":""):"")}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}>{approvalOptions.length
-    // An ACP harness's own choices, in its order and wording.
+    // The buttons the server sent with this request (an ACP harness's options, Muse Code's choices, Claude's once-only pair): each
+    // shows its label and answers with its decision.
     ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={event=>answer(event,option.decision)}>{option.label}</button>)
     // A Codex card's Allow session covers every later command, or file change, of its thread's session (trebellSessionScope).
     :<><button onClick={event=>answer(event,"decline")}>Deny</button><button onClick={event=>answer(event,"acceptForSession")}>{{command:"Allow commands this session",fileChange:"Allow edits this session"}[p.trebellSessionScope]||"Allow session"}</button><button className="approve" onClick={event=>answer(event,"accept")}>Allow once</button></>}</div></div>;
@@ -784,6 +787,8 @@ const SLASH_COMMANDS=[
   ["/new","Start a new thread"],
   ["/clear","Reset the current draft/thread view"],
 ];
+// Rows that read otherwise on Codex, where /goal gives Codex an objective it goes on pursuing in turns of its own.
+const CODEX_SLASH_ROWS=new Map([["/goal","Give Codex an objective to pursue across turns; pause, resume or clear it"]]);
 
 // A press on a button of the composer's footer runs it once, as a queued follow-up's buttons do: each goes at its first press (Compact
 // while the compaction runs, Retry while it connects, the provider's setup to Settings), and the rest of the press (the second click
@@ -1054,7 +1059,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   }).filter(Boolean);
   const recipeByCommand=new Map((recipes||[]).map(recipe=>[String(recipe?.name||""),recipe]).filter(([name])=>name.startsWith("/")));
   const recipeSlash=[...recipeByCommand].map(([cmd,recipe])=>[cmd,recipe.description||recipe.title||"Project recipe"]);
-  const allSlash=[...SLASH_COMMANDS.map(([cmd,desc])=>cmd==="/goal"&&agentRuntime==="codex"?[cmd,"Set a goal Codex keeps working toward (/goal, pause, resume, clear)"]:[cmd,desc]),...recipeSlash,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
+  const allSlash=[...SLASH_COMMANDS.map(([cmd,desc])=>[cmd,(agentRuntime==="codex"&&CODEX_SLASH_ROWS.get(cmd))||desc]),...recipeSlash,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
   const slashAvailable=cmd=>{
     const recipe=recipeByCommand.get(cmd);
     if(recipe)return !projectless&&(!recipe.runtime||recipe.runtime===agentRuntime)&&(!recipe.model||(models||[]).includes(recipe.model));
@@ -1136,7 +1141,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const reasoningEffort=codexChoices?codexChoices.effort||"":effortPicker.value;
   const serviceTier=codexChoices?codexChoices.serviceTierPicker:configuredModelServiceTier(settings,agentRuntime,provider,model)||"";
   const effortChoices=reasoningEffort&&!reasoningEffortOptions.includes(reasoningEffort)?[...reasoningEffortOptions,reasoningEffort]:reasoningEffortOptions;
-  // Every harness's effort ids read the same way (xhigh is Extra High); a harness's own names (OpenCode variants) stay as given.
+  // Every harness's effort ids read the same way (xhigh is Extra high, as Codex's picker says); a harness's own names (OpenCode
+  // variants) stay as given.
   const effortLabel=effort=>codexReasoningEffortLabel(effort);
   // The model's other settings (Cursor's context size and thinking switch), each showing the user's pick or the harness's
   // current value.
@@ -3497,7 +3503,7 @@ export default function App(){
     else if(message.method==="thread/goal/updated"&&isCurrent){
       // Codex ends an active goal itself: complete, or stopped by a budget, a usage limit or a blocker.
       const next=p.goal||null;
-      if(agentRuntime==="codex"&&goal?.status==="active"&&next&&!["active","paused"].includes(next.status))desktopNotify(next.status==="complete"?"Goal complete":"Goal stopped",describeCodexGoal(next));
+      if(agentRuntime==="codex"&&goal?.status==="active"&&next&&!["active","paused"].includes(next.status))desktopNotify(next.status==="complete"?"Goal complete":"Goal stopped",codexGoalLine(next));
       setGoal(next);
     }
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
@@ -3984,7 +3990,9 @@ export default function App(){
       const sendModel=modelRef.current;setSelectedModels(current=>current.length>1?(sendModel?[sendModel]:[]):current);
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
-        const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
+        // Only Codex was ever sent an earlier release's instruction before a goal's objective (thread-history.js).
+        const goalObjective=agentRuntime==="codex"?goalData?.goal?.objective??null:null;
+        const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map,goalObjective):historyFromTurns([...(page.data||[])].reverse(),map,goalObjective);
         // An item-paged thread reads how its turns ended from its outcome pages, done ones too, so every reply has its pill.
         turnOutcomePagesRef.current=page.kind==="items"?{threadId:resumed.thread.id,cursor:page.turnsCursor||null,covered:new Set((page.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean))}:null;
         // The turns in order come from the same pages (item pages skip a turn that has no items), then any this window saw start.
@@ -4001,7 +4009,7 @@ export default function App(){
       }else{
         // The whole thread: cards for its newest 200 turns.
         openedCards={rows:cardRowsFromTurns((resumed.thread.turns||[]).slice(-200),{activeTurnId:resumedTurnId}),merge:{mode:"replace",complete:true},boundaryTurnId:null};
-        turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(shownHistory(historyFromThread(resumed.thread,map)));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})
+        turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(shownHistory(historyFromThread(resumed.thread,map,agentRuntime==="codex"?goalData?.goal?.objective??null:null)));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})
       }
       // The running turn's stored steps start its live card. The notifications handled as the thread shows read its cards from the
       // ref (a turn that starts again under its id gets its stored steps back), so the ref holds them from here, before the render.
@@ -4079,7 +4087,7 @@ export default function App(){
   // it. Load earlier messages and Load these turns, drawn with the thread, wait for it when pressed before it has come (one press:
   // as while a page loads, the presses meanwhile do nothing), and say under their button that the page could not load when it cannot.
   function historyDeps(){
-    return {activeThread,activeThreadRef,activeTurnId,agentRuntime,agentRuntimeName,bootstrap,checkpointByTurn,conversationScrollRef,focusThreadFindLatest,followConversationEndRef,historyItemPageLimit:HISTORY_ITEM_PAGE_LIMIT,historyItemScanPages:HISTORY_ITEM_SCAN_PAGES,historyLoadRef,historyPage,historyTurnPageLimit:HISTORY_TURN_PAGE_LIMIT,loadItemHistoryPage,messages,pendingHistoryPrependRef,provider,rememberThreadCatalog,rpc,rpcStatus,runtimeCapabilities,setHistoryAnchorItemId,setHistoryPage,setMessages,setThreadCatalogCursor,setThreadFind,setThreadHistory,setThreadListError,setThreadListLoaded,setThreadMeta,setThreadTurnStates,setThreads,setTurnActivity,setTurnInfo,setTurnOrder,settings,threadCatalogCursor,threadFind,threadFindSeqRef,threadHistory,threadMeta,threads,turnOutcomePagesRef,turnOutcomesForItemPage};
+    return {activeThread,activeThreadRef,activeTurnId,agentRuntime,agentRuntimeName,bootstrap,checkpointByTurn,goalObjective:agentRuntime==="codex"?goal?.objective??null:null,conversationScrollRef,focusThreadFindLatest,followConversationEndRef,historyItemPageLimit:HISTORY_ITEM_PAGE_LIMIT,historyItemScanPages:HISTORY_ITEM_SCAN_PAGES,historyLoadRef,historyPage,historyTurnPageLimit:HISTORY_TURN_PAGE_LIMIT,loadItemHistoryPage,messages,pendingHistoryPrependRef,provider,rememberThreadCatalog,rpc,rpcStatus,runtimeCapabilities,setHistoryAnchorItemId,setHistoryPage,setMessages,setThreadCatalogCursor,setThreadFind,setThreadHistory,setThreadListError,setThreadListLoaded,setThreadMeta,setThreadTurnStates,setThreads,setTurnActivity,setTurnInfo,setTurnOrder,settings,threadCatalogCursor,threadFind,threadFindSeqRef,threadHistory,threadMeta,threads,turnOutcomePagesRef,turnOutcomesForItemPage};
   }
   function loadEarlierMessages(target="top"){
     const deps=historyDeps();if(idleParts)return idleParts.loadEarlierMessages(deps,target);

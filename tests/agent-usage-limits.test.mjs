@@ -13,11 +13,35 @@ function jsonResponse(value,{status=200}={}){
   return new Response(JSON.stringify(value),{status,headers:{"content-type":"application/json"}});
 }
 
-test("Cursor usage preserves advertised buckets and billing reset",()=>{
-  const result=cursorUsageResponseToLimits({billingCycleEnd:"1789876386000",planUsage:{totalPercentUsed:72.4,autoPercentUsed:69.5,apiPercentUsed:150}},"2026-09-23T00:00:00.000Z");
-  assert.deepEqual(result.windows.map(item=>[item.id,item.usedPercent]),[["totalPercentUsed",72.4],["autoPercentUsed",69.5],["apiPercentUsed",100]]);
-  assert.equal(result.windows[0].kind,"monthly");
-  assert.equal(result.windows[0].resetsAt,"2026-09-20T03:53:06.000Z");
+// Cursor's plan usage for the current billing cycle: planUsage's percentages (the plan as a whole, Auto, the API models) and
+// billingCycleEnd, the cycle's end in epoch milliseconds, which comes as text, the way protobuf's JSON writes a 64-bit integer.
+// This report is read on 2026-10-31 and its cycle ends 2026-11-14 16:05:42 UTC.
+const cursorReadAt="2026-10-31T09:00:00.000Z",cursorCycleEnd="2026-11-14T16:05:42.000Z";
+const cursorReport=(planUsage,billingCycleEnd="1794672342000")=>({billingCycleEnd,planUsage});
+
+test("Cursor usage gives a monthly row per plan percentage, held to 0-100, each resetting when the billing cycle ends",()=>{
+  assert.deepEqual(cursorUsageResponseToLimits(cursorReport({totalPercentUsed:41.25,autoPercentUsed:7,apiPercentUsed:118.6}),cursorReadAt),{checkedAt:cursorReadAt,windows:[
+    {id:"totalPercentUsed",kind:"monthly",label:"Monthly",usedPercent:41.25,resetsAt:cursorCycleEnd},
+    {id:"autoPercentUsed",kind:"monthly",label:"Monthly · Auto",usedPercent:7,resetsAt:cursorCycleEnd},
+    {id:"apiPercentUsed",kind:"monthly",label:"Monthly · API",usedPercent:100,resetsAt:cursorCycleEnd},
+  ]});
+});
+
+test("Cursor usage reads the cycle end written as a number too, and gives no reset when there is no readable end",()=>{
+  const firstRow=cycle=>cursorUsageResponseToLimits({...cycle,planUsage:{totalPercentUsed:12}},cursorReadAt).windows[0];
+  assert.equal(firstRow({billingCycleEnd:1794672342000}).resetsAt,cursorCycleEnd);
+  for(const cycle of [{},{billingCycleEnd:null},{billingCycleEnd:""},{billingCycleEnd:"end of month"}]){
+    const row=firstRow(cycle),seen=JSON.stringify(cycle);
+    assert.equal(row.usedPercent,12,seen);assert.equal("resetsAt" in row,false,seen);
+  }
+});
+
+test("Cursor usage keeps the total, Auto, API order, reads below 0 as 0, skips a percentage left out, and with none is unsupported",()=>{
+  const rows=cursorUsageResponseToLimits(cursorReport({apiPercentUsed:3.5,totalPercentUsed:-0.5}),cursorReadAt).windows;
+  assert.deepEqual(rows.map(row=>`${row.label}: ${row.usedPercent}`),["Monthly: 0","Monthly · API: 3.5"]);
+  for(const report of [{},cursorReport(null),cursorReport({}),cursorReport({monthlyPercentUsed:50})]){
+    assert.deepEqual(cursorUsageResponseToLimits(report,cursorReadAt),{checkedAt:cursorReadAt,windows:[],unavailable:{reason:"unsupported"}});
+  }
 });
 
 // Cursor's, Grok Build's and OpenCode Go's usage would be read with the sign-in each keeps for itself (its auth.json, or a token in
@@ -45,6 +69,29 @@ test("OpenCode Go usage clamps the windows it maps",()=>{
   assert.deepEqual(parsed.windows.map(item=>[item.kind,item.usedPercent]),[["session",0],["weekly",10],["monthly",100]]);
 });
 
+test("OpenCode Go usage shows its 5-hour, weekly and monthly limits under Trebell's own ids and labels, and needs all three",()=>{
+  // A meter row as the Usage page gets it; a window length of 0 is none.
+  const meter=(id,kind,label,minutes,usedPercent,resetsAt)=>({id,kind,label,...(minutes?{windowDurationMins:minutes}:{}),usedPercent,resetsAt});
+  const usage={
+    rolling:{percent:42.5,resetsAt:"2026-10-31T15:30:00Z"},
+    weekly:{percent:"7",resetsAt:Date.parse("2026-11-03T00:00:00Z")},
+    monthly:{percent:-3,resetsAt:"2026-11-30T00:00:00Z"},
+  };
+  const at="2026-10-31T12:00:00.000Z";
+  assert.deepEqual(openCodeUsageResponseToLimits({usage},at),{checkedAt:at,windows:[
+    meter("opencode-go-5h","session","OpenCode Go 5-hour limit",300,42.5,"2026-10-31T15:30:00.000Z"),
+    meter("opencode-go-week","weekly","OpenCode Go weekly limit",7*24*60,7,"2026-11-03T00:00:00.000Z"),
+    meter("opencode-go-month","monthly","OpenCode Go monthly limit",0,0,"2026-11-30T00:00:00.000Z"),
+  ]});
+  // A window, a percent or a reset time missing, or no usage at all, is a read that failed.
+  const unread={checkedAt:at,windows:[],unavailable:{reason:"probeFailed",message:"Trebell could not read OpenCode Go's usage."}};
+  for(const usageRead of [
+    {rolling:usage.rolling,weekly:usage.weekly},{...usage,weekly:{percent:7}},{...usage,monthly:{resetsAt:"2026-11-30T00:00:00Z"}},
+    {...usage,rolling:{percent:"lots",resetsAt:"2026-10-31T15:30:00Z"}},{...usage,rolling:{percent:1,resetsAt:"not a time"}},null,"busy",
+  ])assert.deepEqual(openCodeUsageResponseToLimits({usage:usageRead},at),unread,JSON.stringify(usageRead));
+  assert.deepEqual(openCodeUsageResponseToLimits(null,at),unread);
+});
+
 test("Claude usage maps the SDK usage request's session, weekly and model-scoped windows",()=>{
   const at="2026-10-09T20:00:00.000Z";
   const result=claudeUsageResponseToLimits({rate_limits_available:true,rate_limits:{
@@ -55,7 +102,7 @@ test("Claude usage maps the SDK usage request's session, weekly and model-scoped
   assert.deepEqual(result,{checkedAt:at,windows:[
     {id:"five_hour",kind:"session",label:"Session",windowDurationMins:300,usedPercent:12,resetsAt:"2026-10-09T22:59:59.000Z"},
     {id:"seven_day",kind:"weekly",label:"Weekly",windowDurationMins:10080,usedPercent:100},
-    {id:"seven_day_fable",kind:"weekly",label:"Weekly · Fable",windowDurationMins:10080,usedPercent:0,resetsAt:"2026-10-15T00:00:00.000Z"},
+    {id:"weekly:fable",kind:"weekly",label:"Weekly · Fable",windowDurationMins:10080,usedPercent:0,resetsAt:"2026-10-15T00:00:00.000Z"},
   ]});
   assert.deepEqual(claudeUsageResponseToLimits({rate_limits_available:false,rate_limits:null},at),{checkedAt:at,windows:[],unavailable:{reason:"unsupported"}});
 });

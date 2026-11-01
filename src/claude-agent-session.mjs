@@ -6,8 +6,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
-import { fileUriPath } from "./file-uri.mjs";
-import { textExtractedTo } from "./prompt-attachments.mjs";
+import { linkedFileLine } from "./prompt-attachments.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -15,31 +14,50 @@ import { redactSecretText } from "./secret-redactor.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
+// The Claude Agent SDK loads with the first session that starts, not with the server (budget B25).
+let claudeAgentSdk=null;
+const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
+
 // One long-lived streaming-input Claude Code query per thread: every prompt is an SDK
 // user message offered to the live process (so steering, interrupts and background tasks work), and the process is replaced
 // only when its launch policy (permission mode, tools, model, effort, agent) changes, after Stop, rewind or idle release.
 export const CLAUDE_READ_ONLY_TOOLS=Object.freeze(["Read","Glob","Grep"]);
 export const CLAUDE_IDLE_RELEASE_MS=30*60_000;
-export const CLAUDE_MAX_IDLE_PIN_MS=4*60*60_000;
+// How long a turn's background agents and commands keep the idle Claude Code process: Trebell's own choice, eight hours, the same as
+// Muse Code's hold (muse-agent-session MUSE_MAX_IDLE_PIN_MS) for the same reason. The process is closed when the hold ends, which
+// stops any of that work still running, so the hold outlasts a working day's quiet work and the four hours 2.1.2 gave; a process
+// whose work's end never arrived is kept that long.
+export const CLAUDE_MAX_IDLE_PIN_MS=8*60*60_000;
 export const CLAUDE_PLAN_CAPTURED="Trebell Code has shown your plan to the user. Stop here: the user answers with feedback, or asks you to carry it out, in a later turn.";
-export const CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
+// A change of model or settings needs a new Claude Code process, which ends the background agents and commands of the one it replaces.
+export const CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE="Changing the model or settings now would restart Claude Code and end the background agents and commands Claude is still running. Let them finish or ask Claude to stop them, or keep the current model and settings, then send the message again.";
 // Nothing the person changed: Claude switched itself to Plan, and Claude Code refuses to leave it while its background work pins the process.
-// Work that never ends by itself (a watcher) would hold every message back until the process is released, up to 4 hours: Edit from here
+// Work that never ends by itself (a watcher) would hold every message back until the process is released, up to CLAUDE_MAX_IDLE_PIN_MS
+// (8 hours): Edit from here
 // on the refused message ends the process, and the work with it (rewindConversation closes it), and gives the message back to send.
 export const CLAUDE_PLAN_STUCK="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again. To end them now, choose Edit from here on this message and send it again.";
-export const CLAUDE_USAGE_LIMIT_HINT="Claude usage limit reached. Send the message again once it resets.";
-export const CLAUDE_CONTEXT_FULL="Claude Code stopped: this thread no longer fits the model's context window. Run /compact, or start a new thread.";
-export const CLAUDE_MCP_REGISTRATION_TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 90 seconds. Send the message again; if it keeps timing out, check the MCP servers in Settings.";
-// The SDK sets no deadline for setMcpServers, and Claude Code waits up to 30 s for each server.
-const CLAUDE_MCP_REGISTRATION_TIMEOUT_MS=90_000;
-// A steer waits at most this long, from its request, for the subagents the root turn runs in the foreground to move to the background.
-const CLAUDE_STEER_BACKGROUND_MS=5_000;
+export const CLAUDE_USAGE_LIMIT_HINT="Claude Code has used up its usage allowance. Try the message again when it resets.";
+const CLAUDE_THREAD_TOO_LONG="Claude Code ended the turn: this thread has grown past the model's context window. Compact it with /compact, or continue in a new thread.";
+// What the model reads as the outcome of a tool call the person did not let run (the deny message of a PermissionResult).
+const CLAUDE_CALL_DENIED="The user denied this tool call in Trebell Code, so it did not run.";
+const CLAUDE_CALL_CANCELLED="The approval for this tool call was cancelled in Trebell Code before the user answered, so it did not run.";
+const CLAUDE_QUESTIONS_UNANSWERED="The user closed these questions in Trebell Code without answering them.";
+// How long Claude Code has to answer the registration of a thread's MCP servers, which the SDK gives no deadline. Claude Code's
+// environment variable reference says it gives a server up to 30 s to start (MCP_TIMEOUT, default 30000) and starts local (stdio)
+// servers three at a time (MCP_SERVER_CONNECTION_BATCH_SIZE, default 3). Trebell's own 2 minutes is four such rounds, twelve local
+// servers that each take their whole time, where 2.1.2's 90 s held nine; a registration that runs out fails the prompt saying so.
+const MCP_ANSWER_BOUND_MS=120_000;
+export const CLAUDE_MCP_REGISTRATION_TIMED_OUT=`Claude Code did not finish connecting this thread's MCP servers within ${MCP_ANSWER_BOUND_MS/60_000} minutes. Send the message again; if it keeps timing out, check the MCP servers in Settings.`;
+// How long a steer holds its message, counted from the steer, while the root turn's foreground subagents move to the background:
+// Trebell's own 8 s. Claude Code moves them at once when it can, and the person's message waits no longer than that when it cannot.
+const STEER_HOLD_MS=8_000;
 // The tools that run a subagent (Agent, called Task before).
 const CLAUDE_SUBAGENT_TOOLS=new Set(["Agent","Task"]);
 // Claude Code's task tools (on by default where the model supports them, or with CLAUDE_CODE_ENABLE_TODO_TOOLS=1): their results keep
 // one task list per Claude session, the root's and its subagents' alike, shown as the thread's plan as a TodoWrite list is.
 const CLAUDE_TASK_TOOLS=new Set(["TaskCreate","TaskUpdate","TaskList"]);
-const CLAUDE_TASK_STATUSES=new Set(["pending","in_progress","completed"]);
+// The states a task or a to-do shows in the plan.
+const TASK_STATES=new Set(["pending","in_progress","completed"]);
 export const CLAUDE_COMPACT_FAILED="Claude Code could not compact its context.";
 // What the row of a background task says when its Claude Code ended first (Stop, Edit from here, its release or its exit), which ends it.
 const CLAUDE_TASK_STOPPED="Claude Code stopped before this finished.";
@@ -47,20 +65,23 @@ const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
 const CLAUDE_CLOSE_TIMEOUT_MS=5_000;
-// How long a killed Claude Code has to exit before a stalled resumed conversation is not opened again.
-const CLAUDE_EXIT_CONFIRM_MS=10_000;
+// How long a killed Claude Code has to exit before a stalled resumed conversation is not opened again: a killed process ends at
+// once, so it gets as long as a close does.
+const CLAUDE_EXIT_CONFIRM_MS=CLAUDE_CLOSE_TIMEOUT_MS;
 // The end of a Claude Code's stderr Trebell keeps, as the SDK keeps 2,048 characters of its own processes'.
 const CLAUDE_STDERR_TAIL=4096;
-const CLAUDE_USAGE_LIMIT_WINDOWS=Object.freeze({five_hour:"5-hour",seven_day:"7-day",seven_day_opus:"7-day Opus",seven_day_sonnet:"7-day Sonnet",seven_day_overage_included:"7-day model",overage:"overage"});
 // API errors Claude Code does not retry, whose own error message names the problem (an unknown model, a bad request, an
-// account or billing issue): that message is the turn's error, not "Claude Code stopped after the API kept failing."
+// account or billing issue): that message is the turn's error, not the sentence for an API that failed again and again.
 const CLAUDE_EXPLAINED_API_ERRORS=new Set(["invalid_request","model_not_found","billing_error","oauth_org_not_allowed","account_on_hold","verification_required","cloud_credential_error"]);
-const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Whether a message id has the form of a UUID (hexadecimal groups of 8, 4, 4, 4 and 12 characters), which Claude Code takes as the
+// uuid of the user message it carries.
+const UUID_GROUP_LENGTHS=[8,4,4,4,12],HEX_DIGITS=/^[0-9a-f]+$/i;
+function hasUuidForm(value){
+  const groups=String(value).split("-");
+  return groups.length===UUID_GROUP_LENGTHS.length&&groups.every((group,index)=>group.length===UUID_GROUP_LENGTHS[index]&&HEX_DIGITS.test(group));
+}
 // What Claude Code prints, and exits on, when it is asked to resume a session it has no transcript for.
 const CLAUDE_NO_CONVERSATION=/No conversation found with session ID/i;
-// The Claude Agent SDK loads with the first session that starts, not with the server (budget B25).
-let claudeAgentSdk=null;
-const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
 
 function sdkPermissionMode(mode,collaborationMode="default"){
   if(collaborationMode==="plan")return "plan";
@@ -97,20 +118,42 @@ function toolKind(name){
   return "other";
 }
 function toolTitle(block){return toolKind(block?.name)==="execute"&&typeof block?.input?.command==="string"&&block.input.command.trim()?block.input.command:String(block?.name||"Tool")}
+// A tool result's content as text: a string as it is, the text blocks of a list one per line, anything else as JSON.
 function toolResultText(content){
+  if(content===null||content===undefined)return "";
   if(typeof content==="string")return content;
-  if(Array.isArray(content))return content.map(item=>item?.type==="text"?String(item.text||""):"").filter(Boolean).join("\n");
-  return content==null?"":JSON.stringify(content);
+  if(!Array.isArray(content))return JSON.stringify(content);
+  const lines=[];
+  for(const item of content){const line=item?.type==="text"?String(item.text||""):"";if(line)lines.push(line)}
+  return lines.join("\n");
 }
 function usageTotal(usage={}){
   return Number(usage.input_tokens||0)+Number(usage.cache_creation_input_tokens||0)+Number(usage.cache_read_input_tokens||0)+Number(usage.output_tokens||0);
 }
 const tokens=value=>Math.max(0,Math.round(Number(value))||0);
-// The prompt a request sent: its input and cache tokens.
-function promptTokens(usage){return tokens(usage?.input_tokens)+tokens(usage?.cache_creation_input_tokens)+tokens(usage?.cache_read_input_tokens)}
-// A message_delta's usage counts its message so far: a field it leaves null or out keeps message_start's.
-function mergedUsage(current,delta){
-  return {...current,input_tokens:delta.input_tokens??current.input_tokens,cache_creation_input_tokens:delta.cache_creation_input_tokens??current.cache_creation_input_tokens??null,cache_read_input_tokens:delta.cache_read_input_tokens??current.cache_read_input_tokens??null,output_tokens:delta.output_tokens??current.output_tokens};
+// The counters of one request's usage, the first three of which add up to the prompt it sent.
+const REQUEST_COUNTERS=Object.freeze(["input_tokens","cache_creation_input_tokens","cache_read_input_tokens","output_tokens"]);
+const PROMPT_COUNTERS=REQUEST_COUNTERS.slice(0,3);
+function promptSize(usage){
+  let size=0;
+  for(const counter of PROMPT_COUNTERS)size+=tokens(usage?.[counter]);
+  return size;
+}
+// A message_delta reports its message so far: each counter it gives a value for is the request's now, and every counter it leaves
+// out (or null) stays as message_start gave it.
+function withDelta(requestUsage,delta){
+  const next={...requestUsage};
+  for(const counter of REQUEST_COUNTERS){const value=delta[counter];if(value!==null&&value!==undefined)next[counter]=value}
+  return next;
+}
+// What an assistant snapshot's usage makes of the open root request (null: nothing). The snapshot repeats its request's
+// message_start usage: for a message the stream did not report it opens that request; for the open one whose prompt the stream gave
+// as zeros (as some proxies do) its own prompt is taken, with the larger of the two output counts.
+function requestFromSnapshot(open,messageId,usage){
+  if(!open||open.id!==messageId)return {id:messageId,usage:{...usage}};
+  if(!open.usage||promptSize(open.usage)>0||promptSize(usage)<=0)return null;
+  const outputTokens=Math.max(tokens(usage.output_tokens),tokens(open.usage.output_tokens));
+  return {...open,usage:{...usage,output_tokens:outputTokens}};
 }
 // The tokens of a turn's root requests so far, which its result's main-loop usage gives once it ends.
 function summedUsage(requests){
@@ -120,53 +163,109 @@ function summedUsage(requests){
 }
 // The context meter's reading of one request: its prompt, as the relay's last request.
 function contextReading(usage){
-  const input=promptTokens(usage),output=tokens(usage?.output_tokens);
+  const input=promptSize(usage),output=tokens(usage?.output_tokens);
   return {totalTokens:input+output,inputTokens:input,cachedInputTokens:tokens(usage?.cache_read_input_tokens),cacheWriteInputTokens:tokens(usage?.cache_creation_input_tokens),outputTokens:output};
 }
 
-// A task tool's field, read defensively: the tools' result shapes are no typed SDK contract.
-const taskField=(value,key)=>value&&typeof value==="object"?value[key]:undefined;
-const taskText=(value,key)=>{const field=taskField(value,key);return typeof field==="string"&&field.trim()?field.trim():undefined};
+// A field of a to-do or a task tool's input or result as text: a string that is not blank, trimmed, else undefined. These shapes are
+// no typed SDK contract, so anything else reads as missing.
+function filled(record,key){
+  if(!record||typeof record!=="object")return undefined;
+  const value=record[key];
+  if(typeof value!=="string")return undefined;
+  return value.trim()||undefined;
+}
 // A TodoWrite's list as plan entries.
 export function claudeTodoEntries(input){
   return (Array.isArray(input?.todos)?input.todos:[]).flatMap(todo=>{
-    const content=taskText(todo,"content");
-    return content?[{content,status:CLAUDE_TASK_STATUSES.has(todo.status)?todo.status:"pending"}]:[];
+    const content=filled(todo,"content");
+    return content?[{content,status:TASK_STATES.has(todo.status)?todo.status:"pending"}]:[];
   });
 }
-// The task list after a task tool's call went through, or null when it changed nothing it shows.
-// result: the tool's structured result, or its text, all a subagent's call returns. TaskList's list replaces it; TaskCreate adds the
-// task its result names ("Task #3 created successfully: <subject>"); TaskUpdate changes a task the list has from its input once
-// Claude Code says it did ("Updated task #3 status"), and its "deleted" status drops it.
-export function claudeTaskList(tasks,name,input,result){
-  if(name==="TaskList"){
-    const listed=taskField(result,"tasks");if(!Array.isArray(listed))return null;
-    const next=new Map();
-    for(const task of listed){const id=taskText(task,"id"),content=taskText(task,"subject"),status=taskField(task,"status");if(id&&content&&CLAUDE_TASK_STATUSES.has(status))next.set(id,{content,status})}
-    return next.size||tasks.size?next:null;
-  }
-  if(name==="TaskCreate"){
-    const said=typeof result==="string"?/^Task #(\S+) created successfully: (.+)$/s.exec(result.trim()):null,created=taskField(result,"task");
-    const id=taskText(created,"id")??said?.[1],content=taskText(created,"subject")??said?.[2].trim()??taskText(input,"subject");
-    return id&&content?new Map(tasks).set(id,{content,status:"pending"}):null;
-  }
-  if(name!=="TaskUpdate"||taskField(result,"success")===false||(typeof result==="string"&&!result.trim().startsWith("Updated task #")))return null;
-  const id=taskText(input,"taskId")??taskText(result,"taskId"),task=id?tasks.get(id):undefined;if(!task)return null;
-  if(input?.status==="deleted"){const next=new Map(tasks);next.delete(id);return next}
-  const content=taskText(input,"subject")??task.content,status=CLAUDE_TASK_STATUSES.has(input?.status)?input.status:task.status;
-  return content===task.content&&status===task.status?null:new Map(tasks).set(id,{content,status});
+
+// Claude Code's task tools keep one list per Claude session. Each task is {content: its subject, status}, by its id.
+// A task record (a TaskList row, a file of Claude Code's own list) as {id, task}, or null when it lacks an id, a subject or a state
+// the plan shows.
+function shownTask(record){
+  const id=filled(record,"id"),content=filled(record,"subject");
+  if(!id||!content||!TASK_STATES.has(record.status))return null;
+  return {id,task:{content,status:record.status}};
 }
-// The task list Claude Code keeps on disk for a session, one <n>.json a task in its folder, in its order,
-// or null where there is no folder to read. Claude Code writes a call's change before its result comes. Its own internal tasks
-// (metadata._internal) and files that are no task are left out.
+// What Claude Code answers a TaskCreate with, in text: "Task #<id> created successfully: <subject>".
+const CREATED_LEAD="Task #",CREATED_WORDS=" created successfully: ";
+function createdFromText(text){
+  const line=text.trim();
+  if(!line.startsWith(CREATED_LEAD))return null;
+  const rest=line.slice(CREATED_LEAD.length),idEnd=rest.search(/\s/);
+  if(idEnd<1||!rest.startsWith(CREATED_WORDS,idEnd))return null;
+  const subject=rest.slice(idEnd+CREATED_WORDS.length).trim();
+  return subject?{id:rest.slice(0,idEnd),subject}:null;
+}
+// The task a TaskCreate made, from its structured result (the subject the call asked for when the result names none) or its text.
+function createdTask(input,result){
+  if(typeof result==="string")return createdFromText(result);
+  const made=result&&typeof result==="object"?result.task:undefined;
+  const id=filled(made,"id"),subject=filled(made,"subject")??filled(input,"subject");
+  return id&&subject?{id,subject}:null;
+}
+// Whether Claude Code says a TaskUpdate went through: its structured result does unless it says success false; its text does only
+// as its own "Updated task #..." line (any other text is why it refused).
+function updateWentThrough(result){
+  if(typeof result==="string")return result.trim().startsWith("Updated task #");
+  return !(result&&typeof result==="object"&&result.success===false);
+}
+// A TaskUpdate that went through changes the task it names (by the input's taskId, else the result's): status "deleted" drops it,
+// otherwise a subject that is not blank and a known status replace the task's.
+function afterUpdate(tasks,input,result){
+  if(!updateWentThrough(result))return null;
+  const id=filled(input,"taskId")??filled(result,"taskId"),task=id===undefined?undefined:tasks.get(id);
+  if(!task)return null;
+  if(input?.status==="deleted")return new Map(Array.from(tasks).filter(([key])=>key!==id));
+  const changed={content:filled(input,"subject")??task.content,status:TASK_STATES.has(input?.status)?input.status:task.status};
+  const same=changed.content===task.content&&changed.status===task.status;
+  return same?null:new Map(tasks).set(id,changed);
+}
+// TaskList's structured list is the whole list: it replaces the one kept, unless both are empty. Its text is not read.
+function afterListing(tasks,result){
+  const rows=result&&typeof result==="object"?result.tasks:undefined;
+  if(!Array.isArray(rows))return null;
+  const next=new Map();
+  for(const row of rows){const shown=shownTask(row);if(shown)next.set(shown.id,shown.task)}
+  return next.size===0&&tasks.size===0?null:next;
+}
+// The list after a task tool's call went through, as a new Map, or null when the call changed nothing the plan shows.
+// result: the tool's structured result, or its text, which is all a subagent's call returns.
+export function claudeTaskList(tasks,name,input,result){
+  switch(name){
+    case "TaskList":return afterListing(tasks,result);
+    case "TaskCreate":{
+      const made=createdTask(input,result);
+      return made?new Map(tasks).set(made.id,{content:made.subject,status:"pending"}):null;
+    }
+    case "TaskUpdate":return afterUpdate(tasks,input,result);
+    default:return null;
+  }
+}
+// Claude Code's own list for a session on disk: one file a task in the list's folder, named by the task's number, which Claude Code
+// writes before the call's result comes. Tasks in number order; null when the folder cannot be listed. Its own bookkeeping tasks
+// (metadata._internal) and whatever is no task (a directory, a file cut short, its .highwatermark) are left out.
+const TASK_FILE=/^(\d+)\.json$/;
+function readJsonFile(path){try{return JSON.parse(readFileSync(path,"utf8"))}catch{return null}}
+function bookkeepingTask(record){
+  const metadata=record.metadata;
+  return metadata!==undefined&&(!metadata||typeof metadata!=="object"||Boolean(metadata._internal));
+}
 export function readClaudeTaskStore(folder){
-  let names;try{names=readdirSync(folder)}catch{return null}
+  let entries;
+  try{entries=readdirSync(folder)}catch{return null}
+  const numbered=[];
+  for(const entry of entries){const match=TASK_FILE.exec(entry);if(match)numbered.push({entry,number:Number(match[1])})}
+  numbered.sort((a,b)=>a.number-b.number);
   const tasks=new Map();
-  for(const name of names.filter(name=>/^\d+\.json$/.test(name)).sort((a,b)=>parseInt(a,10)-parseInt(b,10))){
-    let task;try{task=JSON.parse(readFileSync(join(folder,name),"utf8"))}catch{continue}
-    const id=taskText(task,"id"),content=taskText(task,"subject"),status=taskField(task,"status"),metadata=taskField(task,"metadata");
-    if(!id||!content||!CLAUDE_TASK_STATUSES.has(status)||(metadata!==undefined&&(!metadata||typeof metadata!=="object"||metadata._internal)))continue;
-    tasks.set(id,{content,status});
+  for(const {entry} of numbered){
+    const record=readJsonFile(join(folder,entry));
+    const shown=record&&typeof record==="object"&&!bookkeepingTask(record)?shownTask(record):null;
+    if(shown)tasks.set(shown.id,shown.task);
   }
   return tasks;
 }
@@ -226,8 +325,8 @@ class MessageQueue{
 }
 
 // SDK user message content: images (png, jpeg, gif and webp only) first, then the text blocks. Claude Code
-// expands a slash command or skill only from the last text block, so the user's own text stays last. A file is named by its path,
-// and a document by the file its text was extracted to as well.
+// expands a slash command or skill only from the last text block, so the user's own text stays last. A linked file gets Trebell's
+// attachment line (linkedFileLine): its path, and for a document the file its text was extracted to as well.
 export function claudeUserContent(parts=[]){
   const images=[],texts=[],links=[];
   for(const part of Array.isArray(parts)?parts:[]){
@@ -235,7 +334,7 @@ export function claudeUserContent(parts=[]){
       const mimeType=String(part.mimeType||part.mime_type||"").trim().toLowerCase();
       if(!CLAUDE_IMAGE_TYPES.has(mimeType))throw new Error(`Claude Code takes PNG, JPEG, GIF and WebP images, not '${mimeType||"unknown"}'.`);
       images.push({type:"image",source:{type:"base64",media_type:mimeType,data:String(part.data||"")}});
-    }else if(part?.type==="resource_link")links.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??String(part.uri||"")}${textExtractedTo(part)}`});
+    }else if(part?.type==="resource_link")links.push({type:"text",text:linkedFileLine(part)});
     else if(part?.type==="text"){const text=String(part.text||"");if(text)texts.push({type:"text",text})}
     else if(part)texts.push({type:"text",text:JSON.stringify(part)});
   }
@@ -257,33 +356,49 @@ export function claudeQuestionAnswers(questions=[],answers=null){
   return Object.keys(out).length?out:null;
 }
 
-// "Allow for session": the CLI's suggestions scoped to this session, or a rule
-// allowing the tool when it suggested none.
-export function claudeSessionPermissionUpdates(toolName,suggestions){
-  const updates=(Array.isArray(suggestions)?suggestions:[]).map(suggestion=>({...suggestion,destination:"session"}));
-  return updates.length?updates:[{type:"addRules",rules:[{toolName}],behavior:"allow",destination:"session"}];
+// The permission updates that grant "Allow for this session" (PermissionUpdate[]). What Claude Code suggested is granted as it
+// suggested it, but for this session only: never written to the user, project or local settings it named. When it suggested
+// nothing, the grant is a session rule that allows the tool.
+export function claudeSessionGrant(toolName,suggestions){
+  const suggested=Array.isArray(suggestions)?suggestions:[];
+  if(suggested.length===0)return [{type:"addRules",rules:[{toolName}],behavior:"allow",destination:"session"}];
+  return suggested.map(update=>({...update,destination:"session"}));
 }
 // Claude Code's own text for a request (its prompt sentence, subtitle, reason or ask rule) can carry its renderer's terminal escapes.
 function plainText(value){return typeof value==="string"?stripVTControlCharacters(value).trim():""}
 // A notice's text as the result that repeats it gives it.
 function noticeKey(value){return plainText(String(value??"")).replace(/\s+/g," ")}
-// The approval prompt: the CLI's own prompt sentence, else the tool with its command, path
-// or input, so the person sees what they approve, then why Claude Code asks (its decisionReason) when the sentence does not say it.
+
+// The approval card's text.
+// Claude Code's tools name what a call acts on in one of these input fields (sdk-tools.d.ts): the command of Bash, PowerShell and
+// Monitor, the file of Read, Write and Edit, the notebook of NotebookEdit, the folder of Glob and Grep. The first with text is it.
+const ACTED_ON=Object.freeze(["command","file_path","notebook_path","path"]);
+// The card shows at most this much of a command or path, of a tool's input or of Claude Code's reason; a cut text ends in "...".
+const CARD_TEXT_MAX=500;
+// Between the tool's command or path and Claude Code's own sentence, as Trebell separates parts of a line elsewhere.
+const CARD_PART_GAP=" · ";
+function bounded(text,max){return text.length>max?`${text.slice(0,max-3)}...`:text}
+function actedOn(input){return ACTED_ON.map(field=>filled(input,field)).find(Boolean)??""}
+// A tool's input as JSON; nothing for one JSON cannot write (a BigInt).
+function inputJson(input){
+  try{return JSON.stringify(input??{})??""}catch{return ""}
+}
+// What the card says is to be approved. Claude Code's sentence (its title, else its subtitle, else its reason) stands alone when it
+// names the command or path; otherwise the tool and the command or path come first, since Claude Code's sentence for a command can
+// be the model's own description of it ("Run node one-liner printing trebell-tour"); with neither, the tool's input shows.
+function approvalSubject(tool,target,sentence,input){
+  if(!target)return sentence||`${tool}: ${bounded(inputJson(input),CARD_TEXT_MAX)}`;
+  if(sentence.includes(target))return sentence;
+  const named=`${tool}: ${bounded(target,CARD_TEXT_MAX)}`;
+  return sentence?named+CARD_PART_GAP+sentence:named;
+}
+// The card's text: the subject, then why Claude Code asks (its decisionReason) in parentheses, unless the subject says it already.
 export function claudePermissionPrompt(toolName,input,options={}){
-  const reason=plainText(options?.decisionReason).slice(0,400),own=plainText(options?.title)||plainText(options?.description)||reason||null;
-  const name=String(toolName||"Tool"),field=keys=>{for(const key of keys){const value=input?.[key];if(typeof value==="string"&&value.trim())return value.trim()}return null};
-  const target=field(["command","cmd","script"])??field(["file_path","path","filename","fileName"]);
-  let prompt=own;
-  // The command or path itself is always shown: Claude Code's sentence for a shell command can be
-  // the model's own description of it ("Run node one-liner printing trebell-tour"), which follows it when it adds something.
-  if(target!=null){
-    const action=`${name}: ${target.slice(0,400)}`;
-    prompt=!own?action:own.includes(target)?own:`${action} — ${own}`;
-  }else if(!own){
-    let serialized="";try{serialized=JSON.stringify(input??{})??""}catch{serialized=""}
-    prompt=serialized.length<=400?`${name}: ${serialized}`:`${name}: ${serialized.slice(0,397)}...`;
-  }
-  return reason&&!prompt.includes(reason)?`${prompt} (${reason})`:prompt;
+  const reason=bounded(plainText(options?.decisionReason),CARD_TEXT_MAX);
+  const sentence=[options?.title,options?.description].map(plainText).find(Boolean)||reason;
+  const subject=approvalSubject(String(toolName||"Tool"),actedOn(input),sentence,input);
+  if(!reason||subject.includes(reason))return subject;
+  return `${subject} (${reason})`;
 }
 // Every request Claude Code forwards in Full access is one it does not approve itself: an ask rule, or its own safety checks (an rm of
 // a critical path, a read outside the folder). The card says so, and names the person's ask rule when one matched. In Plan mode (the
@@ -310,36 +425,80 @@ function permissionRuleText(rule){
   return content?`${name}(${content})`:name;
 }
 
-function formatWait(ms){
-  const total=Math.ceil(ms/60_000),hours=Math.floor(total/60),minutes=total%60;
-  return hours===0?`${total}m`:minutes===0?`${hours}h`:`${hours}h ${minutes}m`;
+// Usage windows (the SDK's SDKRateLimitInfo, sent in a rate_limit_event).
+// A window's type, as the turn keeps its windows by it.
+const windowType=info=>info?.rateLimitType||"unknown";
+// The statuses that let requests through, of a window and of the account's extra usage alike.
+const PASSING=new Set(["allowed","allowed_warning"]);
+// Whether the account's extra usage takes over once a window is used up: it may be used, or it is in use.
+function extraUsageCovers(info){return [info.isUsingOverage,info.overageInUse].includes(true)||PASSING.has(info.overageStatus)}
+// Whether a window lets requests through again: its own status passes, or the extra usage covers it.
+function windowPasses(info){return extraUsageCovers(info)||PASSING.has(info.status)}
+// How a notice names a window. A type names the window's span, and a weekly window's type can add what it covers: one model's use,
+// or the extra usage as well. "overage" is the extra usage itself. Any other type is the account's usage allowance.
+const SOME_ALLOWANCE="its usage allowance",WEEKLY_LEAD="seven_day_";
+const SPAN_NAMES=new Map([["overage","its extra usage"],["five_hour","its five-hour allowance"],["seven_day","its weekly allowance"]]);
+const WEEKLY_COVERS=new Map([["opus","its weekly Opus allowance"],["sonnet","its weekly Sonnet allowance"],["overage_included","its weekly allowance, extra usage included"]]);
+function allowanceName(type){
+  if(typeof type!=="string")return SOME_ALLOWANCE;
+  const covers=type.startsWith(WEEKLY_LEAD)?WEEKLY_COVERS.get(type.slice(WEEKLY_LEAD.length)):undefined;
+  return SPAN_NAMES.get(type)??covers??SOME_ALLOWANCE;
 }
-export function describeClaudeUsageLimit(info={},nowMs=Date.now()){
-  const label=CLAUDE_USAGE_LIMIT_WINDOWS[info?.rateLimitType]||null;
-  const resetsAt=Number(info?.resetsAt),waitMs=Number.isFinite(resetsAt)&&resetsAt>0?resetsAt*1000-nowMs:NaN;
-  const wait=waitMs>0&&waitMs<=30*24*60*60_000?formatWait(waitMs):null;
-  return `Claude usage limit reached. This turn is paused until the ${label?label+" ":""}limit resets${wait?` in ${wait}`:""}.`;
+const MINUTE_MS=60_000,MOST_MINUTES=30*24*60;
+// A wait in words: whole hours, then the minutes left over, each only when there are some ("45 min", "2 h", "1 h 30 min").
+function spokenWait(minutes){
+  const hours=Math.trunc(minutes/60),leftOver=minutes-hours*60;
+  const hourWords=hours?`${hours} h`:"",minuteWords=leftOver||!hours?`${leftOver} min`:"";
+  return hourWords&&minuteWords?`${hourWords} ${minuteWords}`:hourWords||minuteWords;
 }
-// A turn's usage-limit error, with the wait when Claude Code said when each rejected window resets (the latest of them): limits
-// are the rejected windows' rate_limit_info.
+// The wait until a reset at resetsAt (Unix seconds), in whole minutes rounded up, as words, or null: no reset given, one already
+// past, or one more than 30 days off, which is no wait worth stating (a missing or odd reset reads as NaN and fails the test).
+function waitFor(resetsAt,nowMs){
+  const atMs=Number(resetsAt)*1000,minutes=Math.ceil((atMs-nowMs)/MINUTE_MS);
+  const stated=atMs>0&&minutes>=1&&minutes<=MOST_MINUTES;
+  return stated?spokenWait(minutes):null;
+}
+// The notice of a turn Claude Code holds back on a used-up window: which allowance, and how long until it resets when that is known.
+export function claudeUsagePauseNotice(info={},nowMs=Date.now()){
+  const wait=waitFor(info?.resetsAt,nowMs);
+  return `Claude Code has used up ${allowanceName(info?.rateLimitType)}. The turn waits until it resets${wait?`, in ${wait}`:""}.`;
+}
+// The error of a turn that ended on used-up windows (their rate_limit_info). A message can go through only once every one of them
+// has reset, so the wait is until the latest reset, and it is given only when each window says when it resets. Only a single window
+// is named.
 export function claudeUsageLimitHint(limits=[],nowMs=Date.now()){
-  const resets=limits.map(info=>Number(info?.resetsAt)),waitMs=limits.length&&resets.every(value=>Number.isFinite(value)&&value>0)?Math.max(...resets)*1000-nowMs:NaN;
-  if(!(waitMs>0&&waitMs<=30*24*60*60_000))return CLAUDE_USAGE_LIMIT_HINT;
-  const label=limits.length===1?CLAUDE_USAGE_LIMIT_WINDOWS[limits[0]?.rateLimitType]||null:null;
-  return `Claude usage limit reached. Send the message again once the ${label?label+" ":""}limit resets in ${formatWait(waitMs)}.`;
+  let latest=null;
+  for(const info of limits){
+    const resetsAt=Number(info?.resetsAt);
+    if(!Number.isFinite(resetsAt)||resetsAt<=0)return CLAUDE_USAGE_LIMIT_HINT;
+    latest=latest===null?resetsAt:Math.max(latest,resetsAt);
+  }
+  const wait=latest===null?null:waitFor(latest,nowMs);
+  if(!wait)return CLAUDE_USAGE_LIMIT_HINT;
+  const name=limits.length>1?SOME_ALLOWANCE:allowanceName(limits[0]?.rateLimitType);
+  return `Claude Code has used up ${name}. Try the message again when it resets, in ${wait}.`;
 }
-// The usage window a message says Claude Code rejected, or null: a rate_limit_event, or the window a reply the limit blocked repeats
-// (api_error_params), which Claude Code sends each time while it throttles an unchanged event. An allowed
-// overage takes over a rejected window, so it rejects nothing.
-export function claudeRejectedLimit(message){
-  const info=message?.type==="rate_limit_event"?message.rate_limit_info:message?.type==="assistant"&&message.error==="rate_limit"?message.api_error_params?.rate_limit_info:null;
-  if(!info||typeof info!=="object"||info.status!=="rejected")return null;
-  return info.overageStatus==="allowed"||info.overageStatus==="allowed_warning"||info.isUsingOverage===true||info.overageInUse===true?null:info;
+// The window a message says Claude Code refused, or null. A rate_limit_event carries it; so does a reply the limit blocked (an
+// assistant frame with the rate_limit error), in its api_error_params, which Claude Code sends each time while it holds back an
+// unchanged event. A window the extra usage covers is not refused.
+export function claudeRefusedWindow(message){
+  let info=null;
+  switch(message?.type){
+    case "rate_limit_event":info=message.rate_limit_info;break;
+    case "assistant":if(message.error==="rate_limit")info=message.api_error_params?.rate_limit_info;break;
+  }
+  const refused=info!==null&&typeof info==="object"&&info.status==="rejected"&&!extraUsageCovers(info);
+  return refused?info:null;
 }
-// A turn Claude Code refused for a usage limit (a rejected window, or the API's rate_limit error) reads as a usage limit only while its
-// result agrees: a 429 or no status, and an API error, a blocking limit or no reason.
-export function claudeUsageLimited(result,limited){
-  return Boolean(limited)&&(result?.subtype!=="success"||result?.api_error_status==null||result?.api_error_status===429)&&(result?.terminal_reason==null||result.terminal_reason==="api_error"||result.terminal_reason==="blocking_limit");
+// Whether usage-limit evidence (a refused window, or the API's own rate_limit error) names a finished turn's failure. Never without
+// evidence, and only while the result agrees: it ends for a reason a limit gives (an API error, a blocking limit, or none), and a
+// success carries no API status but 429.
+export function claudeLimitHolds(result,evidence){
+  if(!evidence)return false;
+  const reason=result?.terminal_reason;
+  if(reason!==undefined&&reason!==null&&reason!=="api_error"&&reason!=="blocking_limit")return false;
+  if(result?.subtype!=="success")return true;
+  return [undefined,null,429].includes(result.api_error_status);
 }
 
 export function claudeSignedOutMessage(configDir=""){
@@ -347,25 +506,28 @@ export function claudeSignedOutMessage(configDir=""){
   return `Claude Code could not authenticate. Run \`claude auth login\`${home?` with CLAUDE_CONFIG_DIR set to "${home}"`:""}, then send the message again, or set this profile to run on the Anthropic API key in Agents & models.`;
 }
 
-// failureHint: sign-in or usage-limit evidence; apiError: the API's own words for an api_error (an explained reply's text, or the
-// result's "API Error: …"), which never names a blocking limit.
-function terminalResultError(reason,failureHint,apiError=null){
-  switch(reason){
-    case "api_error":return failureHint||apiError||"Claude Code stopped after the API kept failing.";
-    case "malformed_tool_use_exhausted":return "Claude Code stopped after its tool calls kept coming out malformed.";
-    case "budget_exhausted":return "Claude Code stopped: this turn used up its token budget.";
-    case "structured_output_retry_exhausted":return "Claude Code could not give the structured output asked for.";
-    case "tool_deferred_unavailable":return "Claude Code could not go back to a deferred tool call, because that tool is gone.";
-    case "turn_setup_failed":return "Claude Code could not start this turn.";
-    // Claude Code also ends a turn on blocking_limit once the context window is full, after an invalid_request reply saying "Prompt is
-    // too long": only sign-in or usage-limit evidence (the hint) names it otherwise.
-    case "blocking_limit":return failureHint||CLAUDE_CONTEXT_FULL;
-    case "rapid_refill_breaker":return "Claude Code stopped: the context filled up again right after compaction.";
-    case "prompt_too_long":return CLAUDE_CONTEXT_FULL;
-    case "image_error":return "Claude Code stopped: it could not read an image in this thread.";
-    case "model_error":return "Claude Code stopped: the model answered with an error.";
-    default:return null;
-  }
+// Why a turn failed, from the result that ended it (the SDK's SDKResultMessage).
+const CLAUDE_API_GAVE_UP="Claude Code ended the turn after its requests to the Claude API failed again and again.";
+const CLAUDE_TURN_ERROR="Claude Code ended the turn with an error.";
+// What each end reason (terminal_reason) says, given the turn's evidence (a sign-in or usage-limit failure) and the API's own words
+// for a request it refused. Claude Code also ends a turn with blocking_limit once the context window is full (after an invalid_request
+// reply saying "Prompt is too long"), which is no limit of the account's unless the evidence says so. A reason not listed says nothing.
+const END_REASON_WORDS=new Map([
+  ["api_error",({evidence,apiWords})=>evidence||apiWords||CLAUDE_API_GAVE_UP],
+  ["blocking_limit",({evidence})=>evidence||CLAUDE_THREAD_TOO_LONG],
+  ["prompt_too_long",()=>CLAUDE_THREAD_TOO_LONG],
+  ["rapid_refill_breaker",()=>"Claude Code ended the turn: compacting gave no lasting room, as the context filled up again at once."],
+  ["model_error",()=>"Claude Code ended the turn because the model returned an error."],
+  ["image_error",()=>"Claude Code ended the turn because an image in this thread could not be read."],
+  ["malformed_tool_use_exhausted",()=>"Claude Code ended the turn: the model's tool calls were still malformed after every retry."],
+  ["structured_output_retry_exhausted",()=>"Claude Code ended the turn: the model never gave the structured output it was asked for."],
+  ["budget_exhausted",()=>"Claude Code ended the turn when it reached its token budget."],
+  ["tool_deferred_unavailable",()=>"Claude Code could not pick a deferred tool call up again, as that tool is no longer there."],
+  ["turn_setup_failed",()=>"Claude Code failed while it set this turn up."],
+]);
+function endReasonWords(reason,context){
+  const words=END_REASON_WORDS.get(reason);
+  return words?words(context):null;
 }
 // The text of an assistant error frame that explains its own failure (see CLAUDE_EXPLAINED_API_ERRORS), or null, with the secrets the
 // API's words can repeat redacted as in the result's "API Error: …".
@@ -375,36 +537,65 @@ export function claudeExplainedApiError(message){
   const text=blocks.map(block=>block?.type==="text"?String(block.text||"").trim():"").filter(Boolean).join("\n");
   return text?redactApiErrorText(text)||null:null;
 }
-// "[ede_diagnostic] ..." entries are CLI-internal telemetry and never the error to show.
-function userFacingErrors(result){return (Array.isArray(result?.errors)?result.errors:[]).filter(error=>typeof error==="string"&&error.trim()&&!error.startsWith("[ede_diagnostic]"))}
+// The errors a result lists that are worth showing: entries with text, without Claude Code's own diagnostics ("[ede_diagnostic] ..."),
+// which are telemetry.
+const DIAGNOSTIC_LEAD="[ede_diagnostic]";
+const worthShowing=entry=>typeof entry==="string"&&!entry.startsWith(DIAGNOSTIC_LEAD)&&entry.trim().length>0;
+function listedErrors(result){
+  if(!Array.isArray(result?.errors))return [];
+  return result.errors.filter(worthShowing);
+}
 
 // Quoted JSON keys of secrets ({"token":"…"}, {"client_secret":"…"}) an API's error text can repeat, whose values the shared redactor's
 // key=value form does not reach.
 const QUOTED_SECRET_VALUE=/(["'])([\w-]*(?:token|secret|password|passwd|api[_-]?key|credential|authorization|cookie))\1(\s*:\s*)(["'])(?:\\.|(?!\4)[^\\])*\4/gi;
 function redactApiErrorText(text){return redactSecretText(String(text).replace(QUOTED_SECRET_VALUE,"$1$2$1$3$4[redacted]$4"),{trim:true})}
 
-// The user-facing failure of a result, or null when the turn succeeded. failureHint: a sign-in or
-// usage-limit failure; explainedError: the text of a reply that explained its own API error (claudeExplainedApiError).
-export function claudeResultFailure(result,{failureHint=null,explainedError=null}={}){
+// What an API status on a success result says, where it says more than the end reason: an overloaded API (HTTP 529), or one holding
+// requests back (HTTP 429).
+function apiStatusWords(status){
+  switch(status){
+    case 529:return "The Claude API is overloaded right now (HTTP 529). Wait a moment, then send the message again.";
+    case 429:return "The Claude API is limiting how fast requests come in (HTTP 429). Wait a little, then send the message again.";
+    default:return null;
+  }
+}
+// The API's own words for a request it refused, as a success result that ended on an API error repeats them ("API Error: 400 ..."):
+// secrets redacted first, then at most API_WORDS_MAX characters. null for any other text.
+const API_WORDS_MAX=600;
+function apiOwnWords(result){
+  if(result.terminal_reason!=="api_error")return null;
+  const text=String(result.result||"");
+  if(!text.trim().startsWith("API Error:"))return null;
+  return bounded(redactApiErrorText(text),API_WORDS_MAX);
+}
+// The first of the candidates with text (each a text, or a function giving one), or null.
+function firstSaid(...candidates){
+  for(const candidate of candidates){const text=typeof candidate==="function"?candidate():candidate;if(text)return text}
+  return null;
+}
+// Why a turn failed as the person reads it, or null when it did not. knownCause: the turn's sign-in or usage-limit failure;
+// explainedError: the text of a reply that explained its own API error (claudeExplainedApiError).
+// A result that is no success failed: its own listed error says why, else its end reason, else its subtype. A success failed only
+// when it says so: its API status or end reason gives the verdict, and one marked is_error falls back on its listed error, then that
+// verdict, the evidence, the explained error and its own text.
+export function claudeResultFailure(result,{knownCause=null,explainedError=null}={}){
   if(!result)return null;
-  const success=result.subtype==="success";
-  const listed=success&&!result.is_error?null:userFacingErrors(result)[0]||null;
-  // The API's own words for the request it refused ("API Error: 400 …"), secrets redacted and cut to 500 characters, when nothing
-  // names the failure better.
-  const apiError=success&&result.terminal_reason==="api_error"&&String(result.result||"").trim().startsWith("API Error:")?redactApiErrorText(result.result).slice(0,500):null;
-  const structured=success&&result.api_error_status===529?"The Claude API is overloaded (529). Send the message again in a moment."
-    :success&&result.api_error_status===429?"The Claude API rate limit was hit (429). Send the message again later."
-    :terminalResultError(result.terminal_reason,failureHint,explainedError||apiError);
-  if(!success)return listed||structured||`Claude Code turn failed: ${result.subtype||"unknown error"}`;
-  if(!result.is_error&&!structured)return null;
-  return listed||structured||failureHint||explainedError||String(result.result||"").trim()||"Claude Code turn failed.";
+  const ownError=()=>listedErrors(result)[0];
+  if(result.subtype!=="success"){
+    const subtype=result.subtype?`Claude Code ended the turn with an error (${result.subtype}).`:CLAUDE_TURN_ERROR;
+    return firstSaid(ownError,()=>endReasonWords(result.terminal_reason,{evidence:knownCause,apiWords:explainedError}),subtype);
+  }
+  const verdict=()=>apiStatusWords(result.api_error_status)||endReasonWords(result.terminal_reason,{evidence:knownCause,apiWords:explainedError||apiOwnWords(result)});
+  if(!result.is_error)return firstSaid(verdict);
+  return firstSaid(ownError,verdict,knownCause,explainedError,String(result.result||"").trim(),CLAUDE_TURN_ERROR);
 }
 
-// A turn that ended without an error message of its own reads as interrupted or cancelled from its listed errors.
-function isStoppedResult(result){
-  if(!result||result.subtype==="success")return false;
-  const text=(Array.isArray(result.errors)?result.errors:[]).join("\n").toLowerCase();
-  return text.includes("interrupt")||text.includes("cancel");
+// A turn that ended with no error message of its own: its listed errors say it was interrupted or cancelled.
+const STOP_WORDS=/interrupt|cancel/i;
+function endedByStop(result){
+  if(!result||result.subtype==="success"||!Array.isArray(result.errors))return false;
+  return STOP_WORDS.test(result.errors.join("\n"));
 }
 // Inventory sources, weakest first: the machine-wide capability probe, the probe of this thread's folder, the live query.
 const INVENTORY_MACHINE=1,INVENTORY_WORKSPACE=2,INVENTORY_LIVE=3;
@@ -499,7 +690,7 @@ export class ClaudeAgentSession{
       this.agent=agent||null;
       const live=await this.#ensureLive(opening);
       // Fresh for every offer: Claude acknowledges a prompt whose uuid its transcript already holds without running a turn.
-      const promptUuid=UUID.test(String(messageId||""))?String(messageId):randomUUID();
+      const promptUuid=hasUuidForm(messageId||"")?String(messageId):randomUUID();
       const turn=this.#newTurn({promptUuid,live});
       turn.onDelivered=typeof onDelivered==="function"?onDelivered:null;turn.compact=compact===true;
       this.turn=turn;clearTimeout(this.idleTimer);
@@ -530,8 +721,8 @@ export class ClaudeAgentSession{
     if(!turn||!live||live.closed)throw new Error("Claude Code has no running turn to steer.");
     const content=claudeUserContent(parts);
     // A "now" message cancels the root turn's running tool calls, a subagent it runs in the foreground among them: each moves to the
-    // background first, for at most 5 s from the steer, and its result comes in later, in a turn of its own.
-    await this.#backgroundSubagents(live);
+    // background first, for at most 8 s from the steer, and its result comes in later, in a turn of its own.
+    await this.#parkForegroundSubagents(live);
     // A turn that ended meanwhile takes no steer: the message would start a turn nobody sent.
     if(turn.settled||live.closed)throw new Error("Claude Code has no running turn to steer.");
     const uuid=randomUUID();
@@ -539,15 +730,29 @@ export class ClaudeAgentSession{
     live.input.push({type:"user",message:{role:"user",content},parent_tool_use_id:null,priority:"now",uuid});
     return {accepted:true,pending:0};
   }
-  // Claude Code refuses a move while background tasks are turned off (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS), and the steer goes all the
-  // same. A move an earlier steer asked for is waited on, not asked again.
-  async #backgroundSubagents(live){
-    const moves=[...live.foregroundSubagents].map(id=>{
-      let move=live.subagentMoves.get(id);
-      if(!move){move=Promise.resolve().then(()=>live.query.backgroundTasks(id)).catch(()=>false).finally(()=>live.subagentMoves.delete(id));live.subagentMoves.set(id,move)}
-      return move;
+  // Settles once every foreground subagent of the root turn has moved to the background, or STEER_HOLD_MS after it is called. Claude
+  // Code refuses a move while background tasks are turned off (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS), and the steer goes all the same.
+  #parkForegroundSubagents(live){
+    const moves=Array.from(live.foregroundSubagents,callId=>this.#moveToBackground(live,callId));
+    if(!moves.length)return Promise.resolve();
+    return new Promise(settle=>{
+      const hold=setTimeout(settle,STEER_HOLD_MS);hold.unref?.();
+      Promise.all(moves).then(()=>{clearTimeout(hold);settle()});
     });
-    if(moves.length)await withTimeout(Promise.allSettled(moves),CLAUDE_STEER_BACKGROUND_MS).catch(()=>{});
+  }
+  // Asks Claude Code once to move a subagent call to the background: while that move is open, a later steer waits on the same one
+  // instead of asking again. The move settles with Claude Code's answer, false when it refused, and is then forgotten.
+  #moveToBackground(live,callId){
+    const open=live.subagentMoves.get(callId);
+    if(open)return open;
+    const move=new Promise(settle=>queueMicrotask(()=>{
+      let answer;
+      try{answer=live.query.backgroundTasks(callId)}catch{answer=false}
+      Promise.resolve(answer).then(settle,()=>settle(false));
+    }));
+    live.subagentMoves.set(callId,move);
+    move.then(()=>{if(live.subagentMoves.get(callId)===move)live.subagentMoves.delete(callId)});
+    return move;
   }
 
   async setModel(model){this.model=model||null;return {modelId:this.model}}
@@ -608,7 +813,7 @@ export class ClaudeAgentSession{
   #probeInput(cwd=this.cwd){return {command:this.command,cwd,env:this.env,spawnProcess:this.spawnProcess,scope:this.capabilityScope}}
   #loadInventory(){
     // This folder's commands and agents only: plan usage is the model list's machine-wide probe's to read.
-    const pending=this.capabilities?.load?.({...this.#probeInput(),includeUsage:false});
+    const pending=this.capabilities?.load?.({...this.#probeInput(),withPlanUsage:false});
     pending?.then(probe=>this.#publishProbe(probe,INVENTORY_WORKSPACE),()=>{});
   }
   // A weaker source never replaces what a stronger one already published.
@@ -680,7 +885,7 @@ export class ClaudeAgentSession{
       systemPrompt:{type:"preset",preset:"claude_code",append:runtimeInstructions({harness:"Claude Code"})},
       // No mcpServers: the SDK would put every server but its own in-process ones on Claude Code's command line (--mcp-config), with
       // the env values the person set for them, where other local users can read them, and Claude Code exits at startup on that flag
-      // next to an administrator's managed-mcp.json. They go over stdin once it runs (#registerMcpServers).
+      // next to an administrator's managed-mcp.json. They go over stdin once it runs (#sendMcpServers).
       ...(this.agent?{agent:this.agent}:{}),
       ...(this.reasoningEffort?{effort:this.reasoningEffort}:{}),
       thinking:{type:"adaptive",display:"summarized"},
@@ -703,23 +908,29 @@ export class ClaudeAgentSession{
     Promise.resolve(runtime.initializationResult?.()).then(init=>{
       if(init&&this.live===live)this.#publishProbe(init,INVENTORY_LIVE);
     },()=>{});
-    if(await this.#registerMcpServers(live))return live;
-    // A process that did not connect them in time is closed, and the SDK's close waits a little for it to exit. A resumed conversation
-    // then opens once more, only once the stalled process has exited, so two Claude Codes never resume one transcript at once; a new one
-    // does not, since its id may already name a transcript the closed process started. Stop or close meanwhile
-    // opens nothing: the closed process is the prompt's answer, which ends it as Stop asked.
+    if(await this.#sendMcpServers(live))return live;
+    return this.#afterRegistrationStall(live,runtime,key,{reopen,opening});
+  }
+  // A process that did not answer the registration in time is closed, and the SDK's close is given a little time to end it. A resumed
+  // conversation then opens once more, and only once the stalled process has exited, so two Claude Codes never resume one transcript
+  // at once; a new one does not, since its id may already name a transcript the closed process started. Stop or close meanwhile opens
+  // nothing: the closed process is the prompt's answer, which ends it as Stop asked.
+  async #afterRegistrationStall(live,runtime,key,{reopen,opening}){
     await this.#closeLive(live);
     await withTimeout(Promise.resolve().then(()=>runtime.return()),CLAUDE_CLOSE_TIMEOUT_MS).catch(()=>{});
-    const stopped=()=>opening?.stopped||live.stopped||this.closed;
-    const exited=reopen&&live.resumed&&!stopped()&&await this.#exited(proc);
-    if(stopped())return live;
-    if(exited)return this.#openLive(key,{reopen:false,opening});
-    throw new Error(CLAUDE_MCP_REGISTRATION_TIMED_OUT);
+    const halted=()=>Boolean(opening?.stopped||live.stopped||this.closed);
+    if(halted())return live;
+    const gone=reopen&&Boolean(live.resumed)&&await this.#confirmExit(live.proc);
+    if(halted())return live;
+    if(!gone)throw new Error(CLAUDE_MCP_REGISTRATION_TIMED_OUT);
+    return this.#openLive(key,{reopen:false,opening});
   }
   // Starts each Claude Code of a query (this machine's, or a remote one through spawnProcess) and notes when it exits.
   #spawner(proc){
+    const keepStderrTail=chunk=>{proc.stderrTail=(proc.stderrTail+chunk).slice(-CLAUDE_STDERR_TAIL)};
+    const start=options=>this.spawnProcess?this.spawnProcess(options):spawnLocalClaudeCode(options,{spawnChild:this.spawnChild,onStderr:keepStderrTail});
     return options=>{
-      const child=this.spawnProcess?this.spawnProcess(options):spawnLocalClaudeCode(options,{spawnChild:this.spawnChild,onStderr:chunk=>{proc.stderrTail=(proc.stderrTail+chunk).slice(-CLAUDE_STDERR_TAIL)}});
+      const child=start(options);
       proc.child=child;
       proc.exit=new Promise(resolve=>{
         const done=()=>{proc.exited=true;resolve()};
@@ -728,21 +939,30 @@ export class ClaudeAgentSession{
       return child;
     };
   }
-  // True once the process has exited: one still running after the SDK's close is killed, and is given CLAUDE_EXIT_CONFIRM_MS to exit.
-  async #exited(proc){
-    if(!proc.child)return false;
-    if(proc.exited)return true;
+  // Whether the stalled process has exited: one still running after the SDK's close is killed, and has CLAUDE_EXIT_CONFIRM_MS to exit.
+  // A query that started no process has nothing to confirm.
+  #confirmExit(proc){
+    if(!proc?.child)return Promise.resolve(false);
+    if(proc.exited)return Promise.resolve(true);
     try{proc.child.kill("SIGKILL")}catch{}
-    return withTimeout(proc.exit,CLAUDE_EXIT_CONFIRM_MS).then(()=>true,()=>false);
+    return new Promise(settle=>{
+      const wait=setTimeout(()=>settle(false),CLAUDE_EXIT_CONFIRM_MS);wait.unref?.();
+      proc.exit.then(()=>{clearTimeout(wait);settle(true)});
+    });
   }
-  // The thread's MCP servers, Trebell's in-process ones with them, before the first prompt, so their tools are there when the turn
-  // starts. Every one goes each time: setMcpServers replaces the whole set Claude Code was given. False when Claude Code did not
-  // answer in time (a process that ended first answers nothing more). Claude Code's init lists each server by name with its status;
-  // the error setMcpServers gives for one it could not connect, which can repeat the server's headers, is not kept.
-  async #registerMcpServers(live){
-    const servers={...this.mcpServers};if(!Object.keys(servers).length)return true;
-    const registered=Promise.resolve().then(()=>live.query.setMcpServers(servers)).catch(()=>null);
-    return withTimeout(Promise.race([registered,live.pump]),CLAUDE_MCP_REGISTRATION_TIMEOUT_MS).then(()=>true,()=>false);
+  // Gives the running Claude Code the thread's MCP servers, Trebell's in-process ones among them, before its first prompt, so their
+  // tools are there when the turn starts. The whole map goes each time, as setMcpServers replaces the set Claude Code has. Settles true
+  // once Claude Code answers, with an error too (its init lists each server with its status, and the error, which can repeat a
+  // server's headers, is not kept), or once its process ended first; false when neither came within MCP_ANSWER_BOUND_MS.
+  #sendMcpServers(live){
+    const servers={...this.mcpServers};
+    if(Object.keys(servers).length===0)return Promise.resolve(true);
+    return new Promise(settle=>{
+      const bound=setTimeout(()=>settle(false),MCP_ANSWER_BOUND_MS);bound.unref?.();
+      const answered=()=>{clearTimeout(bound);settle(true)};
+      Promise.resolve().then(()=>live.query.setMcpServers(servers)).then(answered,answered);
+      Promise.resolve(live.pump).then(answered,answered);
+    });
   }
   async #closeLive(live=this.live){
     if(!live)return;
@@ -769,7 +989,7 @@ export class ClaudeAgentSession{
     const since=Date.now();
     const tick=()=>{
       if(this.live!==live||live.closed||(this.turn&&!this.turn.settled))return;
-      // Background work pins the process for up to four hours.
+      // Background work pins the process for up to eight hours (CLAUDE_MAX_IDLE_PIN_MS).
       if(live.backgroundTasks.size&&Date.now()-since<CLAUDE_MAX_IDLE_PIN_MS){this.idleTimer=setTimeout(tick,this.idleReleaseMs);this.idleTimer.unref?.();return}
       void this.#closeLive(live);
     };
@@ -810,18 +1030,18 @@ export class ClaudeAgentSession{
     // conversation it left, a fork of another thread starts its own conversation, and the error carries the fork so the relay
     // can restore the thread.
     if(fork&&!live.sawInit&&!turn.cancelRequested&&this.pendingFork===fork){
-      const reason=(result?userFacingErrors(result)[0]:null)||String(turn.queryError?.message||"").replace(/^Claude Code returned an error result:\s*/,"")||"Claude Code could not resume the conversation at that point.";
+      const reason=(result?listedErrors(result)[0]:null)||String(turn.queryError?.message||"").replace(/^Claude Code returned an error result:\s*/,"")||"Claude Code could not resume the conversation at that point.";
       const previous=this.#rewindOrigins.get(fork);
       if(previous){this.sessionId=previous.sessionId;this.startedOnce=previous.startedOnce;this.pendingFork=previous.pendingFork}
       else{this.startedOnce=false;this.pendingFork=null}
       return turn.reject(Object.assign(new Error(reason),{code:"CLAUDE_REWIND_REJECTED",claudeFork:{...fork}}));
     }
-    if(turn.cancelRequested||isAbortResult(result)||isStoppedResult(result))return turn.resolve({stopReason:"cancelled",...ids,raw});
+    if(turn.cancelRequested||isAbortResult(result)||endedByStop(result))return turn.resolve({stopReason:"cancelled",...ids,raw});
     // Claude Code that has no transcript for the session it was asked to resume says so and exits before it starts the session
     // or answers: a lost session, which the relay continues once in a fresh one (startFresh) with the earlier messages handed over.
     // What was steered into the turn meanwhile went to this query, which ran none of it, so the error carries it on (steered).
     if(live?.resumed&&!live.sawInit&&!turn.emittedText){
-      const said=[String(turn.queryError?.message||""),...(result?userFacingErrors(result):[])].find(text=>CLAUDE_NO_CONVERSATION.test(text));
+      const said=[String(turn.queryError?.message||""),...(result?listedErrors(result):[])].find(text=>CLAUDE_NO_CONVERSATION.test(text));
       if(said)return turn.reject(Object.assign(new HarnessSessionLostError(`Claude Code could not resume this conversation: ${said.replace(/^Claude Code returned an error result:\s*/,"")}`,{harness:"claude",sessionId:live.resumed}),{steered:[...turn.steers]}));
     }
     // A turn the process started is in the transcript even when it failed: its ids let a later turn be edited.
@@ -830,15 +1050,12 @@ export class ClaudeAgentSession{
       const message=String(turn.queryError?.message||"").replace(/^Claude Code returned an error result:\s*/,"");
       return turn.reject(Object.assign(new Error(message||"Claude Code ended without a result message"),failedIds));
     }
-    const usageLimited=!turn.authFailure&&claudeUsageLimited(result,turn.rejectedLimits.size>0||turn.rateLimited);
-    const limits=[...turn.rejectedLimits.values()],blocked=turn.blockedLimit;
-    if(blocked&&!turn.rejectedLimits.has(blocked.rateLimitType||"unknown"))limits.push(blocked);
-    const failureHint=turn.authFailure?claudeSignedOutMessage(this.helperSharesRuntime?"":this.env.CLAUDE_CONFIG_DIR):usageLimited?claudeUsageLimitHint(limits):null;
+    const {limitReached,evidence}=this.#turnEvidence(turn,result);
     // Claude Code ends a /compact whose compaction failed with a success result. compact()'s fails with Claude Code's reason, so the relay
     // never reports it compacted; a /compact sent as a message fails once the usage limit stopped it, and otherwise
     // the session's status says why.
-    const compactFailed=turn.compactFailure&&(turn.compact||(usageLimited&&result.local_command==="compact"))?turn.compactFailure.message||failureHint||CLAUDE_COMPACT_FAILED:null;
-    const failure=claudeResultFailure(result,{failureHint,explainedError:turn.apiErrorText})||compactFailed;
+    const compactFailed=turn.compactFailure&&(turn.compact||(limitReached&&result.local_command==="compact"))?turn.compactFailure.message||evidence||CLAUDE_COMPACT_FAILED:null;
+    const failure=claudeResultFailure(result,{knownCause:evidence,explainedError:turn.apiErrorText})||compactFailed;
     if(failure){
       // A process that failed to authenticate keeps its stale credentials: the next prompt starts a fresh one. The kept capability probe
       // goes too, which would show the account and its plan usage for up to five minutes more.
@@ -848,6 +1065,16 @@ export class ClaudeAgentSession{
     // Claude Code repeats a notice that ended the prompt (a hook dropped it) as the result's text, which is no answer.
     if(!turn.emittedText&&result.result&&!turn.notices.has(noticeKey(result.result)))this.#emitText(turn,String(result.result),null);
     return turn.resolve({stopReason:"end_turn",...ids,raw});
+  }
+
+  // What a finished turn's own evidence says failed it: a sign-in failure, else a usage limit its result agrees with, worded with the
+  // wait of the windows it ran into: those Claude Code refused, then the one a blocked reply repeated when its type is not among them.
+  #turnEvidence(turn,result){
+    if(turn.authFailure)return {limitReached:false,evidence:claudeSignedOutMessage(this.helperSharesRuntime?"":this.env.CLAUDE_CONFIG_DIR)};
+    if(!claudeLimitHolds(result,turn.rejectedLimits.size>0||turn.rateLimited))return {limitReached:false,evidence:null};
+    const ranInto=[...turn.rejectedLimits.values()],blocked=turn.blockedLimit;
+    if(blocked&&!turn.rejectedLimits.has(windowType(blocked)))ranInto.push(blocked);
+    return {limitReached:true,evidence:claudeUsageLimitHint(ranInto)};
   }
 
   #emitText(turn,text,messageId){
@@ -881,25 +1108,28 @@ export class ClaudeAgentSession{
     const call=this.taskCalls.get(block.tool_use_id);if(!call)return;
     this.taskCalls.delete(block.tool_use_id);
     const ran=!block.is_error&&!(Array.isArray(meta)&&meta.some(item=>item?.id===block.tool_use_id&&item.non_execution_kind));
-    if(ran)this.#taskTool(call,structured!==undefined?structured:toolResultText(block.content));
+    if(ran)this.#applyTaskCall(call,structured!==undefined?structured:toolResultText(block.content));
   }
-  // A task tool's call that went through changes its Claude session's task list, which goes to the thread whole, as its plan. A session
-  // this process has not followed yet (Trebell restarted, or the thread's session was started again) reads Claude Code's own list once
-  // from disk, which already holds the change, unless TaskList's own list replaces it: an update then keeps every task.
-  #taskTool(call,result){
-    const id=this.sessionId,known=this.taskLists.get(id);
-    const stored=this.taskLists.has(id)||(call.name==="TaskList"&&Array.isArray(taskField(result,"tasks")))?null:this.#storedTasks(id);
-    const next=claudeTaskList(known||stored||new Map(),call.name,call.input,result)||stored;
-    this.taskLists.set(id,next||known||null);
-    if(next)this.#emit({sessionUpdate:"plan",entries:[...next.values()].map(task=>({...task}))});
+  // A task tool call that went through changes its Claude session's list, which goes to the thread whole, as its plan. For a session
+  // this process has not followed yet (Trebell restarted, or the thread's session started again) Claude Code's own list is read from
+  // disk once, which already holds the call's change, so an update keeps every task; a TaskList that brings its whole list needs none.
+  // When the call changes nothing, the list read from disk is still the plan.
+  #applyTaskCall(call,result){
+    const sessionId=this.sessionId,known=this.taskLists.get(sessionId);
+    const bringsList=call.name==="TaskList"&&Array.isArray(result&&typeof result==="object"?result.tasks:undefined);
+    const onDisk=this.taskLists.has(sessionId)||bringsList?null:this.#diskTaskList(sessionId);
+    const shown=claudeTaskList(known||onDisk||new Map(),call.name,call.input,result)||onDisk;
+    this.taskLists.set(sessionId,shown||known||null);
+    if(shown)this.#emit({sessionUpdate:"plan",entries:Array.from(shown.values(),task=>({...task}))});
   }
-  // Claude Code's own list for the session, in its Claude home's tasks folder (CLAUDE_CODE_TASK_LIST_ID names a shared one), read only
-  // where Claude Code runs on this machine.
-  #storedTasks(sessionId){
+  // Claude Code's own list for a session, in its Claude home's tasks folder: the list CLAUDE_CODE_TASK_LIST_ID names (a shared one),
+  // else the session's, in a folder named with ASCII letters, digits, "_" and "-" only. Read only where Claude Code runs on this machine.
+  #diskTaskList(sessionId){
     if(this.spawnProcess||!sessionId)return null;
-    const configured=String(this.env?.CLAUDE_CONFIG_DIR||"").trim(),home=configured?resolve(this.cwd||".",configured):join(homedir(),".claude");
-    const list=String(this.env?.CLAUDE_CODE_TASK_LIST_ID||"").trim()||String(sessionId);
-    return readClaudeTaskStore(join(home,"tasks",list.replace(/[^a-zA-Z0-9_-]/g,"-")));
+    const env=this.env||{},configured=String(env.CLAUDE_CONFIG_DIR||"").trim();
+    const home=configured?resolve(this.cwd||".",configured):join(homedir(),".claude");
+    const list=String(env.CLAUDE_CODE_TASK_LIST_ID||"").trim()||String(sessionId);
+    return readClaudeTaskStore(join(home,"tasks",list.replace(/[^\w-]/g,"-")));
   }
 
   #handle(live,message){
@@ -939,7 +1169,7 @@ export class ClaudeAgentSession{
     if(type==="system"&&(subtype==="model_refusal_fallback"||(subtype==="informational"&&message.level!=="info"))){this.#notice(live,message);return}
     if(type==="system"&&subtype==="commands_changed"){if(Array.isArray(message.commands))this.#publishInventory({commands:message.commands});return}
     if(type==="system"&&subtype==="background_tasks_changed"){this.#backgroundTasks(live,message);return}
-    if(type==="rate_limit_event"){this.#rateLimit(message);return}
+    if(type==="rate_limit_event"){this.#windowEvent(message);return}
     if(type==="tool_progress"){
       const id=message.tool_use_id||message.toolUseID||message.uuid,tool=this.tools.get(id);
       this.#emit({sessionUpdate:"tool_call_update",toolCallId:id,title:tool?.title||message.tool_name||"Tool",kind:tool?.kind||toolKind(message.tool_name),status:"in_progress",rawOutput:message});
@@ -965,17 +1195,11 @@ export class ClaudeAgentSession{
       const blocks=Array.isArray(message.message?.content)?message.message.content:[];
       if(!root){for(const block of blocks)if(block?.type==="tool_use")this.#toolUse(block);return}
       // A synthetic API-error message: its text is the error the result reports, never an answer.
-      if(message.error){
-        turn.rateLimited=message.error==="rate_limit";if(message.error==="authentication_failed")turn.authFailure=true;
-        turn.apiErrorText=claudeExplainedApiError(message);
-        // A reply the limit blocked repeats the rejected window, so a quick retry still says when it resets. It is the turn's evidence
-        // only until a later reply goes through, unlike a window Claude Code itself rejected.
-        turn.blockedLimit=claudeRejectedLimit(message);if(turn.blockedLimit)this.#announceLimit(turn,turn.blockedLimit);
-        return;
-      }
-      turn.rateLimited=false;turn.apiErrorText=null;turn.blockedLimit=null;
+      if(message.error){this.#apiErrorFrame(turn,message);return}
+      // A reply that went through: what an earlier error frame said no longer names the turn's failure.
+      Object.assign(turn,{rateLimited:false,apiErrorText:null,blockedLimit:null});
       if(message.uuid)turn.cursor=message.uuid;
-      this.#snapshotUsage(live,turn,message.message);
+      this.#usageFromSnapshot(live,turn,message.message);
       const messageId=message.message?.id||null;
       for(const block of blocks){
         if(block?.type==="text"&&block.text)this.#snapshotText(turn,messageId,block.text,message.uuid);
@@ -1008,7 +1232,8 @@ export class ClaudeAgentSession{
       return;
     }
     if(event.type==="message_delta"){
-      if(this.request?.usage&&event.usage&&typeof event.usage==="object"){this.request.usage=mergedUsage(this.request.usage,event.usage);this.#requestUsage(live,turn)}
+      const open=this.request,delta=event.usage;
+      if(open?.usage&&delta&&typeof delta==="object"){open.usage=withDelta(open.usage,delta);this.#requestUsage(live,turn)}
       return;
     }
     if(event.type==="content_block_start"){
@@ -1040,17 +1265,18 @@ export class ClaudeAgentSession{
   }
   // An assistant snapshot repeats its request's message_start usage, which some proxies send as zeros: it reports a request the stream
   // did not, or fills in a prompt the stream left out. Claude Code's own <synthetic> frames measure no request.
-  #snapshotUsage(live,turn,body){
-    const usage=body?.usage;if(!usage||typeof usage!=="object"||body.model==="<synthetic>")return;
-    const id=body.id||null,request=this.request;
-    if(!request||request.id!==id){this.request={id,usage:{...usage}};this.#requestUsage(live,turn)}
-    else if(request.usage&&promptTokens(request.usage)<=0&&promptTokens(usage)>0){request.usage={...usage,output_tokens:Math.max(tokens(usage.output_tokens),tokens(request.usage.output_tokens))};this.#requestUsage(live,turn)}
+  #usageFromSnapshot(live,turn,body){
+    const usage=body?.usage;
+    if(!usage||typeof usage!=="object"||body.model==="<synthetic>")return;
+    const request=requestFromSnapshot(this.request,body.id||null,usage);
+    if(!request)return;
+    this.request=request;this.#requestUsage(live,turn);
   }
   // One root request's usage as the context meter reads it: its prompt is the context, which usage without input never is (some proxies
   // send zeros), and its tokens join the turn's so far, the total until the turn's result gives it. A turn's first request ends the
   // reading of the turn before, whose cost its own result brings.
   #requestUsage(live,turn){
-    const request=this.request,usage=request?.usage;if(!usage||promptTokens(usage)<=0)return;
+    const request=this.request,usage=request?.usage;if(!usage||promptSize(usage)<=0)return;
     if(!turn.requests.size){this.meter.cost=null;this.meter.modelUsage=null}
     request.key??=request.id||randomUUID();turn.requests.set(request.key,usage);
     this.meter.usage=summedUsage(turn.requests);this.meter.context=contextReading(usage);this.meter.turn=turn;
@@ -1125,19 +1351,32 @@ export class ClaudeAgentSession{
   // Whether the row of that id is of a background task this session's Claude Code still runs, which a read of the thread says still
   // runs (agent-relay withLiveWork).
   followsWork(id){const live=this.live;return Boolean(live&&!live.closed&&live.backgroundTasks.has(String(id||"")))}
-  // A rejected usage window pauses the turn: say so once per window and reset time.
-  #rateLimit(message){
-    const info=message.rate_limit_info,turn=this.turn&&!this.turn.settled?this.turn:null;if(!info||!turn)return;
-    const overage=info.overageStatus==="allowed"||info.overageStatus==="allowed_warning"||info.isUsingOverage===true||info.overageInUse===true;
-    const limitType=info.rateLimitType||"unknown";
-    if(info.status==="rejected"&&!overage){turn.rejectedLimits.set(limitType,info);this.#announceLimit(turn,info)}
-    else if(info.status==="allowed"||info.status==="allowed_warning"||overage)turn.rejectedLimits.delete(limitType);
+  // A rate_limit_event while a turn runs. A window Claude Code refused pauses the turn: the turn keeps it, by its type, as evidence
+  // of a usage limit, and says so. Once that window lets requests through again, or the extra usage covers it, it no longer counts.
+  #windowEvent(message){
+    const turn=this.turn&&!this.turn.settled?this.turn:null,info=message.rate_limit_info;
+    if(!turn||!info)return;
+    const refused=claudeRefusedWindow(message);
+    if(refused){turn.rejectedLimits.set(windowType(refused),refused);this.#announceLimit(turn,refused)}
+    else if(windowPasses(info))turn.rejectedLimits.delete(windowType(info));
   }
+  // A synthetic API-error frame of the root turn. Its kind marks a sign-in failure or a rate limit; an error Claude Code explains keeps
+  // its words. A reply the limit blocked repeats the rejected window, so a quick retry still says when it resets: that window is the
+  // turn's evidence only until a later reply goes through, unlike a window Claude Code itself rejected (#windowEvent).
+  #apiErrorFrame(turn,message){
+    const kind=message.error;
+    if(kind==="authentication_failed")turn.authFailure=true;
+    turn.rateLimited=kind==="rate_limit";
+    turn.apiErrorText=claudeExplainedApiError(message);
+    turn.blockedLimit=claudeRefusedWindow(message);
+    if(turn.blockedLimit)this.#announceLimit(turn,turn.blockedLimit);
+  }
+  // A usage-limit notice, a finished row of the turn, once per window and reset time.
   #announceLimit(turn,info){
-    const key=`${info.rateLimitType||"unknown"}:${info.resetsAt??"unknown"}`;
-    if(turn.announcedLimits.has(key))return;
-    turn.announcedLimits.add(key);
-    this.#emit({sessionUpdate:"tool_call",toolCallId:`usage-limit:${turn.id}:${key}`,title:describeClaudeUsageLimit(info),kind:"other",status:"completed",rawInput:{},rawOutput:info});
+    const said=[windowType(info),info.resetsAt??"unknown"].join(":");
+    if(turn.announcedLimits.has(said))return;
+    turn.announcedLimits.add(said);
+    this.#emit({sessionUpdate:"tool_call",toolCallId:["usage-limit",turn.id,said].join(":"),title:claudeUsagePauseNotice(info),kind:"other",status:"completed",rawInput:{},rawOutput:info});
   }
 
   async #canUseTool(toolName,input,options={}){
@@ -1149,7 +1388,7 @@ export class ClaudeAgentSession{
         try{answers=await untilAborted(this.onQuestion({toolName,input,options}),options?.signal,null)}catch{answers=null}
       }
       const mapped=options?.signal?.aborted?null:claudeQuestionAnswers(questions,answers);
-      if(!mapped)return {behavior:"deny",message:"User cancelled tool execution.",toolUseID};
+      if(!mapped)return {behavior:"deny",message:CLAUDE_QUESTIONS_UNANSWERED,toolUseID};
       return {behavior:"allow",updatedInput:{questions:input.questions,answers:mapped},toolUseID};
     }
     if(toolName==="ExitPlanMode"){
@@ -1190,7 +1429,7 @@ export class ClaudeAgentSession{
     // A request decided once is never granted for the session, whatever the answer asks.
     if(once&&decision==="acceptForSession")decision="accept";
     if(decision==="acceptForSession"){
-      const updates=claudeSessionPermissionUpdates(toolName,options?.suggestions);
+      const updates=claudeSessionGrant(toolName,options?.suggestions);
       // The rules also hold for every later process of this thread (after Stop, a model change or idle release).
       for(const update of updates){
         if(update?.type==="addRules"&&update.behavior==="allow")for(const rule of update.rules||[]){const text=permissionRuleText(rule);if(text)this.sessionAllowRules.add(text)}
@@ -1199,6 +1438,7 @@ export class ClaudeAgentSession{
       return {behavior:"allow",updatedInput:input,toolUseID,decisionClassification:"user_permanent",updatedPermissions:updates};
     }
     if(decision==="accept")return {behavior:"allow",updatedInput:input,toolUseID,decisionClassification:"user_temporary"};
-    return {behavior:"deny",message:decision==="cancel"?"User cancelled tool execution.":"User declined tool execution.",toolUseID,decisionClassification:"user_reject",...(decision==="cancel"?{interrupt:true}:{})};
+    if(decision==="cancel")return {behavior:"deny",message:CLAUDE_CALL_CANCELLED,toolUseID,decisionClassification:"user_reject",interrupt:true};
+    return {behavior:"deny",message:CLAUDE_CALL_DENIED,toolUseID,decisionClassification:"user_reject"};
   }
 }

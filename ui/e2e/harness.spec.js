@@ -142,9 +142,9 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await page.evaluate(()=>window.trebellDesktop.zoom.reset());
 
   const composer=page.getByTestId("composer");
-  await composer.fill("x".repeat(120001));
+  await composer.fill("x".repeat(200001));
   await expect(page.getByTestId("send")).toBeDisabled();
-  await expect(page.getByText(/maximum 120,000/)).toBeVisible();
+  await expect(page.getByText(/maximum 200,000/)).toBeVisible();
   await composer.fill("Build and validate a private local converter.");
   await page.getByTestId("send").click();
 
@@ -251,7 +251,8 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   const e2eProject=page.locator(".project-card").filter({hasText:"E2E Project"});
   await expect(e2eProject.locator(".project-icon")).toHaveText("E2");
   await expect(e2eProject.getByLabel("Submodules")).toHaveValue("top-level");
-  await expect(e2eProject.getByLabel("Automatic worktree cleanup")).toHaveValue("inherit");
+  await expect(e2eProject.getByLabel("Submodules").locator("option:checked")).toHaveText("First level");
+  await expect(e2eProject.getByLabel("Remove worktrees automatically")).toHaveValue("inherit");
   await page.getByRole("button",{name:/No project · General chat/}).click();
   await expect(page.getByRole("heading",{name:"What do you want to think through?"})).toBeVisible();
   await expect(page.getByRole("button",{name:"No project",exact:true})).toBeVisible();
@@ -297,7 +298,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
 
   await page.getByRole("button",{name:"Settings"}).click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
-  await expect(page.getByText("Follow-up behavior")).toBeVisible();
+  await expect(page.getByText("Messages sent during a turn")).toBeVisible();
   await expect(page.getByText("Update available",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"Download update"}).click();
   await expect(page.getByRole("button",{name:"Restart & install"})).toBeVisible();
@@ -306,12 +307,13 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   expect(nativeDialogs).toEqual([]);
   await expect.poll(()=>page.evaluate(()=>window.__updateInstalled)).toBe(true);
   await page.getByRole("button",{name:/Appearance/}).click();
-  await page.getByLabel("Panel animations").fill("200");
+  await page.getByLabel("Panel motion").fill("200");
   await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--panel-animation-ms").trim())).toBe("200ms");
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
   await page.getByRole("button",{name:/Workspace/}).click();
-  await expect(page.getByTestId("scoped-settings-card").getByLabel("Automatic worktree cleanup")).toHaveValue("off");
+  await expect(page.getByTestId("scoped-settings-card").getByLabel("Remove worktrees automatically")).toHaveValue("off");
+  await expect(page.getByTestId("scoped-settings-card").getByLabel("Submodules in new worktrees").locator("option")).toHaveText(["All levels","First level","None"]);
   await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.locator(".workspace-header")).toBeVisible();
   const lightShell=await page.evaluate(()=>({

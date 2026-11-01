@@ -1307,7 +1307,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(Array.isArray(suggested.scripts));
     assert.ok(suggested.scripts.some(script=>script.source==="package.json"));
     const configProject=join(home,"file-project");await import("node:fs/promises").then(fs=>fs.mkdir(configProject,{recursive:true}));
-    await writeFile(join(configProject,"trebell.json"),JSON.stringify({defaultThreadEnvMode:"worktree",worktreeSubmodules:"top-level",scripts:[]}));
+    // trebell.json in Trebell's own words (re-pinned from the keys it first had: scripts, defaultThreadEnvMode, worktreeSubmodules).
+    await writeFile(join(configProject,"trebell.json"),JSON.stringify({workspace:"worktree",submodules:"first-level",actions:[
+      {label:"Dev server",run:"npm run dev",preview:"http://localhost:5173",openPreview:true},{label:"Install",run:"npm ci",onNewWorktree:"wait"},
+      {label:"Seed",run:"node seed.mjs",onNewWorktree:"start"},{label:"No command"}]}));
     await mkdir(join(configProject,"src"),{recursive:true});
     await mkdir(join(configProject,"tests"),{recursive:true});
     await writeFile(join(configProject,"AGENTS.md"),"Prefer deterministic repository context.\n");
@@ -1430,7 +1433,15 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(remoteContextResponse.status,400);
     assert.doesNotMatch((await remoteContextResponse.json()).error,/local workspaces only/i);
     const fileSuggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(configProject)).then(r=>r.json());
-    assert.equal(fileSuggested.projectFile.defaultThreadEnvMode,"worktree");assert.equal(fileSuggested.projectFile.worktreeSubmodules,"top-level");
+    assert.deepEqual(fileSuggested.projectFile,{present:true,workspaceMode:"worktree",submodules:"top-level",actions:3});
+    assert.deepEqual(fileSuggested.scripts.filter(script=>script.source==="trebell.json").map(({name,command,previewUrl,autoOpenPreview,runOnWorktreeCreate,waitForSetup})=>[name,command,previewUrl,autoOpenPreview,runOnWorktreeCreate,waitForSetup]),[
+      ["Dev server","npm run dev","http://localhost:5173",true,false,false],["Install","npm ci",null,false,true,true],["Seed","node seed.mjs",null,false,true,false]]);
+    // A file written for 2.1.1 or 2.1.2 uses keys this release does not read: the file is there, but sets nothing and gives no action.
+    const otherKeys=join(home,"other-keys-project");await mkdir(otherKeys,{recursive:true});
+    await writeFile(join(otherKeys,"trebell.json"),JSON.stringify({defaultThreadEnvMode:"worktree",worktreeSubmodules:"top-level",scripts:[{name:"Dev",command:"npm run dev"}]}));
+    const otherSuggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(otherKeys)).then(r=>r.json());
+    assert.deepEqual(otherSuggested.projectFile,{present:true,workspaceMode:null,submodules:null,actions:0});
+    assert.equal(otherSuggested.scripts.some(script=>script.source==="trebell.json"),false);
     const visualizationDir=join(configProject,"artifacts");await mkdir(visualizationDir,{recursive:true});
     const visualizationPath=join(visualizationDir,"chart.html");await writeFile(visualizationPath,"<!doctype html><style>body{margin:0}</style><script>document.body.dataset.ready='1'</script>","utf8");
     const visualizationResponse=await fetch(gui.url+"/api/visualization?"+new URLSearchParams({root:configProject,path:visualizationPath}));

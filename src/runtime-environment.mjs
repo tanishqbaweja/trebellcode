@@ -8,6 +8,27 @@ const BASELINE_KEYS=Object.freeze([
   "SSL_CERT_FILE","SSL_CERT_DIR","NODE_EXTRA_CA_CERTS","NO_COLOR","FORCE_COLOR",
 ]);
 
+// The Grok Build settings a Grok Build profile gets from Trebell's environment, by what each tells Grok Build, as its own
+// documentation and program name them. None is a sign-in or a key: its sign-ins and keys (GROK_AUTH, the program
+// GROK_AUTH_PROVIDER_COMMAND names, XAI_API_KEY and its older name GROK_CODE_XAI_API_KEY) are credentials here and never pass,
+// and its other settings (scopes, telemetry, sandbox, logs) pass only as names a profile approves.
+const GROK_BUILD_SETTINGS=Object.freeze({
+  // Its home: the folder of its config.toml, stored sign-in, sessions and logs (~/.grok when unset).
+  home:Object.freeze(["GROK_HOME"]),
+  // The sign-in service it uses and for whom: an enterprise OIDC issuer and client; an OAuth2 issuer and client and the principal
+  // its tokens are for (a type such as Team, and its id); and its switch to a sign-in service on the same machine.
+  signInService:Object.freeze([
+    "GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID",
+    "GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE","GROK_OAUTH2_PRINCIPAL_ID",
+    "GROK_LOCAL_AUTH",
+  ]),
+  // The services it calls: its chat proxy, and an inference service whose /models it lists.
+  serviceAddresses:Object.freeze(["GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL"]),
+  // Settings it lays over its config.toml: inline JSON, or a JSON or TOML file.
+  settingsOverlay:Object.freeze(["GROK_CONFIG","GROK_CONFIG_PATH"]),
+});
+export const GROK_BUILD_ENVIRONMENT_KEYS=Object.freeze(Object.values(GROK_BUILD_SETTINGS).flat());
+
 // What each harness gets of Trebell's own environment beside the baseline: its home, its config, its endpoint, its release channel
 // and Trebell's own lock on the OpenCode server it starts. None is a credential: a harness signs in with its own login in its own
 // home, or, only when the person picks it in Settings, runs on its vendor's API key, which AgentRuntimeManager adds itself
@@ -19,10 +40,7 @@ const RUNTIME_KEYS=Object.freeze({
   codex:Object.freeze(["CODEX_HOME","OPENAI_BASE_URL"]),
   claude:Object.freeze(["ANTHROPIC_BASE_URL"]),
   cursor:Object.freeze(["CURSOR_API_ENDPOINT"]),
-  grok:Object.freeze([
-    "GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID","GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE",
-    "GROK_OAUTH2_PRINCIPAL_ID","GROK_LOCAL_AUTH","GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL","GROK_CONFIG","GROK_CONFIG_PATH",
-  ]),
+  grok:GROK_BUILD_ENVIRONMENT_KEYS,
   opencode:Object.freeze(["OPENCODE_CONFIG","OPENCODE_CONFIG_DIR","OPENCODE_SERVER_USERNAME","OPENCODE_SERVER_PASSWORD","AZURE_OPENAI_ENDPOINT","AWS_REGION","AWS_DEFAULT_REGION"]),
   // Antigravity takes no Google credential, project or home from Trebell's environment (antigravity-auth.mjs).
   antigravity:Object.freeze([]),

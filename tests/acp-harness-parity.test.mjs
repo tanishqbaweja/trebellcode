@@ -9,14 +9,14 @@ import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
-import { AcpAgentSession, acpApprovalOptions, acpClientCapabilities, acpCommandsFromAvailable, acpDecisionOption, acpFileSlice, acpModeAgents, acpPermissionChoice, acpSlashCommandPrompt, grokCompletionFailure, grokPromptError, grokQuestionResponse, GROK_PLAN_FEEDBACK, GROK_USAGE_LIMIT_MESSAGE } from "../src/acp-agent-session.mjs";
+import { AcpAgentSession, acpApprovalOptions, acpClientCapabilities, acpCommandsFromAvailable, acpDecisionOption, acpFileSlice, acpModeAgents, acpPermissionChoice, acpSlashCommandPrompt, grokCompletionFailure, grokPromptError, grokQuestionResponse, GROK_PLAN_FEEDBACK, GROK_ALLOWANCE_USED_UP } from "../src/acp-agent-session.mjs";
 import { acpRequestError } from "../src/acp-client.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
 import { isSessionRefusal } from "../src/session-refusal.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "../src/acp-session-config.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "../src/acp-tool-state.mjs";
 import { acpRuntimeTempRoot, createRunTemp, sweepRunTemps } from "../src/acp-runtime-temp.mjs";
-import { CursorTransportFailure } from "../src/cursor-transport-failure.mjs";
+import { CursorLostBackendReply } from "../src/cursor-transport-failure.mjs";
 import { antigravityModelCatalog, antigravitySeedCatalog, cursorEffortOption, cursorFastOption, cursorModelCatalog, cursorModelOptions, cursorSwitchValue, grokModelCatalog } from "../src/acp-model-catalog.mjs";
 import { grokUsageResponseToLimits } from "../src/agent-usage-limits.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
@@ -133,18 +133,23 @@ const ANTIGRAVITY={initialize:{protocolVersion:1,agentCapabilities:{sessionCapab
 const ANTIGRAVITY_CONTENT={...ANTIGRAVITY,initialize:{...ANTIGRAVITY.initialize,agentCapabilities:{...ANTIGRAVITY.initialize.agentCapabilities,promptCapabilities:{image:true,audio:true,embeddedContext:true}}}};
 
 test("approval answers keep to the request: allow-once first, reject-once only, and each harness's own choices",()=>{
-  const grokOptions=[{kind:"allow_once",optionId:"allow-once",name:"Allow once"},{kind:"allow_always",optionId:"allow-edits-session",name:"Allow edits"},{kind:"allow_always",optionId:"allow-always",name:"Always"},{kind:"reject_once",optionId:"reject-once",name:"Reject"}];
+  // Grok Build's option names as its own documentation and permission prompter word them (grok 1.0.41).
+  const grokOptions=[{kind:"allow_once",optionId:"allow-once",name:"Allow once"},{kind:"allow_always",optionId:"allow-edits-session",name:"Yes, allow all edits during this session"},{kind:"allow_always",optionId:"allow-always",name:"Yes, always allow npm test for this project"},{kind:"reject_once",optionId:"reject-once",name:"Reject once"}];
   assert.equal(acpPermissionChoice(grokOptions,"full",null),"allow-once");
   assert.equal(acpPermissionChoice([{kind:"reject_always",optionId:"never"}],"read-only","edit"),null,"a reject-always answer would be saved, so nothing is chosen");
   assert.equal(acpDecisionOption("grok",grokOptions,"acceptForSession"),"allow-edits-session","Grok's only session-scoped answer");
   assert.equal(acpDecisionOption("grok",grokOptions.filter(option=>option.optionId!=="allow-edits-session"),"acceptForSession"),"allow-once","a project-wide always answer is never sent for a session answer");
   assert.equal(acpDecisionOption("cursor",grokOptions,"acceptForSession"),"allow-edits-session");
   assert.equal(acpDecisionOption("cursor",grokOptions,"decline"),"reject-once");assert.equal(acpDecisionOption("cursor",grokOptions,"cancel"),null);
-  assert.deepEqual(acpApprovalOptions("grok",grokOptions).map(option=>option.label),["Cancel","Decline","Allow edits for the rest of this session","Approve"]);
-  const agy=acpApprovalOptions("antigravity",[{kind:"allow_once",optionId:"once"},{kind:"allow_always",optionId:"always",_meta:{"agy.security.warning":{title:"Careful",message:"This allows every command in this thread."}}},{kind:"reject_once",optionId:"deny"}]);
-  assert.deepEqual(agy.map(option=>[option.decision,option.label]),[["accept","Allow once"],["acceptForSession","Allow for this thread"],["decline","Deny"],["cancel","Cancel"]]);
+  // Re-pinned: the buttons are Grok's own options under Grok's names, in Grok's order (Grok's project-wide Always is left out), then
+  // Trebell's stop; they were fixed words in a fixed order with Cancel first.
+  assert.deepEqual(acpApprovalOptions("grok",grokOptions).map(option=>[option.decision,option.label]),[["accept","Allow once"],["acceptForSession","Yes, allow all edits during this session"],["decline","Reject once"],["cancel","Cancel this request"]]);
+  const agyOptions=[{kind:"allow_once",optionId:"once",name:"Yes, once"},{kind:"allow_always",optionId:"always",name:"Yes, for this conversation",_meta:{"agy.security.warning":{title:"Careful",message:"This allows every command in this thread."}}},{kind:"reject_once",optionId:"deny",name:"No"}];
+  const agy=acpApprovalOptions("antigravity",agyOptions);
+  assert.deepEqual(agy.map(option=>[option.decision,option.label]),[["accept","Yes, once"],["acceptForSession","Yes, for this conversation"],["decline","No"],["cancel","Cancel this request"]],"Antigravity's own names, in its order");
   assert.equal(agy[1].warning,"This allows every command in this thread.");
-  assert.deepEqual(acpApprovalOptions("antigravity",[{kind:"allow_once",optionId:"once"},{kind:"reject_once",optionId:"deny"}]).map(option=>option.label),["Allow once","Deny","Cancel"],"Allow for this thread only when Antigravity offers it");
+  assert.deepEqual(agy.map(option=>acpDecisionOption("antigravity",agyOptions,option.decision)),["once","always","deny",null],"each button picks the option it named");
+  assert.deepEqual(acpApprovalOptions("antigravity",[{kind:"allow_once",optionId:"once"},{kind:"reject_once",optionId:"deny"}]).map(option=>option.label),["Allow this time","Don't allow","Cancel this request"],"a session button only when Antigravity offers one; Trebell's words for options without names");
 });
 
 test("file reads keep Windows line endings and commands, modes and Grok answers map to what each harness expects",()=>{
@@ -160,11 +165,62 @@ test("file reads keep Windows line endings and commands, modes and Grok answers 
 
 test("Grok's usage limit and errors read as Grok's own words",()=>{
   const limit=grokPromptError(acpRequestError({code:-32003,message:"Rate limited",data:"API error (status 429): You've used all the included free usage."}),{stopReason:"rate_limit",agentResult:null});
-  assert.equal(limit.message,GROK_USAGE_LIMIT_MESSAGE+"\nAPI error (status 429): You've used all the included free usage.");assert.equal(limit.usageLimit,true);
-  assert.equal(grokCompletionFailure({stopReason:"rate_limit",agentResult:null}).message,GROK_USAGE_LIMIT_MESSAGE);
+  assert.equal(limit.message,GROK_ALLOWANCE_USED_UP+"\nAPI error (status 429): You've used all the included free usage.");assert.equal(limit.usageLimit,true);
+  assert.equal(grokCompletionFailure({stopReason:"rate_limit",agentResult:null}).message,GROK_ALLOWANCE_USED_UP);
   assert.equal(grokCompletionFailure({stopReason:"error",agentResult:"Tool crashed"}).message,"Tool crashed");
   assert.equal(grokCompletionFailure({stopReason:"end_turn"}),null);
   assert.equal(acpRequestError({code:-32603,message:"Internal error",data:{message:"Session not found"}}).message,"Session not found");
+});
+
+test("the composer leaves out Grok's approval switches and its context view, and keeps every command of the other harnesses",()=>{
+  const listed=[{name:"auto",description:"Toggle auto mode"},{name:" /always-approve "},{name:"context",description:"View context usage"},
+    {name:"plan",description:"Enter plan mode"},{name:"plan",description:"a second plan"},{name:"//"},{name:"effort",input:{hint:" level "},extra:true}];
+  assert.deepEqual(acpCommandsFromAvailable(listed,"grok"),[{name:"plan",description:"Enter plan mode"},{name:"effort",input:{hint:"level"}}]);
+  for(const runtime of ["cursor","antigravity","opencode",null,"constructor"])
+    assert.deepEqual(acpCommandsFromAvailable(listed,runtime).map(command=>command.name),["auto","always-approve","context","plan","effort"],String(runtime));
+  assert.deepEqual(acpCommandsFromAvailable("not a list","grok"),[]);
+});
+
+test("a Grok turn its rate limit ended fails as a usage limit in Trebell's words, then Grok's own detail when it gave one",()=>{
+  assert.equal(GROK_ALLOWANCE_USED_UP,"Grok Build has used up its usage allowance. Try the message again when it resets.");
+  const bare=grokPromptError(Object.assign(new Error(" RATE LIMITED "),{code:-32003}));
+  assert.deepEqual([bare.message,bare.code,bare.usageLimit,Object.hasOwn(bare,"data")],[GROK_ALLOWANCE_USED_UP,-32003,true,false]);
+  const withData=grokPromptError(Object.assign(new Error("Rate limited"),{code:-32003,data:{retryAfter:60}}),{stopReason:"rate_limit",agentResult:{message:"Weekly limit"}});
+  assert.equal(withData.message,`${GROK_ALLOWANCE_USED_UP}\nWeekly limit`,"the notice's detail when the error only says it is rate limited");
+  assert.deepEqual(withData.data,{retryAfter:60});
+  const byNotice=grokPromptError(new Error("Grok closed the stream"),{stopReason:"rate_limit",agentResult:"Weekly limit"});
+  assert.deepEqual([byNotice.message,byNotice.code,byNotice.usageLimit],[`${GROK_ALLOWANCE_USED_UP}\nGrok closed the stream`,-32003,true],"the error's own words come first");
+  const long=grokCompletionFailure({stopReason:"rate_limit",agentResult:"x".repeat(2000)});
+  assert.equal(long.message,`${GROK_ALLOWANCE_USED_UP}\n${"x".repeat(1497)}...`);assert.equal(long.usageLimit,true);
+  const other=new Error("boom");
+  assert.equal(grokPromptError(other,null),other);assert.equal(grokPromptError(other,{stopReason:"end_turn"}),other);
+  assert.deepEqual([grokPromptError(other,{stopReason:"error"}).message,grokPromptError(other,{stopReason:"error"}).code],["Grok Build reported an error and ended the turn.",-32603]);
+});
+
+test("Antigravity's stand-in list is Gemini 3.8 Flash at its three levels, read as the same list from a session reads",()=>{
+  const seed=antigravitySeedCatalog();
+  assert.deepEqual(seed.metadata.map(row=>[row.id,row.name]),[["gemini-3.8-flash-high","Gemini 3.8 Flash (High)"],["gemini-3.8-flash-medium","Gemini 3.8 Flash (Medium)"],["gemini-3.8-flash-low","Gemini 3.8 Flash (Low)"]]);
+  assert.equal(seed.preferred,"gemini-3.8-flash-high");
+  assert.deepEqual(seed.metadata.filter(row=>row.isDefault).map(row=>[row.id,row.aliases]),[["gemini-3.8-flash-high",["antigravity-default"]]]);
+  assert.ok(seed.metadata.every(row=>row.provider==="antigravity"&&row.agent==="Antigravity"));
+  const reported=antigravityModelCatalog({models:{currentModelId:"gemini-3.8-flash-high",availableModels:seed.metadata.map(row=>({modelId:row.id,name:row.name}))}});
+  assert.equal(JSON.stringify(reported),JSON.stringify(seed),"the same list from a session reads the same, so it raises no change");
+  seed.metadata[0].name="changed";seed.models.pop();
+  assert.deepEqual([antigravitySeedCatalog().metadata[0].name,antigravitySeedCatalog().models.length],["Gemini 3.8 Flash (High)",3],"each call gives its own list");
+});
+
+test("a model the harness does not list for this sign-in is refused before any switch, saying what to choose instead",async t=>{
+  const opencode=await scenario(t,{sessionNew:{sessionId:"oc",configOptions:[select("model","model","opencode/big-pickle",["opencode/big-pickle"])]}});
+  await assert.rejects(harness(t,opencode,{runtime:"opencode"}).session.start({model:"opencode/gpt-9"}),
+    /OpenCode does not list the model 'opencode\/gpt-9'\. Choose one of the models it lists in the composer\.$/);
+  const unlisted=await scenario(t,{sessionNew:{sessionId:"oc-plain",configOptions:[select("mode","mode","build",["build"])]}});
+  await assert.rejects(harness(t,unlisted,{runtime:"opencode"}).session.start({model:"opencode/gpt-9"}),/OpenCode could not switch to model 'opencode\/gpt-9'/,
+    "with no list to check, the switch itself answers");
+  const agyEmpty=await scenario(t,{...ANTIGRAVITY,sessionNew:{sessionId:"agy-empty",configOptions:[select("mode","mode","default",["default"])]}});
+  await assert.rejects(harness(t,agyEmpty,{runtime:"antigravity"}).session.start({model:"gemini-3.8-flash-high"}),
+    /This Google account cannot use the model 'gemini-3\.8-flash-high' in Antigravity\. Choose one of the models Antigravity lists in the composer\.$/,
+    "Antigravity's list is checked even when it is empty");
+  assert.equal(requested(await opencode.log(),"session/set_config_option").length,0);assert.equal(requested(await agyEmpty.log(),"session/set_config_option").length,0);
 });
 
 test("mode and model changes use the agent's config options, and read-only modes come from either shape",async()=>{
@@ -199,10 +255,10 @@ test("Antigravity unpacks into a Trebell-owned run folder that is removed, and d
 });
 
 test("a Cursor reply made only of a lost-connection diagnostic is a failure, a quoted one is not",()=>{
-  const failure=new CursorTransportFailure();failure.push("Error: ConnectError: [unavailable] backend gone\n    at x (y.js:1:1)\n");
-  assert.equal(failure.failure,"Error: ConnectError: [unavailable] backend gone");
-  const quoted=new CursorTransportFailure();quoted.push("The log said:\nError: ConnectError: [unavailable] backend gone\n");
-  assert.equal(quoted.failure,undefined);
+  const dump=new CursorLostBackendReply();dump.append("Error: ConnectError: [unavailable] backend gone\n    at x (y.js:1:1)\n");
+  assert.equal(dump.diagnostic,"Error: ConnectError: [unavailable] backend gone");
+  const quoted=new CursorLostBackendReply();quoted.append("The log said:\nError: ConnectError: [unavailable] backend gone\n");
+  assert.equal(quoted.diagnostic,undefined);
 });
 
 test("model lists keep each harness's names, defaults and effort levels",()=>{
@@ -272,7 +328,7 @@ test("Cursor pins the thread's model in every session and sets effort with the m
   await plain.session.start({model:"cursor-default"});
   assert.deepEqual(requested(await auto.log(),"session/set_config_option").map(entry=>[entry.params.configId,entry.params.value]),[["model","default"]],"Cursor saves its model globally, so a thread without one runs on Auto explicitly");
   const other=harness(t,await scenario(t,CURSOR),{runtime:"cursor"});
-  await assert.rejects(other.session.start({model:"gpt-9"}),/Cursor model 'gpt-9' is not available for this account/);
+  await assert.rejects(other.session.start({model:"gpt-9"}),/This Cursor account cannot use the model 'gpt-9'\. Choose one of the models Cursor lists in the composer\.$/);
 });
 
 test("Grok gets Trebell's client type, lists its commands and runs the chosen effort through set_model",async t=>{
@@ -301,7 +357,7 @@ test("Antigravity runs each turn in its access level's mode and never sends the 
   const log=await fx.log();
   assert.deepEqual(requested(log,"session/set_config_option").map(entry=>[entry.params.configId,entry.params.value]),[["mode","yolo"],["mode","default"]]);
   const other=harness(t,await scenario(t,ANTIGRAVITY),{runtime:"antigravity"});
-  await assert.rejects(other.session.start({model:"gemini-9-ultra"}),/Antigravity does not offer the model 'gemini-9-ultra' to this Google account\. Select an available model\./);
+  await assert.rejects(other.session.start({model:"gemini-9-ultra"}),/This Google account cannot use the model 'gemini-9-ultra' in Antigravity\. Choose one of the models Antigravity lists in the composer\.$/);
 });
 
 test("Read only runs in the harness's read-only mode, and a harness without one gets no prompt",async t=>{
@@ -379,11 +435,13 @@ test("Grok's questions and plan exits get Trebell's answers, and Antigravity's c
 });
 
 test("Grok Auto sends what Grok asks about to the user with Grok's choices",async t=>{
-  const options=[{optionId:"allow-once",kind:"allow_once",name:"Allow once"},{optionId:"allow-edits-session",kind:"allow_always",name:"Allow edits"},{optionId:"always",kind:"allow_always",name:"Always"},{optionId:"reject-once",kind:"reject_once",name:"Reject"}];
+  // A project-wide answer first: the session button is still Grok's edits-for-this-session option.
+  const options=[{optionId:"allow-once",kind:"allow_once",name:"Allow once"},{optionId:"always",kind:"allow_always",name:"Enable always-approve mode"},{optionId:"allow-edits-session",kind:"allow_always",name:"Yes, allow all edits during this session"},{optionId:"reject-once",kind:"reject_once",name:"Reject once"}];
   const fx=await scenario(t,{...GROK,prompts:[{steps:[{request:{method:"session/request_permission",params:{sessionId:"$sessionId",toolCall:{toolCallId:"t1",title:"Edit a.js",kind:"edit"},options}}}]}]});
   const seen=[];const {session}=harness(t,fx,{runtime:"grok",permissionMode:"auto",onPermission:async request=>{seen.push(request);return "acceptForSession"}});
   await session.start();await session.prompt([{type:"text",text:"edit"}]);
-  assert.equal(seen[0].askUser,true);assert.deepEqual(seen[0].approvalOptions.map(option=>option.decision),["cancel","decline","acceptForSession","accept"]);
+  // Re-pinned: Grok's own options in Grok's order, then Trebell's stop (was Cancel, Decline, session, Approve in Trebell's order).
+  assert.equal(seen[0].askUser,true);assert.deepEqual(seen[0].approvalOptions.map(option=>`${option.decision}: ${option.label}`),["accept: Allow once","acceptForSession: Yes, allow all edits during this session","decline: Reject once","cancel: Cancel this request"]);
   assert.deepEqual(reply(await fx.log(),"session/request_permission"),{outcome:{outcome:"selected",optionId:"allow-edits-session"}});
 });
 
@@ -391,7 +449,7 @@ test("a Grok usage limit fails the turn with the limit message and Grok's detail
   const fx=await scenario(t,{...GROK,prompts:[{steps:[{notify:{method:"_x.ai/session/prompt_complete",params:{sessionId:"$sessionId",promptId:"$promptId",stopReason:"rate_limit",agentResult:null}}}],error:{code:-32003,message:"Rate limited",data:"API error (status 429): You've used all the included free usage."}}]});
   const {session}=harness(t,fx,{runtime:"grok"});
   await session.start();
-  await assert.rejects(session.prompt([{type:"text",text:"hi"}]),error=>error.usageLimit===true&&error.message===GROK_USAGE_LIMIT_MESSAGE+"\nAPI error (status 429): You've used all the included free usage.");
+  await assert.rejects(session.prompt([{type:"text",text:"hi"}]),error=>error.usageLimit===true&&error.message===GROK_ALLOWANCE_USED_UP+"\nAPI error (status 429): You've used all the included free usage.");
 });
 
 test("Grok's answer after a finished turn opens a wake turn that its turn_completed ends",async t=>{
@@ -696,7 +754,8 @@ test("Stop withdraws an ACP harness's waiting approval card and answers the harn
   const approval=next(message=>message.method==="item/tool/requestApproval");
   await rpc("turn/start",{threadId,input:[{type:"text",text:"run the tests"}]});
   const request=await approval;
-  assert.deepEqual(request.params.approvalOptions.map(option=>option.label),["Cancel","Decline","Approve"]);
+  // Re-pinned: Grok's options here have no names, so they read in Trebell's words, in Grok's order, then the stop.
+  assert.deepEqual(request.params.approvalOptions.map(option=>option.label),["Allow this time","Don't allow","Cancel this request"]);
   assert.deepEqual([request.params.reason,request.params.trebellTitle,request.params.command],["Run tests",undefined,undefined],"an ACP harness's card keeps the card's own title and its harness's words");
   const resolved=next(message=>message.method==="serverRequest/resolved"),completed=next(message=>message.method==="turn/completed");
   await rpc("turn/interrupt",{threadId});

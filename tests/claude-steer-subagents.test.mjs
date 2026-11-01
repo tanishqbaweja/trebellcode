@@ -1,5 +1,5 @@
 // A steer is a "now" message, which cancels the root turn's running tool calls, and a subagent the turn runs in the foreground is one
-// of them. The session first moves each such subagent to the background, for at most 5 s from the steer, so
+// of them. The session first moves each such subagent to the background, for at most 8 s from the steer (STEER_HOLD_MS), so
 // typing into a running Claude turn no longer ends the subagent it was waiting on.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -49,7 +49,8 @@ test("a steer first moves the subagent the turn waits on to the background, then
   await claude.close();
 });
 
-test("a subagent move that hangs holds the steer at most 5 seconds",async t=>{
+// Re-pinned note: the steer's hold is Trebell's own 8 s now (it was 5 s).
+test("a subagent move that hangs holds the steer at most 8 seconds",async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
   const {sdk,calls}=scriptedClaudeSdk({control:{backgroundTasks:()=>new Promise(()=>{})},turn:({message,index,emit})=>{if(index===0)launch({message,emit})}});
   const claude=session(sdk);await claude.start();
@@ -57,11 +58,11 @@ test("a subagent move that hangs holds the steer at most 5 seconds",async t=>{
   await until(launched(claude));
   let sent=false;const steering=claude.steer([{type:"text",text:"Use tabs"}]).then(result=>{sent=true;return result});
   await until(()=>steps(calls[0]).includes("backgroundTasks:toolu_x"));
-  t.mock.timers.tick(4_999);await tick();
+  t.mock.timers.tick(7_999);await tick();
   assert.equal(sent,false);assert.deepEqual(steps(calls[0]),["input:next","backgroundTasks:toolu_x"],"the steer waits for the move");
   t.mock.timers.tick(1);
   assert.deepEqual(await steering,{accepted:true,pending:0});
-  assert.deepEqual(steps(calls[0]),["input:next","backgroundTasks:toolu_x","input:now"],"and goes after 5 s all the same");
+  assert.deepEqual(steps(calls[0]),["input:next","backgroundTasks:toolu_x","input:now"],"and goes after 8 s all the same");
   await claude.close();
 });
 

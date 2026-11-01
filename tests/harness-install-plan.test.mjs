@@ -1,88 +1,184 @@
 // How Trebell installs and updates a harness (AgentRuntimeManager installPlan, install, and the update reading each status of Settings'
-// harness list carries), judged from where the binary the profile runs really is:
-// - a table of real Windows, macOS and Linux install paths and what updates each (harnessInstallOwner): npm's global prefix, a
-//   harness's own updater, and the installs that are the person's to update;
-// - with a runner of the test's own standing in for every command (the manager's runFn, a host's executeArgv) and a stand-in npm
-//   registry: an npm Claude Code updates into its own prefix with its install script allowed (on an SSH host too, and Codex there), a
-//   native one runs its `claude update`, Codex's standalone tree `codex update` with CODEX_HOME at the profile's shared home, Grok's
-//   own install `grok update`, an OpenCode 2.x from npm the newest 2.x below 3.0.0; a WinGet one is refused with how to update it; an
-//   update the version did not follow fails, as does a binary that does not start after it; a version Trebell cannot read installs
-//   nothing; and Settings is offered Update only for a newer release Trebell installs itself.
+// harness list carries), judged from where the binary the profile runs really is.
+// - Who updates an install (harnessInstallOwner), one test per kind of answer: the harness's own updater, WinGet, npm's global
+//   prefix, another package manager, mise, or nobody Trebell can name. The installs sit on three computers of the test's own (Ada's
+//   Windows PC, Mac and Linux box), their paths built from the folders each tool's documentation names.
+// - What Settings says of a release Trebell does not install itself, and what npm itself names (its newest listed release, the
+//   version it recorded in a prefix).
+// - Updates driven through a runner of the test's own standing in for every command (the manager's runFn, a host's executeArgv) and
+//   a stand-in npm registry: an npm Claude Code updates into its own prefix with its install script allowed (on an SSH host too, and
+//   Codex there), a native one runs its `claude update`, Codex's standalone tree `codex update` with CODEX_HOME at the profile's
+//   shared home, Grok's own install `grok update`, an OpenCode 2.x from npm the newest 2.x below 3.0.0; a WinGet one is refused with
+//   how to update it; an update the version did not follow fails, as does a binary that does not start after it; a version Trebell
+//   cannot read installs nothing; and Settings is offered Update only for a newer release Trebell installs itself.
 // No real harness, npm or updater runs (Codex's account read talks to a script of the test's own), and nothing is installed.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { harnessInstallOwner, manualUpdateRefusal, manualUpdateText, newestListed, npmRecordedVersion, shownCommand } from "../src/harness-install-plan.mjs";
 
-const WINDOWS_ENV={LOCALAPPDATA:"C:\\Users\\me\\AppData\\Local",APPDATA:"C:\\Users\\me\\AppData\\Roaming",ProgramFiles:"C:\\Program Files","ProgramFiles(x86)":"C:\\Program Files (x86)"};
-const PACKAGE={claude:"@anthropic-ai/claude-code",codex:"@openai/codex",grok:"@xai-official/grok",opencode:"opencode-ai"};
-// What harnessInstallOwner makes of a binary: found (what the profile names or PATH finds), binary (what starts behind an npm
-// launcher) and real (its real path), with files the only files there and scripts the text of small launchers.
-const judged=(kind,{found,binary=found,real=binary,platform="win32",files=[],scripts={},packageName=PACKAGE[kind],codexHome=null,grokHome=null})=>harnessInstallOwner(kind,{paths:{found,binary,real},packageName,command:kind,platform,env:platform==="win32"?WINDOWS_ENV:{},codexHome,grokHome,exists:path=>files.includes(path),read:path=>scripts[path]||""});
-const NATIVE={method:"native",args:["update"]};
-const WINGET_CLAUDE={method:"manual",by:"WinGet",command:"winget upgrade Anthropic.ClaudeCode"};
-const UNKNOWN={method:"manual",by:null,command:null};
-const WINGET_PACKAGE="C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe\\claude.exe";
-const CASES=[
-  ["Claude Code's own installer on Windows",{kind:"claude",found:"C:\\Users\\me\\.local\\bin\\claude.exe"},NATIVE],
-  ["Claude Code's own installer on macOS, its launcher a link into its versions",{kind:"claude",platform:"darwin",found:"/Users/me/.local/bin/claude",real:"/Users/me/.local/share/claude/versions/2.1.300"},NATIVE],
-  ["Claude Code's own installer on Linux",{kind:"claude",platform:"linux",found:"/home/me/.local/bin/claude"},NATIVE],
-  ["WinGet's link for one user",{kind:"claude",found:"C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe",real:WINGET_PACKAGE},WINGET_CLAUDE],
-  ["WinGet's package for the machine",{kind:"claude",found:"C:\\Program Files\\WinGet\\Packages\\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe\\claude.exe"},WINGET_CLAUDE],
-  ["WinGet's machine link alone, its package not known",{kind:"claude",found:"C:\\Program Files\\WinGet\\Links\\claude.exe"},{method:"manual",by:"WinGet",command:null}],
-  ["a launcher where Claude Code's installer puts it that is WinGet's",{kind:"claude",found:"C:\\Users\\me\\.local\\bin\\claude.exe",real:WINGET_PACKAGE},WINGET_CLAUDE],
-  ["a folder named WinGet outside WinGet's own",{kind:"claude",found:"C:\\Work\\Microsoft\\WinGet\\Links\\claude.exe"},UNKNOWN],
-  ["npm's global prefix in %APPDATA%, the binary behind claude.cmd",{kind:"claude",found:"C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe",files:["C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd"]},{method:"npm",prefix:"C:\\Users\\me\\AppData\\Roaming\\npm"}],
-  ["a node_modules folder with no npm launcher beside it",{kind:"claude",found:"C:\\work\\app\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"},UNKNOWN],
-  ["npm's script launcher for Codex, proven by its package beside it",{kind:"codex",found:"D:\\tools\\npm\\codex.cmd",files:["D:\\tools\\npm\\node_modules\\@openai\\codex\\package.json"]},{method:"npm",prefix:"D:\\tools\\npm"}],
-  ["npm's global prefix on Linux",{kind:"claude",platform:"linux",found:"/usr/local/bin/claude",real:"/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"},{method:"npm",prefix:"/usr/local"}],
-  ["a global of Homebrew's Node, which is npm's",{kind:"codex",platform:"darwin",found:"/opt/homebrew/bin/codex",real:"/opt/homebrew/Cellar/node/22.1.0/lib/node_modules/@openai/codex/bin/codex.js"},{method:"npm",prefix:"/opt/homebrew/Cellar/node/22.1.0"}],
-  // pnpm 10 runs Claude Code's install script, which puts its binary in place, only when told to.
-  ["pnpm's global store",{kind:"claude",platform:"linux",found:"/home/me/.local/share/pnpm/claude",real:"/home/me/.local/share/pnpm/global/5/.pnpm/@anthropic-ai+claude-code@2.1.300/node_modules/@anthropic-ai/claude-code/cli.js"},{method:"manual",by:"pnpm",command:"pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest"}],
-  ["bun's global bin",{kind:"claude",platform:"darwin",found:"/Users/me/.bun/bin/claude"},{method:"manual",by:"bun",command:"bun add -g @anthropic-ai/claude-code@latest"}],
-  ["Vite+'s bin on Windows",{kind:"claude",found:"C:\\Users\\me\\AppData\\Local\\vite-plus\\bin\\claude.cmd",real:"C:\\Users\\me\\AppData\\Local\\vite-plus\\packages\\@anthropic-ai\\claude-code\\lib\\node_modules\\@anthropic-ai\\claude-code\\cli.js"},{method:"manual",by:"Vite+",command:"vp i -g @anthropic-ai/claude-code"}],
-  ["a folder named vite-plus in a project",{kind:"claude",platform:"linux",found:"/work/vite-plus/bin/claude",real:"/work/vite-plus/node_modules/@anthropic-ai/claude-code/cli.js"},UNKNOWN],
-  ["Yarn's global folder",{kind:"claude",platform:"linux",found:"/home/me/.yarn/bin/claude",real:"/home/me/.config/yarn/global/node_modules/@anthropic-ai/claude-code/cli.js"},{method:"manual",by:"Yarn",command:"yarn global add @anthropic-ai/claude-code@latest"}],
-  ["Volta's shim",{kind:"claude",found:"C:\\Users\\me\\AppData\\Local\\Volta\\bin\\claude.exe",real:"C:\\Program Files\\Volta\\volta-shim.exe"},{method:"manual",by:"Volta",command:"volta install @anthropic-ai/claude-code@latest"}],
-  ["a mise shim",{kind:"claude",platform:"linux",found:"/home/me/.local/share/mise/shims/claude"},{method:"manual",by:"mise",command:null}],
-  ["a mise wrapper where Claude Code's installer puts its launcher",{kind:"claude",platform:"linux",found:"/home/me/.local/bin/claude",scripts:{"/home/me/.local/bin/claude":"#!/bin/sh\nexec mise x claude -- claude \"$@\"\n"}},{method:"manual",by:"mise",command:null}],
-  ["a mise tool that looks like an npm global",{kind:"claude",platform:"linux",found:"/home/me/.local/bin/cc",real:"/home/me/.local/share/mise/installs/npm-anthropic-ai-claude-code/2.1.300/lib/node_modules/@anthropic-ai/claude-code/cli.js"},{method:"manual",by:"mise",command:null}],
-  ["a Homebrew formula",{kind:"claude",platform:"darwin",found:"/opt/homebrew/bin/claude",real:"/opt/homebrew/Cellar/claude-code/2.1.0/bin/claude"},{method:"manual",by:"Homebrew",command:"brew upgrade claude-code"}],
-  ["a Homebrew cask",{kind:"codex",platform:"darwin",found:"/usr/local/bin/codex",real:"/usr/local/Caskroom/codex/0.148.0/codex"},{method:"manual",by:"Homebrew",command:"brew upgrade --cask codex"}],
-  ["Codex's standalone tree in the profile's home, through its Windows bin junction",{kind:"codex",found:"C:\\Users\\me\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",real:"C:\\Users\\me\\.codex\\packages\\standalone\\releases\\0.163.0-x86_64\\bin\\codex.exe",codexHome:"C:\\Users\\me\\.codex"},{method:"native",args:["update"],env:{CODEX_HOME:"C:\\Users\\me\\.codex"}}],
-  ["Codex's standalone tree in another home than the profile's",{kind:"codex",found:"C:\\Users\\me\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",real:"D:\\other-codex\\packages\\standalone\\releases\\0.163.0-x86_64\\bin\\codex.exe",codexHome:"C:\\Users\\me\\.codex"},UNKNOWN],
-  ["a Codex release folder no updater keeps",{kind:"codex",platform:"linux",found:"/usr/local/bin/codex",real:"/usr/local/lib/codex/releases/rust-v0.162.1-x86_64-unknown-linux-musl/bin/codex",codexHome:"/home/me/.codex"},UNKNOWN],
-  ["a project's node_modules",{kind:"claude",platform:"linux",found:"/work/app/node_modules/.bin/claude",real:"/work/app/node_modules/@anthropic-ai/claude-code/cli.js"},UNKNOWN],
-  ["a folder nothing proves",{kind:"claude",found:"C:\\tools\\claude.exe"},UNKNOWN],
-  ["Grok Build's own install in its home",{kind:"grok",found:"C:\\Users\\me\\.grok\\bin\\grok.exe",grokHome:"C:\\Users\\me\\.grok"},NATIVE],
-  ["Grok Build from WinGet",{kind:"grok",found:"C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\grok.exe",real:"C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Packages\\xAI.GrokBuild_Microsoft.Winget.Source_8wekyb3d8bbwe\\grok.exe",grokHome:"C:\\Users\\me\\.grok"},{method:"manual",by:"WinGet",command:"winget upgrade xAI.GrokBuild"}],
-  ["OpenCode's own installer",{kind:"opencode",platform:"linux",found:"/home/me/.opencode/bin/opencode"},{method:"native",args:["upgrade"]}],
-  ["OpenCode 2.x from npm",{kind:"opencode",packageName:"@opencode/cli",found:"C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@opencode\\cli\\bin\\opencode.exe",files:["C:\\Users\\me\\AppData\\Roaming\\npm\\opencode.cmd"]},{method:"npm",prefix:"C:\\Users\\me\\AppData\\Roaming\\npm"}],
-  ["OpenCode 1.x's package for a 2.x version",{kind:"opencode",packageName:"@opencode/cli",found:"C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",files:["C:\\Users\\me\\AppData\\Roaming\\npm\\opencode.cmd"]},UNKNOWN],
+// The npm package each harness ships as.
+const NPM_PACKAGE={claude:"@anthropic-ai/claude-code",codex:"@openai/codex",grok:"@xai-official/grok",opencode:"opencode-ai"};
+// The arguments of npm's global install of a package, as an update runs them and Settings shows them: into prefix when the install
+// has one, the package's install script allowed (npm 12 runs none unless told to), pinned to version when one is given.
+const npmInstall=(name,version=null,prefix=null)=>["install","-g",...(prefix?["--prefix",prefix]:[]),`--allow-scripts=${name}`,version?`${name}@${version}`:name];
+
+// Ada's three computers. at() spells a path from the top of the file system (on the PC, of drive C:), home() from her home, each
+// through the computer's own path module.
+function computer(platform,paths,top,homeFolders){
+  const at=(...folders)=>paths.join(top,...folders);
+  return {platform,at,home:(...folders)=>at(...homeFolders,...folders)};
+}
+const PC=computer("win32",win32,"C:\\",["Users","ada"]),MAC=computer("darwin",posix,"/",["Users","ada"]),LINUX=computer("linux",posix,"/",["home","ada"]);
+// The PC's other drive, and the folders its environment names.
+const D=(...folders)=>win32.join("D:\\",...folders);
+const LOCAL=(...folders)=>PC.home("AppData","Local",...folders),ROAMING=(...folders)=>PC.home("AppData","Roaming",...folders);
+const PROGRAMS=(...folders)=>PC.at("Program Files",...folders),PROGRAMS_X86=(...folders)=>PC.at("Program Files (x86)",...folders);
+const PC_ENV={LOCALAPPDATA:LOCAL(),APPDATA:ROAMING(),ProgramFiles:PROGRAMS(),"ProgramFiles(x86)":PROGRAMS_X86()};
+// The identifier WinGet gives its community source, the second part of a package folder's name.
+const WINGET_COMMUNITY="Microsoft.Winget.Source_8wekyb3d8bbwe";
+// Folders several of Ada's installs share.
+const CLAUDE_LINK=LOCAL("Microsoft","WinGet","Links","claude.exe"),CLAUDE_PACKAGE=LOCAL("Microsoft","WinGet","Packages",`Anthropic.ClaudeCode_${WINGET_COMMUNITY}`,"claude.exe");
+const OWN_PREFIX=D("node-global"),NPM_GLOBAL=LINUX.home(".npm-global"),NODE_TARBALL=LINUX.at("opt","node-v22.11.0-linux-x64"),MISE_NODE=LINUX.home(".local","share","mise","installs","node","22.11.0");
+const MISE_WRAPPER=LINUX.home(".local","bin","claude"),MISE_NPM_TOOL=LINUX.home(".local","share","mise","installs","npm-openai-codex","0.171.0");
+const CODEX_CASK=MAC.at("opt","homebrew","Caskroom","codex","0.171.0","codex-aarch64-apple-darwin");
+
+// Who harnessInstallOwner says updates an install. found: what the profile names or PATH finds; behind: what starts behind an npm
+// launcher; real: the real path of what runs. on: the computer (the PC unless said) and env its environment, present: the only
+// files there besides those, scripts: the text of the small launchers it reads.
+function ownerOf({kind,on=PC,env=on===PC?PC_ENV:{},found=null,behind=found,real=behind,present=[],scripts={},packageName=NPM_PACKAGE[kind],codexHome=null,grokHome=null}){
+  return harnessInstallOwner(kind,{paths:{found,binary:behind,real},packageName,command:kind,platform:on.platform,env,codexHome,grokHome,
+    exists:path=>present.includes(path),read:path=>scripts[path]??""});
+}
+// The three answers: the harness's own updater with its arguments (and its environment), npm in a prefix, or the person, with the
+// tool that installed it and the command that updates it when they are known.
+const updater=(args,env=null)=>env?{method:"native",args,env}:{method:"native",args};
+const npmIn=prefix=>({method:"npm",prefix});
+const person=(by=null,command=null)=>({method:"manual",by,command});
+const CLAUDE_BY_WINGET=person("WinGet","winget upgrade Anthropic.ClaudeCode");
+
+// Who updates each of Ada's installs, one test per kind of answer. Each row: what it shows, the install, the answer.
+const OWNERS=[
+  ["an install a harness's own installer made is updated by the harness itself",[
+    ["Claude Code's launcher on Windows",{kind:"claude",found:PC.home(".local","bin","claude.exe")},updater(["update"])],
+    ["Claude Code's launcher on Linux",{kind:"claude",on:LINUX,found:LINUX.home(".local","bin","claude")},updater(["update"])],
+    ["Claude Code's launcher on macOS, a link to one of the versions it keeps",{kind:"claude",on:MAC,found:MAC.home(".local","bin","claude"),real:MAC.home(".local","share","claude","versions","2.1.307")},updater(["update"])],
+    ["a profile naming one of those versions itself",{kind:"claude",on:LINUX,found:LINUX.home(".local","share","claude","versions","2.1.309")},updater(["update"])],
+    ["OpenCode's own install on Windows",{kind:"opencode",found:PC.home(".opencode","bin","opencode.exe")},updater(["upgrade"])],
+    ["OpenCode's own install on Linux",{kind:"opencode",on:LINUX,found:LINUX.home(".opencode","bin","opencode")},updater(["upgrade"])],
+    ["Codex's standalone tree in the profile's Codex home, through the folder its installer puts on PATH",{kind:"codex",found:LOCAL("Programs","OpenAI","Codex","bin","codex.exe"),real:PC.home(".codex","packages","standalone","releases","0.171.0-x86_64","bin","codex.exe"),codexHome:PC.home(".codex")},updater(["update"],{CODEX_HOME:PC.home(".codex")})],
+    ["Codex's standalone tree on Linux",{kind:"codex",on:LINUX,found:LINUX.home(".local","bin","codex"),real:LINUX.home(".codex","packages","standalone","releases","0.170.2-x86_64","bin","codex"),codexHome:LINUX.home(".codex")},updater(["update"],{CODEX_HOME:LINUX.home(".codex")})],
+    ["Grok Build in its own home",{kind:"grok",found:PC.home(".grok","bin","grok.exe"),grokHome:PC.home(".grok")},updater(["update"])],
+  ]],
+  ["an install WinGet keeps is updated with winget upgrade, its id read from WinGet's package folder, wherever the profile finds it",[
+    ["the link WinGet makes for one user, to its package",{kind:"claude",found:CLAUDE_LINK,real:CLAUDE_PACKAGE},CLAUDE_BY_WINGET],
+    ["Claude Code's launcher folder holding a link to WinGet's package",{kind:"claude",found:PC.home(".local","bin","claude.exe"),real:CLAUDE_PACKAGE},CLAUDE_BY_WINGET],
+    ["a package from a source of another name",{kind:"claude",found:LOCAL("Microsoft","WinGet","Packages","Anthropic.ClaudeCode_ada-mirror","claude.exe")},CLAUDE_BY_WINGET],
+    ["a package for the whole machine",{kind:"codex",found:PROGRAMS("WinGet","Packages",`OpenAI.Codex_${WINGET_COMMUNITY}`,"codex.exe")},person("WinGet","winget upgrade OpenAI.Codex")],
+    ["a package in the x86 Program Files",{kind:"claude",found:PROGRAMS_X86("WinGet","Packages",`Anthropic.ClaudeCode_${WINGET_COMMUNITY}`,"claude.exe")},CLAUDE_BY_WINGET],
+    ["the machine's link alone, its package not named",{kind:"codex",found:PROGRAMS("WinGet","Links","codex.exe")},person("WinGet")],
+    ["the user's link alone, its target not read",{kind:"claude",found:CLAUDE_LINK},person("WinGet")],
+    // Windows does not tell names of its environment apart by letter case, and a copy of it keeps whatever spelling it was given.
+    ["an environment spelling its names its own way",{kind:"claude",env:{localappdata:LOCAL(),PROGRAMFILES:PROGRAMS()},found:CLAUDE_LINK,real:CLAUDE_PACKAGE},CLAUDE_BY_WINGET],
+    ["Grok Build linked by WinGet while its own home is there too",{kind:"grok",found:LOCAL("Microsoft","WinGet","Links","grok.exe"),real:LOCAL("Microsoft","WinGet","Packages",`xAI.GrokBuild_${WINGET_COMMUNITY}`,"grok.exe"),grokHome:PC.home(".grok")},person("WinGet","winget upgrade xAI.GrokBuild")],
+  ]],
+  ["an install in npm's global prefix is updated by npm in that prefix, and npm outranks the Node it runs on",[
+    ["the binary behind claude.cmd in %APPDATA%\\npm",{kind:"claude",found:ROAMING("npm","node_modules","@anthropic-ai","claude-code","bin","claude.exe"),present:[ROAMING("npm","claude.cmd")]},npmIn(ROAMING("npm"))],
+    ["claude.cmd itself, the package's manifest beside it",{kind:"claude",found:ROAMING("npm","claude.cmd"),present:[ROAMING("npm","node_modules","@anthropic-ai","claude-code","package.json")]},npmIn(ROAMING("npm"))],
+    ["OpenCode 1.x in a prefix of the person's own on D:",{kind:"opencode",found:win32.join(OWN_PREFIX,"opencode.cmd"),behind:win32.join(OWN_PREFIX,"node_modules","opencode-ai","bin","opencode.exe"),present:[win32.join(OWN_PREFIX,"opencode.cmd")]},npmIn(OWN_PREFIX)],
+    ["OpenCode 2.x there, its package @opencode/cli",{kind:"opencode",packageName:"@opencode/cli",found:win32.join(OWN_PREFIX,"opencode.cmd"),behind:win32.join(OWN_PREFIX,"node_modules","@opencode","cli","bin","opencode.exe"),present:[win32.join(OWN_PREFIX,"opencode.cmd")]},npmIn(OWN_PREFIX)],
+    ["the prefix npm's own docs suggest on Linux",{kind:"claude",on:LINUX,found:posix.join(NPM_GLOBAL,"bin","claude"),real:posix.join(NPM_GLOBAL,"lib","node_modules","@anthropic-ai","claude-code","bin","claude.exe")},npmIn(NPM_GLOBAL)],
+    ["a Node unpacked from its tarball",{kind:"codex",on:LINUX,found:posix.join(NODE_TARBALL,"bin","codex"),real:posix.join(NODE_TARBALL,"lib","node_modules","@openai","codex","bin","codex.js")},npmIn(NODE_TARBALL)],
+    ["a Node mise installed",{kind:"codex",on:LINUX,found:posix.join(MISE_NODE,"bin","codex"),real:posix.join(MISE_NODE,"lib","node_modules","@openai","codex","bin","codex.js")},npmIn(MISE_NODE)],
+    ["Homebrew's Node, its globals beside Homebrew's own",{kind:"claude",on:MAC,found:MAC.at("opt","homebrew","bin","claude"),real:MAC.at("opt","homebrew","lib","node_modules","@anthropic-ai","claude-code","cli.js")},npmIn(MAC.at("opt","homebrew"))],
+    ["a global inside Homebrew's node keg",{kind:"claude",on:MAC,found:MAC.at("opt","homebrew","bin","claude"),real:MAC.at("opt","homebrew","Cellar","node","23.3.0","lib","node_modules","@anthropic-ai","claude-code","cli.js")},npmIn(MAC.at("opt","homebrew","Cellar","node","23.3.0"))],
+  ]],
+  ["an install another package manager keeps is the person's to update, with that manager's command for the harness's package",[
+    ["Vite+ on Windows",{kind:"codex",found:LOCAL("vite-plus","bin","codex.cmd"),real:LOCAL("vite-plus","packages","@openai","codex","lib","node_modules","@openai","codex","bin","codex.js")},person("Vite+","vp install -g @openai/codex@latest")],
+    ["Vite+ on Linux",{kind:"opencode",on:LINUX,found:LINUX.home(".local","share","vite-plus","bin","opencode")},person("Vite+","vp install -g opencode-ai@latest")],
+    ["bun",{kind:"codex",on:LINUX,found:LINUX.home(".bun","bin","codex")},person("bun","bun add -g @openai/codex@latest")],
+    // pnpm 10 runs no install script of a package unless told to, and Claude Code's puts its binary in place.
+    ["pnpm on Windows",{kind:"claude",found:LOCAL("pnpm","claude.cmd"),real:LOCAL("pnpm","global","5","node_modules","@anthropic-ai","claude-code","cli.js")},person("pnpm","pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest")],
+    ["pnpm on macOS",{kind:"codex",on:MAC,found:MAC.home("Library","pnpm","codex")},person("pnpm","pnpm add -g --allow-build=@openai/codex @openai/codex@latest")],
+    ["pnpm on Linux",{kind:"opencode",on:LINUX,found:LINUX.home(".local","share","pnpm","opencode")},person("pnpm","pnpm add -g --allow-build=opencode-ai opencode-ai@latest")],
+    ["Yarn's global folder on Windows",{kind:"codex",found:LOCAL("Yarn","bin","codex.cmd"),real:LOCAL("Yarn","Data","global","node_modules","@openai","codex","bin","codex.js")},person("Yarn","yarn global add @openai/codex@latest")],
+    ["Yarn's global folder on Linux",{kind:"claude",on:LINUX,found:LINUX.home(".yarn","bin","claude"),real:LINUX.home(".config","yarn","global","node_modules","@anthropic-ai","claude-code","cli.js")},person("Yarn","yarn global add @anthropic-ai/claude-code@latest")],
+    ["Volta's shim on macOS",{kind:"claude",on:MAC,found:MAC.home(".volta","bin","claude"),real:MAC.home(".volta","bin","volta-shim")},person("Volta","volta install @anthropic-ai/claude-code@latest")],
+    ["Volta's shim on Windows",{kind:"codex",found:LOCAL("Volta","bin","codex.exe"),real:PROGRAMS("Volta","volta-shim.exe")},person("Volta","volta install @openai/codex@latest")],
+    ["a Homebrew formula on Linux",{kind:"codex",on:LINUX,found:LINUX.at("home","linuxbrew",".linuxbrew","bin","codex"),real:LINUX.at("home","linuxbrew",".linuxbrew","Cellar","codex","0.171.0","bin","codex")},person("Homebrew","brew upgrade codex")],
+    ["Codex's Homebrew cask on macOS",{kind:"codex",on:MAC,found:MAC.at("opt","homebrew","bin","codex"),real:CODEX_CASK},person("Homebrew","brew upgrade --cask codex")],
+  ]],
+  ["an install mise keeps is mise's to update, and Trebell names no command for it",[
+    ["a mise shim",{kind:"codex",on:MAC,found:MAC.home(".local","share","mise","shims","codex")},person("mise")],
+    ["a link to the mise Homebrew installed",{kind:"claude",on:MAC,found:MAC.home("bin","claude"),real:MAC.at("opt","homebrew","Cellar","mise","2025.10.4","bin","mise")},person("mise")],
+    ["a wrapper where Claude Code's installer puts its launcher, running it through mise exec",{kind:"claude",on:LINUX,found:MISE_WRAPPER,scripts:{[MISE_WRAPPER]:"#!/usr/bin/env bash\nexec mise exec npm:@anthropic-ai/claude-code -- claude \"$@\"\n"}},person("mise")],
+    ["a wrapper of the person's own running it through mise x",{kind:"codex",on:MAC,found:MAC.home("bin","codex"),scripts:{[MAC.home("bin","codex")]:"#!/bin/zsh\nexec mise x npm:@openai/codex@0.171.0 -- codex \"$@\"\n"}},person("mise")],
+    ["a link to an npm package mise installed as a tool of its own, laid out like npm's prefix",{kind:"codex",on:LINUX,found:LINUX.home(".local","bin","codex"),real:posix.join(MISE_NPM_TOOL,"lib","node_modules","@openai","codex","bin","codex.js")},person("mise")],
+  ]],
+  ["an install nothing proves is the person's to update, with no tool or command named",[
+    ["no path at all",{kind:"claude"},person()],
+    ["a binary in a folder of the person's own",{kind:"codex",found:D("apps","codex","codex.exe")},person()],
+    ["a copy of WinGet's folders on another drive",{kind:"claude",found:D("Backup","Microsoft","WinGet","Packages",`Anthropic.ClaudeCode_${WINGET_COMMUNITY}`,"claude.exe")},person()],
+    ["a Codex tree in a folder whose name only starts like the profile's Codex home",{kind:"codex",on:LINUX,found:LINUX.home(".local","bin","codex"),real:LINUX.home(".codex-old","packages","standalone","releases","0.170.2-x86_64","bin","codex"),codexHome:LINUX.home(".codex")},person()],
+    ["a Codex tree in another Codex home",{kind:"codex",found:LOCAL("Programs","OpenAI","Codex","bin","codex.exe"),real:D("codex-home","packages","standalone","releases","0.171.0-x86_64","bin","codex.exe"),codexHome:PC.home(".codex")},person()],
+    ["Grok Build in a folder whose name only starts like its home",{kind:"grok",found:PC.home(".grok-old","bin","grok.exe"),grokHome:PC.home(".grok")},person()],
+    ["a package in node_modules with no npm launcher beside it",{kind:"codex",found:D("projects","site","node_modules","@openai","codex","bin","codex.exe")},person()],
+    ["a package inside another package, a launcher beside that package",{kind:"claude",found:D("tools","node_modules","agent-kit","node_modules","@anthropic-ai","claude-code","bin","claude.exe"),present:[D("tools","node_modules","agent-kit","claude.cmd")]},person()],
+    ["a project's node_modules on macOS",{kind:"claude",on:MAC,found:MAC.home("code","site","node_modules",".bin","claude"),real:MAC.home("code","site","node_modules","@anthropic-ai","claude-code","cli.js")},person()],
+    ["a project named vite-plus",{kind:"codex",on:MAC,found:MAC.home("code","vite-plus","bin","codex"),real:MAC.home("code","vite-plus","node_modules","@openai","codex","bin","codex.js")},person()],
+    ["OpenCode 1.x's package where OpenCode 2.x's is asked for",{kind:"opencode",packageName:"@opencode/cli",found:win32.join(OWN_PREFIX,"opencode.cmd"),behind:win32.join(OWN_PREFIX,"node_modules","opencode-ai","bin","opencode.exe"),present:[win32.join(OWN_PREFIX,"opencode.cmd")]},person()],
+  ]],
 ];
-test("what updates a harness, judged from where the binary a profile runs really is: npm's prefix, the harness's own updater or the person",()=>{
-  for(const [name,{kind,...fixture},expected] of CASES)assert.deepEqual(judged(kind,fixture),expected,name);
-  // What Settings says of a newer release Trebell does not install itself, in Trebell's own words: the release, the file the profile
-  // runs, and what installed it with the command that updates it.
-  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:WINGET_PACKAGE,by:"WinGet",command:"winget upgrade Anthropic.ClaudeCode"}),`Claude Code 2.1.320 is available. This profile runs ${WINGET_PACKAGE}, installed by WinGet: run \`winget upgrade Anthropic.ClaudeCode\` to update it.`);
-  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:"/home/me/.local/share/mise/shims/claude",by:"mise"}),"Claude Code 2.1.320 is available. This profile runs /home/me/.local/share/mise/shims/claude, installed by mise: update it with mise.");
-  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:"C:\\tools\\claude.exe"}),"Claude Code 2.1.320 is available. This profile runs C:\\tools\\claude.exe, and Trebell Code cannot tell what installed it: update it the way you installed it.");
-  // pnpm takes --allow-build from 10.4 on, and an older pnpm refuses an option it does not know: the note and the refusal say so.
-  const pnpm={name:"Claude Code",binary:"/home/me/.local/share/pnpm/claude",by:"pnpm",command:"pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest"};
-  assert.equal(manualUpdateText({...pnpm,latest:"2.1.320"}),"Claude Code 2.1.320 is available. This profile runs /home/me/.local/share/pnpm/claude, installed by pnpm: run `pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest` to update it (pnpm 10.4 or later; on an older pnpm, leave out `--allow-build`).");
-  assert.equal(manualUpdateRefusal(pnpm),"Trebell Code does not update the Claude Code at /home/me/.local/share/pnpm/claude, installed by pnpm: run `pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest` to update it (pnpm 10.4 or later; on an older pnpm, leave out `--allow-build`). Nothing was installed.");
-  assert.equal(manualUpdateRefusal({...pnpm,by:"bun",command:"bun add -g @anthropic-ai/claude-code@latest"}),"Trebell Code does not update the Claude Code at /home/me/.local/share/pnpm/claude, installed by bun: run `bun add -g @anthropic-ai/claude-code@latest` to update it. Nothing was installed.");
-  // `npm view <package>@<range> version --json` lists every version in range, in no order to rely on: the newest by version wins.
-  assert.equal(newestListed('["2.0.24","2.10.0","2.2.0"]\n'),"2.10.0");assert.equal(newestListed('"1.14.19"\n'),"1.14.19");assert.equal(newestListed(""),null);
-  // The version npm recorded in its prefix, from the package's manifest: <prefix>/lib/node_modules/<package> on Linux and macOS (on
-  // Windows <prefix>\node_modules\<package>, as the tests below lay it out); a prerelease, which Trebell's checks cannot compare, is none.
-  const manifests={"/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json":'{"name":"@anthropic-ai/claude-code","version":"2.1.308"}',"/opt/tools/lib/node_modules/@openai/codex/package.json":'{"name":"@openai/codex","version":"0.162.0-alpha.17.1"}'};
-  const recorded=(prefix,name)=>npmRecordedVersion(prefix,name,{platform:"linux",read:path=>{if(!(path in manifests))throw Object.assign(new Error("ENOENT"),{code:"ENOENT"});return manifests[path]}});
-  assert.deepEqual([recorded("/usr/local","@anthropic-ai/claude-code"),recorded("/opt/tools","@openai/codex"),recorded("/usr/local","@openai/codex")],["2.1.308",null,null]);
+for(const [title,rows] of OWNERS)test(title,()=>{for(const [shows,install,answer] of rows)assert.deepEqual(ownerOf(install),answer,shows)});
+
+// What Settings says of a newer release Trebell does not install itself, and the refusal of an Update pressed for it. Each row: the
+// install (its newest release, the file the profile runs, who installed it and the command that updates it when known), the note
+// and the refusal. With nobody known, the refusal says which installs Trebell updates, "a" or "an" before the harness's name. pnpm
+// takes --allow-build from 10.4 on and an older pnpm refuses an option it does not know, so only its command carries a note.
+const PNPM_NOTE="(pnpm 10.4 or later; on an older pnpm, leave out `--allow-build`)",PNPM_SHIM=LOCAL("pnpm","claude.cmd"),YARN_SHIM=LOCAL("Yarn","bin","claude.cmd");
+const MISE_SHIM=MAC.home(".local","share","mise","shims","codex"),STRAY_OPENCODE=D("apps","opencode","opencode.exe"),STRAY_CODEX=D("apps","codex","codex.exe");
+const WORDS=[
+  [{name:"Codex",latest:"0.172.0",binary:CODEX_CASK,by:"Homebrew",command:"brew upgrade --cask codex"},
+    `Codex 0.172.0 is available. This profile runs ${CODEX_CASK}, installed by Homebrew: run \`brew upgrade --cask codex\` to update it.`,
+    `Trebell Code does not update the Codex at ${CODEX_CASK}, installed by Homebrew: run \`brew upgrade --cask codex\` to update it. Nothing was installed.`],
+  [{name:"Codex",latest:"0.172.0",binary:MISE_SHIM,by:"mise"},
+    `Codex 0.172.0 is available. This profile runs ${MISE_SHIM}, installed by mise: update it with mise.`,
+    `Trebell Code does not update the Codex at ${MISE_SHIM}, installed by mise: update it with mise. Nothing was installed.`],
+  [{name:"OpenCode",latest:"1.19.4",binary:STRAY_OPENCODE},
+    `OpenCode 1.19.4 is available. This profile runs ${STRAY_OPENCODE}, and Trebell Code cannot tell what installed it: update it the way you installed it.`,
+    `Trebell Code updates an OpenCode installed by npm or by OpenCode's own installer, and cannot tell what installed ${STRAY_OPENCODE}: update it the way you installed it. Nothing was installed.`],
+  [{name:"Codex",latest:"0.172.0",binary:STRAY_CODEX},
+    `Codex 0.172.0 is available. This profile runs ${STRAY_CODEX}, and Trebell Code cannot tell what installed it: update it the way you installed it.`,
+    `Trebell Code updates a Codex installed by npm or by Codex's own installer, and cannot tell what installed ${STRAY_CODEX}: update it the way you installed it. Nothing was installed.`],
+  [{name:"Claude Code",latest:"2.1.312",binary:PNPM_SHIM,by:"pnpm",command:"pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest"},
+    `Claude Code 2.1.312 is available. This profile runs ${PNPM_SHIM}, installed by pnpm: run \`pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest\` to update it ${PNPM_NOTE}.`,
+    `Trebell Code does not update the Claude Code at ${PNPM_SHIM}, installed by pnpm: run \`pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest\` to update it ${PNPM_NOTE}. Nothing was installed.`],
+  [{name:"Claude Code",latest:"2.1.312",binary:YARN_SHIM,by:"Yarn",command:"yarn global add @anthropic-ai/claude-code@latest"},
+    `Claude Code 2.1.312 is available. This profile runs ${YARN_SHIM}, installed by Yarn: run \`yarn global add @anthropic-ai/claude-code@latest\` to update it.`,
+    `Trebell Code does not update the Claude Code at ${YARN_SHIM}, installed by Yarn: run \`yarn global add @anthropic-ai/claude-code@latest\` to update it. Nothing was installed.`],
+];
+test("Settings' words for a newer release Trebell does not install itself, and for an Update it refuses",()=>{
+  for(const [install,note,refusal] of WORDS)assert.deepEqual([manualUpdateText(install),manualUpdateRefusal(install)],[note,refusal],`${install.by} ${install.binary}`);
+});
+
+test("what npm itself names: the newest release it lists, and the version it recorded in a prefix",()=>{
+  // `npm view <package>@<range> version --json` prints one quoted version, or a list in no order to rely on when several match: the
+  // newest by version wins, its parts compared as numbers.
+  assert.deepEqual(['[\n  "1.10.9",\n  "1.9.0",\n  "1.10.10"\n]\n','"2.1.307"\n',""].map(newestListed),["1.10.10","2.1.307",null]);
+  // The manifest npm wrote for the package: <prefix>/lib/node_modules/<package> on Linux and macOS, <prefix>\node_modules\<package>
+  // on Windows. A prerelease, which Trebell's checks cannot compare, is none, as is a package npm has no manifest of.
+  const manifests=new Map([
+    [posix.join(NPM_GLOBAL,"lib","node_modules","@anthropic-ai","claude-code","package.json"),{name:"@anthropic-ai/claude-code",version:"2.1.307"}],
+    [posix.join(NODE_TARBALL,"lib","node_modules","@openai","codex","package.json"),{name:"@openai/codex",version:"0.172.0-alpha.3"}],
+    [win32.join(OWN_PREFIX,"node_modules","opencode-ai","package.json"),{name:"opencode-ai",version:"1.18.30"}],
+  ]);
+  const read=path=>{if(!manifests.has(path))throw Object.assign(new Error(`ENOENT: no such file, open '${path}'`),{code:"ENOENT"});return JSON.stringify(manifests.get(path))};
+  const asked=[[NPM_GLOBAL,"@anthropic-ai/claude-code","linux"],[NODE_TARBALL,"@openai/codex","linux"],[NPM_GLOBAL,"@openai/codex","linux"],[OWN_PREFIX,"opencode-ai","win32"]];
+  assert.deepEqual(asked.map(([prefix,name,platform])=>npmRecordedVersion(prefix,name,{platform,read})),["2.1.307",null,null,"1.18.30"]);
 });
 
 const WINDOWS_ONLY={skip:process.platform!=="win32"&&"lays out Windows install folders"};
@@ -90,6 +186,9 @@ const answered=stdout=>({ok:true,code:0,error:null,stdout,stderr:""});
 const exited=(code,stderr)=>({ok:false,code,error:null,stdout:"",stderr});
 const missing=command=>({ok:false,code:null,error:`spawn ${command} ENOENT`,stdout:"",stderr:""});
 const TIMED_OUT=Object.freeze({ok:false,code:null,error:"probe timed out",stdout:"",stderr:""});
+// A stand-in for what a signed-in Grok Build's `grok models` prints: its status check looks only for "you are logged in", and no
+// install test is about signing in.
+const GROK_SIGNED_IN="You are logged in to Grok Build.\n";
 // The Windows launcher npm writes for a package's native binary.
 const npmShim=target=>["@ECHO off","GOTO start",":find_dp0","SET dp0=%~dp0","EXIT /b",":start","SETLOCAL","CALL :find_dp0",`"%dp0%\\${target}"   %*`,""].join("\r\n");
 async function file(path,text=""){await mkdir(dirname(path),{recursive:true});await writeFile(path,text,"utf8");return path}
@@ -102,7 +201,7 @@ async function tempRoot(t,name){
 // latest[package], and answer(command,args,options) giving every launch's answer (calls lists them). Every harness not answered for
 // is not there.
 function machine(root,{instances=[],answer,latest={},path="",extraEnv={},fetchImpl:registry=null}){
-  const env={USERPROFILE:join(root,"home"),HOME:join(root,"home"),APPDATA:join(root,"AppData","Roaming"),LOCALAPPDATA:join(root,"AppData","Local"),ProgramFiles:join(root,"Program Files"),PATH:path,PATHEXT:".COM;.EXE;.BAT;.CMD",SystemRoot:process.env.SystemRoot,COMSPEC:process.env.COMSPEC,TEMP:root,TMP:root,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"home",".codex"),...extraEnv};
+  const env={USERPROFILE:join(root,"home"),HOME:join(root,"home"),APPDATA:join(root,"AppData","Roaming"),LOCALAPPDATA:join(root,"AppData","Local"),ProgramFiles:join(root,"Program Files"),PATH:path,PATHEXT:".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC",SystemRoot:process.env.SystemRoot,COMSPEC:process.env.COMSPEC,TEMP:root,TMP:root,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"home",".codex"),...extraEnv};
   const calls=[],fetched=[],settings={agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeInstances:instances};
   const state={settings:()=>({...settings}),updateSettings:patch=>Object.assign(settings,patch)};
   const runFn=async(command,args,options)=>{calls.push({command,args:[...args],env:options.env,timeoutMs:options.timeoutMs});return answer(command,args,options)};
@@ -137,13 +236,13 @@ test("Update on npm's global Claude Code installs into the prefix holding the bi
   assert.deepEqual(statusOf(await fx.manager.snapshot(),"claude").update?.latest,null);
   assert.deepEqual([fx.fetched,npmCalls(fx.calls)],[[],[]]);
   const update=statusOf(await fx.manager.snapshot({refresh:true}),"claude").update;
-  const command=shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@anthropic-ai/claude-code","@anthropic-ai/claude-code@2.1.320"],"win32");
+  const command=shownCommand("npm",npmInstall("@anthropic-ai/claude-code","2.1.320",realPrefix),"win32");
   assert.deepEqual(update,{current:"2.1.300",latest:"2.1.320",newer:true,canUpdate:true,command,binary:real,message:null});
   // npm itself names the newest release of an install it updates, as that update will (through the person's npm registry and proxy),
   // so nothing reads npm's public registry for it.
   assert.deepEqual([fx.fetched,npmCalls(fx.calls)],[[],["view @anthropic-ai/claude-code version --json"]]);
   const installed=await fx.manager.install("claude");
-  assert.deepEqual(npmCalls(fx.calls),["view @anthropic-ai/claude-code version --json","--version","view @anthropic-ai/claude-code version --json",`install -g --prefix ${realPrefix} --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.320`]);
+  assert.deepEqual(npmCalls(fx.calls),["view @anthropic-ai/claude-code version --json","--version","view @anthropic-ai/claude-code version --json",npmInstall("@anthropic-ai/claude-code","2.1.320",realPrefix).join(" ")]);
   assert.deepEqual([installed.method,installed.packageName,installed.targetVersion,installed.status.version],["npm","@anthropic-ai/claude-code","2.1.320","2.1.320 (Claude Code)"]);
   // Now the newest: no Update, and pressing it from an older page installs nothing.
   const current=statusOf(await fx.manager.snapshot(),"claude").update;
@@ -199,8 +298,8 @@ test("a WinGet Claude Code gets no Update but the version, the file it runs and 
   assert.deepEqual([unknown.latest,unknown.newer,unknown.message],[null,false,null]);
 });
 
-// A `codex app-server` that answers initialize and account/read as a signed-in Codex does, at launcher: a node script of the test's
-// own behind it.
+// A stand-in for Codex's app server, answering initialize and account/read as a signed-in Codex does, at launcher: a node script
+// of the test's own behind it.
 async function codexAppServer(launcher){
   const script=await file(join(dirname(launcher),"codex-app-server.mjs"),String.raw`
 import readline from "node:readline";
@@ -237,7 +336,7 @@ test("Grok Build's own install updates with `grok update`, its updater on; one T
   const fx=machine(root,{latest:{"@xai-official/grok":"1.0.70"},answer:(command,args)=>{
     if(command!==binary)return missing(command);
     if(args[0]==="update"){version="1.0.70";return answered("Updated to 1.0.70\n")}
-    return answered(args[0]==="models"?"You are logged in with grok.com.\n":`grok ${version} (4220f3b224a6)\n`);
+    return answered(args[0]==="models"?GROK_SIGNED_IN:`grok ${version} (4220f3b224a6)\n`);
   }});
   const update=statusOf(await fx.manager.snapshot({refresh:true}),"grok").update;
   assert.deepEqual([update.current,update.latest,update.canUpdate,update.command],["1.0.41","1.0.70",true,shownCommand(binary,["update"],"win32")]);
@@ -260,7 +359,7 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
     return command.endsWith("opencode.exe")?answered("2.0.24\n"):missing(command);
   }});
   const plan=await fx.manager.installPlan("opencode"),realPrefix=realpathSync.native(prefix);
-  assert.deepEqual({method:plan.method,packageName:plan.packageName,installedVersion:plan.installedVersion,targetVersion:plan.targetVersion,command:plan.command,args:plan.args},{method:"npm",packageName:"@opencode/cli",installedVersion:"2.0.24",targetVersion:"2.10.1",command:"npm",args:["install","-g","--prefix",realPrefix,"--allow-scripts=@opencode/cli","@opencode/cli@2.10.1"]});
+  assert.deepEqual({method:plan.method,packageName:plan.packageName,installedVersion:plan.installedVersion,targetVersion:plan.targetVersion,command:plan.command,args:plan.args},{method:"npm",packageName:"@opencode/cli",installedVersion:"2.0.24",targetVersion:"2.10.1",command:"npm",args:npmInstall("@opencode/cli","2.10.1",realPrefix)});
   assert.deepEqual(npmCalls(fx.calls),["--version","view @opencode/cli@>=2.0.0 <3.0.0 version --json"],"npm names the 2.x releases only");
   // With the prefix's opencode command 1.x's, npm would refuse to replace it: nothing is asked of npm.
   await writeFile(shim,npmShim("node_modules\\opencode-ai\\bin\\opencode.exe"),"utf8");
@@ -268,7 +367,7 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
   await assert.rejects(()=>fx.manager.installPlan("opencode"),/^Error: npm cannot update @opencode\/cli in .*: the opencode command there runs opencode-ai, and npm does not replace another package's command\. Trebell Code changes neither install\. To update OpenCode 2\.x, uninstall opencode-ai/);
   // The forced install it names lets npm 12 run OpenCode's install script, which puts its binary in place, into that prefix, and
   // keeps to the 2.x line: npm installs the newest 2.x, never a 3.0 that has become @opencode/cli's latest.
-  const refusal=`npm cannot update @opencode/cli in ${realPrefix}: the opencode command there runs opencode-ai, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode 2.x, uninstall opencode-ai, or run \`${shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@opencode/cli","@opencode/cli@2","--force"],"win32")}\` yourself (the opencode command then runs OpenCode 2.x).`;
+  const refusal=`npm cannot update @opencode/cli in ${realPrefix}: the opencode command there runs opencode-ai, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode 2.x, uninstall opencode-ai, or run \`${shownCommand("npm",[...npmInstall("@opencode/cli","2",realPrefix),"--force"],"win32")}\` yourself (the opencode command then runs OpenCode 2.x).`;
   await assert.rejects(()=>fx.manager.installPlan("opencode"),{message:refusal});
   assert.deepEqual(npmCalls(fx.calls.slice(before)),[]);
   // Settings' note says it once a newer 2.x is out.
@@ -322,7 +421,7 @@ test("an OpenCode 0.x is offered no update to the newest 0.x, and nothing reads 
   // A host's: no `npm install -g opencode-ai@0.15.31` offered.
   const profile={id:"ssh-fixture",type:"ssh",cwd:"/srv/app"};
   const environments={get:id=>id===profile.id?profile:null,spawnArgv:()=>{throw new Error("nothing is started on the host")},executeArgv:async(_id,{command,args})=>command==="opencode"&&args[0]==="--version"?{exitCode:0,stdout:"0.15.0\n",stderr:""}:{exitCode:1,stdout:"",stderr:"unexpected command"}};
-  const host=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"},fetchImpl:registry});
+  const host=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/deploy"},fetchImpl:registry});
   const remote=statusOf(await host.snapshot({refresh:true}),"opencode").update;
   assert.deepEqual([remote.current,remote.latest,remote.newer,remote.message],["0.15.0",null,false,null]);
   assert.deepEqual(listOnly(),[],"only npm's latest was read");
@@ -369,7 +468,7 @@ test("a newest release that answers while another harness's status check still r
   };
   const fx=machine(root,{fetchImpl,answer:(command,args)=>{
     if(command===claude)return answered(args[0]==="--version"?"2.1.300 (Claude Code)\n":JSON.stringify({loggedIn:true}));
-    if(command===grok)return args[0]==="--version"?later(4000,answered("grok 1.0.41 (4220f3b224a6)\n")):answered("You are logged in with grok.com.\n");
+    if(command===grok)return args[0]==="--version"?later(4000,answered("grok 1.0.41 (4220f3b224a6)\n")):answered(GROK_SIGNED_IN);
     return missing(command);
   }});
   const started=Date.now(),listed=await fx.manager.snapshot({refresh:true}),took=Date.now()-started,update=statusOf(listed,"claude").update;
@@ -384,7 +483,7 @@ test("an OpenCode profile with a server of its own is offered Update only for a 
   const root=await tempRoot(t,"opencode-server"),prefix=join(root,"AppData","Roaming","npm");
   await file(join(prefix,"node_modules","opencode-ai","bin","opencode.exe"));
   await file(join(prefix,"opencode.cmd"),npmShim("node_modules\\opencode-ai\\bin\\opencode.exe"));
-  const instances=[{id:"opencode-server",kind:"opencode",displayName:"OpenCode server",serverUrl:"http://127.0.0.1:9",environment:{}}];
+  const instances=[{id:"opencode-server",kind:"opencode",displayName:"OpenCode server",serverUrl:"http://127.0.0.1:1",environment:{}}];
   const listed=async release=>{
     const fx=machine(root,{instances,latest:{"opencode-ai":release},answer:(command,args)=>{
       if(command==="npm")return args[0]==="view"?answered(JSON.stringify(release)+"\n"):answered("11.0.0\n");
@@ -394,7 +493,7 @@ test("an OpenCode profile with a server of its own is offered Update only for a 
   };
   const {status}=await listed("1.19.4"),realPrefix=realpathSync.native(prefix);
   assert.deepEqual([status.installed,status.version],[true,"1.18.30"]);
-  assert.deepEqual(status.update,{current:"1.18.30",latest:"1.19.4",newer:true,canUpdate:true,command:shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=opencode-ai","opencode-ai@1.19.4"],"win32"),binary:realpathSync.native(join(prefix,"node_modules","opencode-ai","bin","opencode.exe")),message:null});
+  assert.deepEqual(status.update,{current:"1.18.30",latest:"1.19.4",newer:true,canUpdate:true,command:shownCommand("npm",npmInstall("opencode-ai","1.19.4",realPrefix),"win32"),binary:realpathSync.native(join(prefix,"node_modules","opencode-ai","bin","opencode.exe")),message:null});
   // The newest already: no Update for it.
   const current=(await listed("1.18.30")).status.update;
   assert.deepEqual([current.current,current.latest,current.newer,current.message],["1.18.30","1.18.30",false,null]);
@@ -431,18 +530,18 @@ test("a Claude Code, Codex or Grok Build in npm's prefix that does not start is 
     return missing(command);
   }});
   const realPrefix=realpathSync.native(prefix),listed=await fx.manager.snapshot({refresh:true});
-  const reinstall=(name,version)=>shownCommand("npm",["install","-g","--prefix",realPrefix,`--allow-scripts=${name}`,`${name}@${version}`],"win32");
+  const reinstall=(name,version)=>shownCommand("npm",npmInstall(name,version,realPrefix),"win32");
   assert.deepEqual(statusOf(listed,"claude").update,{current:null,latest:"2.1.308",newer:true,canUpdate:true,command:reinstall("@anthropic-ai/claude-code","2.1.308"),binary:realpathSync.native(claude),message:null});
   assert.deepEqual(statusOf(listed,"codex").update,{current:null,latest:"0.163.0",newer:true,canUpdate:true,command:reinstall("@openai/codex","0.163.0"),binary:realpathSync.native(codex),message:null});
   const installed=await fx.manager.install("claude");
   assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","2.1.308","2.1.308 (Claude Code)"]);
-  assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("install")),[`install -g --prefix ${realPrefix} --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.308`]);
+  assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("install")),[npmInstall("@anthropic-ai/claude-code","2.1.308",realPrefix).join(" ")]);
   // A reinstall after which the binary still does not start says so.
   await assert.rejects(()=>fx.manager.install("codex"),{message:`Codex 0.163.0 was installed, but the Codex this profile runs (${codex}) did not start: spawn UNKNOWN.`});
   assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("view")),[],"npm's newest release was never asked for");
   // One whose check only ran out of time is not reinstalled.
   timesOut=true;
-  await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` did not answer within 20 seconds. Nothing was installed."});
+  await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` did not answer within 30 seconds. Nothing was installed."});
 });
 
 // Grok Build from npm (@xai-official/grok, which PATH finds through npm's launcher) whose bootstrap finds no platform binary, as when
@@ -462,12 +561,12 @@ test("a Grok Build in npm's prefix that does not start is offered Update too, wh
     }
     if(command==="grok"){
       if(args[0]==="--version")return grokVersion?answered(`grok ${grokVersion} (4220f3b224a6)\n`):exited(1,"@xai-official/grok: no platform binary installed for win32-x64.\n  Expected sibling package @xai-official/grok-win32-x64.\n");
-      return answered("You are logged in with grok.com.\n");
+      return answered(GROK_SIGNED_IN);
     }
     return missing(command);
   }});
   const realPrefix=realpathSync.native(prefix),update=statusOf(await fx.manager.snapshot({refresh:true}),"grok").update;
-  const command=shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@xai-official/grok","@xai-official/grok@1.0.71"],"win32");
+  const command=shownCommand("npm",npmInstall("@xai-official/grok","1.0.71",realPrefix),"win32");
   assert.deepEqual(update,{current:null,latest:"1.0.71",newer:true,canUpdate:true,command,binary:realpathSync.native(grok),message:null});
   const installed=await fx.manager.install("grok");
   assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","1.0.71","grok 1.0.71 (4220f3b224a6)"]);
@@ -514,9 +613,9 @@ test("a harness in npm's prefix whose check fails for its own reasons, not its i
 test("an update whose version check times out or fails installs nothing, for every harness",WINDOWS_ONLY,async t=>{
   const root=await tempRoot(t,"unread"),claude=await file(join(root,"home",".local","bin","claude.exe")),grok=await file(join(root,"home",".grok","bin","grok.exe"));
   const fx=machine(root,{answer:command=>command===claude?TIMED_OUT:command===grok?exited(2,"error: config file is not valid TOML\n"):missing(command)});
-  await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` did not answer within 20 seconds. Nothing was installed."});
+  await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` did not answer within 30 seconds. Nothing was installed."});
   await assert.rejects(()=>fx.manager.installPlan("grok"),{message:"Trebell Code could not read the version of the Grok Build it would update: `grok --version` exited with code 2: error: config file is not valid TOML. Nothing was installed."});
-  assert.deepEqual(fx.calls.map(call=>[call.command,call.args.join(" "),call.timeoutMs]),[[claude,"--version",20_000],[grok,"--version",6000]],"nothing but the version checks ran");
+  assert.deepEqual(fx.calls.map(call=>[call.command,call.args.join(" "),call.timeoutMs]),[[claude,"--version",30_000],[grok,"--version",6000]],"nothing but the version checks ran");
   // Nor does Settings offer an Update for them, or say anything of a release, with no version to start from.
   const listed=await fx.manager.snapshot({refresh:true});
   for(const kind of ["claude","grok"]){
@@ -542,8 +641,8 @@ test("on an SSH host npm updates Claude Code and Codex with their install script
     },
     spawnArgv:()=>{throw new Error("nothing is started on the host")},
   };
-  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"}});
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/deploy"}});
   assert.equal((await manager.install("claude")).status.version,"2.1.320");
   assert.equal((await manager.install("codex")).status.version,"codex-cli 0.164.0");
-  assert.deepEqual(asked.filter(line=>line.startsWith("npm install")),["npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.320","npm install -g --allow-scripts=@openai/codex @openai/codex@0.164.0"]);
+  assert.deepEqual(asked.filter(line=>line.startsWith("npm install")),[["npm",...npmInstall("@anthropic-ai/claude-code","2.1.320")].join(" "),["npm",...npmInstall("@openai/codex","0.164.0")].join(" ")]);
 });

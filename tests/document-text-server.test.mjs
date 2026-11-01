@@ -30,7 +30,7 @@ test("an uploaded, imported or checked document answers with the file its text w
   const report=await upload("report.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document",await readFile(join(FIXTURES,"report.docx")));
   assert.equal(report.textPath,report.path+".txt","an upload's text goes beside it");
   assert.match(await readFile(report.textPath,"utf8"),/^# Quarterly Harbor Report\n/);
-  const broken=await upload("broken.docx","application/octet-stream","invalid document");
+  const broken=await upload("broken.docx","application/octet-stream","PK but not an archive");
   assert.equal(broken.textPath,undefined,"a corrupt document has none");
   const shot=await upload("shot.png","image/png",Buffer.from([137,80,78,71]));
   assert.equal(shot.textPath,undefined);
@@ -38,7 +38,7 @@ test("an uploaded, imported or checked document answers with the file its text w
   const {files:[imported]}=await post("/api/attachments/import",{paths:[own]});
   assert.equal(imported.path,own,"an attached file stays where the person keeps it");
   assert.equal(join(imported.textPath,".."),join(home,"attachments"),"its text is kept in Trebell's attachments folder");
-  assert.match(await readFile(imported.textPath,"utf8"),/^## Sheet: Supplies\nPart\tPrice\tOrdered\nRope\t52/);
+  assert.match(await readFile(imported.textPath,"utf8"),/^## Sheet 1 of 2: Stores\nItem\tCount\tDelivered\nRope\t52/);
   assert.deepEqual(await readdir(projects),["Budget 2027.xlsx"],"nothing is written beside it");
   const {files:[again]}=await post("/api/attachments/import",{paths:[report.path]});
   assert.equal(again.textPath,report.textPath,"an upload taken in again keeps the text beside it");

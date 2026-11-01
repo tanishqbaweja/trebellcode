@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./native-command-argv.mjs";
-import { redactSecretText } from "./secret-redactor.mjs";
+import { redactSecretText, showsRedactionMark } from "./secret-redactor.mjs";
 import { coolHistoricalReadToolResults, coolVirtualizedToolContent } from "./native-tool-history.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "./openai-response-continuation.mjs";
 import { keepResponsesReasoning, NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
@@ -999,7 +999,7 @@ function conciseReplacementSummary(oldText,newText){
   const clean=value=>{
     const text=String(value||"").replace(/\s+/g," ").trim();
     if(!text||text.length>80||/^[A-Za-z0-9+/_=.-]{20,}$/.test(text))return null;
-    const redacted=redactSecretText(text,{trim:true});return redacted===text&&!/\[(?:redacted|pairing-url)\]/i.test(redacted)?text:null;
+    const redacted=redactSecretText(text,{trim:true});return redacted===text&&!showsRedactionMark(redacted)?text:null;
   };
   const oldValue=clean(before.slice(prefix,beforeEnd)),newValue=clean(after.slice(prefix,afterEnd));
   return oldValue&&newValue?{oldValue,newValue}:null;

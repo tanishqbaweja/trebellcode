@@ -1,6 +1,6 @@
 const BASE_SETTINGS_SEARCH_ITEMS=[
   {id:"general-about",section:"general",title:"About & open source licenses",terms:"version licenses license open source about"},
-  {id:"general-followups",section:"general",title:"Follow-up behavior",terms:"queue steer follow up running agent"},
+  {id:"general-followups",section:"general",title:"Messages sent during a turn",terms:"queue steer follow up running agent messages during turn"},
   {id:"general-notifications",section:"general",title:"Desktop notifications",terms:"notifications notification sound alert"},
   {id:"general-recovery",section:"general",title:"Restart recovery",terms:"restart resume recover continue active threads"},
   {id:"general-updates",section:"general",title:"Updates",terms:"update download install release version"},

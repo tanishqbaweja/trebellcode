@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
+import { GROK_MODELS_SIGNED_IN } from "../../tests/fixtures/grok-cli-output.mjs";
 
 // A harness in npm's prefix whose binary does not start, as Settings shows it and repairs it: the placeholder claude.exe an install
 // whose install script never ran leaves there exits with its own error, so its version cannot be read. Its row offers Update, which
@@ -128,7 +129,7 @@ test("a Grok Build in npm's prefix whose check fails on its own config file offe
     write(join(prefix,"grok.cmd"),"@ECHO off\r\nnode \"%~dp0\\node_modules\\@xai-official\\grok\\bin\\grok\" %*\r\n");
     const fx=machine(root,{path:prefix,answer:(command,args)=>{
       if(command==="npm")return answered(args[0]==="view"?"\"1.0.70\"\n":"11.0.0\n");
-      if(command==="grok")return args[0]==="--version"?exited(2,"error: config file is not valid TOML\n"):answered("You are logged in with grok.com.\n");
+      if(command==="grok")return args[0]==="--version"?exited(2,"error: config file is not valid TOML\n"):answered(GROK_MODELS_SIGNED_IN);
       return missing(command);
     }});
     const pressed=[];await serve(page,fx.manager,pressed);

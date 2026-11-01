@@ -51,7 +51,7 @@ export default function CommandPalette(props){
 
 // The warning of a message search that could not run (its code could not load), kept while the page stays: the browser keeps the
 // script that failed, so no search can run before a reload, and a palette opened again says so from the start. Each palette started
-// from nothing, so its first typing showed no notice, 'Searching messages…' and then the results jumping down as the notice came back.
+// from nothing, so its first typing showed no notice, 'Looking through messages…' and then the results jumping down as the notice came back.
 // This chunk loads once and stays, so the warning outlives the palette that met it; a search that runs clears it.
 let unsearchedWarning="";
 
@@ -72,7 +72,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   // A message search that could not run at all (its code could not load) offers Reload, and with no message searched an empty list
   // says that no command or thread name matches, not that no thread does. It counts only while its warning shows. Nor can it run
   // before a reload (the browser keeps the script that failed), so its warning stays as the person types or runs a command, and a new
-  // search tries it again without saying 'Searching messages…'.
+  // search tries it again without saying 'Looking through messages…'.
   const [searchFailed,setSearchFailed]=useState(Boolean(unsearchedWarning));
   const inputRef=useRef(null);
   const resultsRef=useRef(null);
@@ -218,7 +218,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   const warningOnly=Boolean(searchWarning)&&!dataError&&!actionError,unsearched=searchFailed&&Boolean(searchWarning);
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialogRef} tabIndex={-1}>
-      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");if(!searchFailed)setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
+      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");if(!searchFailed)setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Looking through messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
       {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert"><span>{visibleError}</span>{unsearched&&<button type="button" className="tb-btn tb-btn--sm" onKeyDown={reloadKeyDown} onClick={()=>window.location.reload()}>Reload</button>}</div>}
       <div className="command-palette-results" ref={resultsRef} onKeyDown={resultsKeyDown}>
         {items.map((item,index)=><React.Fragment key={item.id}>

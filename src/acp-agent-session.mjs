@@ -5,17 +5,19 @@ import { pathToFileURL } from "node:url";
 import { AcpClient, defaultAcpClientCapabilities } from "./acp-client.mjs";
 import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_SIGN_IN_NEEDED } from "./antigravity-auth.mjs";
 import { acpStartFailure } from "./acp-start-exit.mjs";
-import { acpApplyValue, acpConfigChoices, acpConfigSelect, acpReadOnlyMode, acpSetupWithConfigOptions, acpSetupWithValue } from "./acp-session-config.mjs";
-import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchValue, GROK_INITIALIZE_META } from "./acp-model-catalog.mjs";
+import { acpApplyValue, acpConfigSelect, acpReadOnlyMode, acpSetupWithConfigOptions, acpSetupWithValue } from "./acp-session-config.mjs";
+import { cursorEffortChange, cursorFastChange, cursorPickedChange, GROK_INITIALIZE_META } from "./acp-model-catalog.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
-import { CursorTransportFailure } from "./cursor-transport-failure.mjs";
+import { CursorLostBackendReply } from "./cursor-transport-failure.mjs";
 import { fileUriPath } from "./file-uri.mjs";
 import { acpApiKeyMethod } from "./harness-auth.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
-import { attachmentName, PROMPT_AUDIO_PATH, PROMPT_IMAGE_PATH, PROMPT_TEXT_PATH, textExtractedTo, unreadableAttachment } from "./prompt-attachments.mjs";
+import { attachmentLine, unsentImageLine } from "./attachment-line.mjs";
+import { documentKind } from "./document-reading.mjs";
+import { attachmentName, PROMPT_AUDIO_PATH, PROMPT_IMAGE_PATH, PROMPT_TEXT_PATH, unreadableAttachment } from "./prompt-attachments.mjs";
 import { runtimeHarnessLabel, runtimeInstructions } from "./runtime-instructions.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
 
@@ -40,12 +42,22 @@ const ACP_AUTH_REQUIRED=-32000;
 // After Grok's prompt_complete, how long to wait for the session/prompt answer that carries the detail.
 const GROK_COMPLETION_GRACE_MS=3000;
 const GROK_STOP_WAIT_MS=15_000;
-const GROK_ALLOW_EDITS_SESSION="allow-edits-session";
-// Hidden from the command list: permission changes go through Trebell, and context prints nothing over ACP.
-const GROK_HIDDEN_COMMANDS=new Set(["always-approve","context"]);
+// The id of Grok Build's one approval that lasts only for the session ("allow all edits this session"); its other always-allow
+// options are saved for the whole project.
+const GROK_SESSION_EDITS_ID="allow-edits-session";
+// Commands a harness lists that the composer leaves out, grouped by why. Grok Build's come from its own command list: the two
+// switches that change how Grok approves tools (Trebell starts Grok at the thread's access level and answers its permission
+// requests itself), and its context view, which over ACP answers with nothing to show.
+const COMMANDS_LEFT_OUT={
+  grok:{approvalSwitches:["always-approve","auto"],nothingOverAcp:["context"]},
+};
+function commandsLeftOut(runtime){
+  return new Set(Object.hasOwn(COMMANDS_LEFT_OUT,runtime??"")?Object.values(COMMANDS_LEFT_OUT[runtime]).flat():[]);
+}
 const GROK_SESSION_NOTIFICATIONS=new Set(["x.ai/session_notification","_x.ai/session_notification","_x.ai/session/update"]);
 const GROK_PROMPT_COMPLETE=new Set(["x.ai/session/prompt_complete","_x.ai/session/prompt_complete"]);
-export const GROK_USAGE_LIMIT_MESSAGE="Grok Build usage limit reached. Send the message again once it resets.";
+// The first line of a Grok turn that its rate limit ended; Grok's own detail, when it gave one, follows on the next line.
+export const GROK_ALLOWANCE_USED_UP="Grok Build has used up its usage allowance. Try the message again when it resets.";
 export const GROK_EMPTY_PLAN="# No plan from Grok Build\n\nGrok Build left plan mode without writing a plan.";
 export const GROK_PLAN_FEEDBACK="Trebell Code has shown your plan to the user. Stop here: the user answers with feedback, or asks you to carry it out, in a later turn.";
 
@@ -77,85 +89,184 @@ async function clientFilePath(roots,path){
 
 function text(value){return String(value??"").trim()}
 
-// What goes to Antigravity as content follows the promptCapabilities its initialize advertises,
-// up to 50 MiB a message: BMP, JPEG, PNG and WebP images up to 10 MiB as images (image), the audio Trebell names by its saved path up
-// to 20 MiB as audio after the line that names it (audio), and a UTF-8 text file up to 1 MiB as embedded content and a PDF as a
-// document link (embeddedContext). Antigravity 1.2.1 refuses to open any path outside its workspace folders, even one granted with
-// additionalDirectories, so a pasted text or an uploaded file in Trebell's attachments folder is unreadable as a link. An image it
-// takes that does not fit refuses the message; any other image is named by its saved path, and other files stay links.
-const ANTIGRAVITY_TEXT_EXTENSIONS=new Set([".txt",".md",".mdx",".json",".jsonl",".yaml",".yml",".toml",".xml",".csv",".tsv",".js",".jsx",".mjs",".cjs",".ts",".tsx",".html",".css",".scss",".less",".py",".rs",".go",".java",".kt",".swift",".c",".h",".cc",".cpp",".hpp",".cs",".rb",".php",".sh",".bash",".zsh",".sql",".graphql",".svelte",".vue",".log",".diff",".patch",".ini",".conf"]);
-const ANTIGRAVITY_TEXT_MIME={".json":"application/json",".jsonl":"application/jsonl",".md":"text/markdown",".mdx":"text/markdown",".html":"text/html",".css":"text/css",".csv":"text/csv",".xml":"application/xml",".yaml":"application/yaml",".yml":"application/yaml"};
-const ANTIGRAVITY_IMAGE_TYPES=new Set(["image/bmp","image/jpeg","image/png","image/webp"]);
-// Every audio type Trebell names: the composer's (App.jsx inputsFor) and audio/aac, which the composer sends as a file link.
-const ANTIGRAVITY_AUDIO_MIME={".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".ogg":"audio/ogg",".flac":"audio/flac",".aac":"audio/aac"};
-const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES=1024*1024,ANTIGRAVITY_MAX_IMAGE_BYTES=10*1024*1024,ANTIGRAVITY_MAX_AUDIO_BYTES=20*1024*1024,ANTIGRAVITY_MAX_CONTENT_BYTES=50*1024*1024;
-// An image Antigravity takes that does not fit in the message, said by its name with what to do; Antigravity is asked nothing.
-const antigravityImageTooLarge=path=>new SessionRefusalError(`The attached image "${attachmentName(path)}" is too large for one Antigravity message, which takes images up to 10 MiB and 50 MiB of attachments in all. Send it in a message of its own.`);
-// A document's link is followed by the line that names it with the file its text was extracted to (agent-relay acpPrompt), and
-// every attachment is named in the prompt's text, so Cursor and Grok read the text with their own tools.
+// A document's link is followed by its attachment line, which also names the file holding its extracted text (agent-relay
+// acpPrompt), so Cursor and Grok read that text with their own tools.
 function acpDocumentLine(part){
   const path=fileUriPath(part.uri)||String(part.uri||"");
-  return {type:"text",text:`[Attached file "${part.name||basename(path)}" is saved at: ${path}${textExtractedTo(part)}]`};
+  return {type:"text",text:attachmentLine("file",part.name||basename(path),path,part[PROMPT_TEXT_PATH])};
 }
 export function acpDocumentTextParts(parts){
   return (Array.isArray(parts)?parts:[]).flatMap(part=>part?.type==="resource_link"&&part[PROMPT_TEXT_PATH]?[part,acpDocumentLine(part)]:[part]);
 }
-export async function antigravityPromptParts(parts,promptCapabilities={}){
-  const can=promptCapabilities&&typeof promptCapabilities==="object"?promptCapabilities:{},out=[];let total=0;
-  const fits=(size,limit)=>size<=limit&&total+size<=ANTIGRAVITY_MAX_CONTENT_BYTES;
-  for(const part of Array.isArray(parts)?parts:[]){
-    if(part?.type==="image"){
-      const path=part[PROMPT_IMAGE_PATH]||"",size=Buffer.byteLength(String(part.data||""),"base64");
-      if(can.image===true&&ANTIGRAVITY_IMAGE_TYPES.has(String(part.mimeType||"").toLowerCase())){
-        // Named by a path Antigravity cannot open, an image that does not fit would never reach the model, so the message is refused.
-        if(!fits(size,ANTIGRAVITY_MAX_IMAGE_BYTES))throw antigravityImageTooLarge(path);
-        total+=size;out.push(part);
-      }else out.push({type:"text",text:path?`[Attached image "${basename(path)}" is saved at: ${path}]`:"[Attached image could not be sent: Trebell Code has no saved file for it]"});
-      continue;
-    }
-    // An audio file keeps the line that names it (agent-relay acpPrompt), and the audio itself follows when Antigravity takes audio:
-    // every attachment is named in the text, with its content after it. Base64 audio travels on one JSON-RPC line: 20 MiB of audio
-    // is a line of about 27 MB.
-    // An .aac comes as a file link, which stays and names it; its audio follows the same way.
-    const linked=part?.type==="resource_link"?fileUriPath(part.uri):null;
-    const audio=part?.type==="text"?part[PROMPT_AUDIO_PATH]:linked&&extname(linked).toLowerCase()===".aac"?linked:null,audioType=audio?ANTIGRAVITY_AUDIO_MIME[extname(audio).toLowerCase()]:null;
-    if(audioType&&can.audio===true){
-      const info=await stat(audio).catch(error=>{throw unreadableAttachment("file",audio,error)});
-      const bytes=info.isFile()&&fits(info.size,ANTIGRAVITY_MAX_AUDIO_BYTES)?await readFile(audio).catch(error=>{throw unreadableAttachment("file",audio,error)}):null;
-      out.push(part);
-      if(bytes&&fits(bytes.length,ANTIGRAVITY_MAX_AUDIO_BYTES)){total+=bytes.length;out.push({type:"audio",mimeType:audioType,data:bytes.toString("base64")})}
-      continue;
-    }
-    // A document stays a link, named with the file its text was extracted to (document-text.mjs), and that text follows as embedded
-    // content up to 1 MiB, since Antigravity cannot open the file in Trebell's attachments folder.
-    const textPath=part?.type==="resource_link"?part[PROMPT_TEXT_PATH]:null;
-    if(textPath){
-      out.push(part,acpDocumentLine(part));
-      if(can.embeddedContext===true){
-        const bytes=await readFile(textPath).catch(()=>null);let decoded=null;
-        try{decoded=bytes&&fits(bytes.length,ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES)?new TextDecoder("utf-8",{fatal:true}).decode(bytes):null}catch{}
-        if(decoded!==null){total+=bytes.length;out.push({type:"resource",resource:{uri:pathToFileURL(textPath).href,mimeType:"text/plain",text:decoded}})}
-      }
-      continue;
-    }
-    // Trebell writes file links as percent-encoded file: URLs (agent-relay acpPrompt).
-    const path=part?.type==="resource_link"&&can.embeddedContext===true?fileUriPath(part.uri):null,extension=path?extname(path).toLowerCase():"";
-    let embedded=null;
-    if(path&&ANTIGRAVITY_TEXT_EXTENSIONS.has(extension)){
-      const info=await stat(path).catch(()=>null);
-      if(info?.isFile()&&fits(info.size,ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES)){
-        const bytes=await readFile(path).catch(()=>null);let decoded=null;
-        try{decoded=bytes&&fits(bytes.length,ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES)?new TextDecoder("utf-8",{fatal:true}).decode(bytes):null}catch{}
-        if(decoded!==null&&!decoded.includes("\0")){total+=bytes.length;embedded={type:"resource",resource:{uri:pathToFileURL(path).href,mimeType:ANTIGRAVITY_TEXT_MIME[extension]||"text/plain",text:decoded}}}
-      }
-    }else if(path&&extension===".pdf"){
-      // A PDF goes as a document link with its type, and counts toward the message's content.
-      const info=await stat(path).catch(()=>null);
-      if(info?.isFile()&&fits(info.size,ANTIGRAVITY_MAX_CONTENT_BYTES)){total+=info.size;embedded={...part,mimeType:"application/pdf"}}
-    }
-    out.push(embedded||part);
+// ---- What an Antigravity message carries as content
+// Antigravity's initialize offers, in promptCapabilities, the content it takes besides text and file links: images, audio and
+// embedded context. Its tools open nothing outside the workspace folders (1.2.1 also refuses a folder granted with
+// additionalDirectories), so a file kept in Trebell's attachments folder reaches the model only when it is sent as content. A
+// message's parts are decided in order, each by the first rule below that knows it; a part that no rule knows goes unchanged.
+
+// Google gives its limits in MB, read here as decimal megabytes: that is the smaller reading, so a part within them fits whichever
+// unit is meant. Sources: Vertex AI's Gemini 3.8 Flash page (docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/
+// 3-8-flash), the Gemini API's pages on file input, tokens and audio (ai.google.dev/gemini-api/docs/file-input-methods, .../tokens
+// and .../audio), and the ACP Python SDK that Antigravity's server is built on (github.com/agentclientprotocol/python-sdk,
+// src/acp/core.py).
+const MB=1_000_000,MiB=1024*1024;
+const ANTIGRAVITY_LIMITS=Object.freeze({
+  // One part: Vertex AI takes an image of up to 7 MB inline, a text/plain file of up to 7 MB and a PDF of up to 50 MB.
+  imageBytes:7*MB,textBytes:7*MB,pdfBytes:50*MB,
+  // An embedded text fills at most half of the model's 1,048,576-token window, at about 4 characters a token. That still holds the
+  // longest text Trebell reads out of a document (document-reading.mjs, and the note after the text of a document cut there).
+  textCharacters:1_048_576/2*4,
+  // The one JSON-RPC line a prompt travels on: the SDK reads a line of up to 50 MiB, and 2 MiB of it stays free for the message's
+  // own words, its links and the JSON around them.
+  lineBytes:48*MiB,
+  // The model request: 100 MB of inline data, less 4 MB for Antigravity's instructions and the conversation, as much as a whole
+  // window of 1,048,576 tokens at about 4 characters each. The 100 MB is the file input page's. The Gemini API's image and audio
+  // pages give a whole request 20 MB and Vertex AI's page gives no figure; only a live call could tell which one holds.
+  requestBytes:96*MB,
+});
+// The image types Google lists for Gemini's image input (the Vertex AI page above, and ai.google.dev/gemini-api/docs/
+// image-understanding). An image of any other type, a GIF or a BMP, is named by its saved file instead.
+const ANTIGRAVITY_IMAGE_TYPES=new Set(["image/png","image/jpeg","image/webp","image/heic","image/heif"]);
+// Audio goes by extension, in any case: what the composer sends as audio (App.jsx inputsFor: .mp3, .wav, .m4a, .ogg and .flac) and
+// .aac, which it sends as a file link, each under the media type registered for it.
+const AUDIO_MEDIA=new Map(Object.entries({".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".ogg":"audio/ogg",".flac":"audio/flac",".aac":"audio/aac"}));
+// A linked file goes embedded when what it holds is text, whatever its name (embeddableText), labelled text/plain unless its
+// extension names a format with a media type of its own that tells a reader how the text is laid out: Markdown (RFC 7763), HTML,
+// CSS, CSV (RFC 4180), JSON (RFC 8259), JSON Lines (the format's own page), XML (RFC 7303) and YAML (RFC 9512).
+const TEXT_MEDIA=new Map(Object.entries({
+  ".md":"text/markdown",".markdown":"text/markdown",".html":"text/html",".htm":"text/html",".css":"text/css",".csv":"text/csv",
+  ".json":"application/json",".jsonl":"application/jsonl",".xml":"application/xml",".yaml":"application/yaml",".yml":"application/yaml",
+}));
+const extensionOf=path=>extname(path).toLowerCase();
+
+// What a part takes of a message: its bytes inside the prompt's line and in the model request. Binary content travels as base64,
+// 4 bytes for every 3. Antigravity reads a PDF's file into the request itself, so a PDF takes no room on the line.
+const asBase64=bytes=>4*Math.ceil(bytes/3);
+const onTheLine=bytes=>({line:bytes,request:bytes});
+const readByAntigravity=bytes=>({line:0,request:asBase64(bytes)});
+
+// The room one message has left on the line and in the request. admits only asks; claim takes the room when the part fits both.
+class MessageRoom{
+  #line=ANTIGRAVITY_LIMITS.lineBytes;
+  #request=ANTIGRAVITY_LIMITS.requestBytes;
+  admits(cost){return cost.line<=this.#line&&cost.request<=this.#request}
+  claim(cost){
+    if(!this.admits(cost))return false;
+    this.#line-=cost.line;this.#request-=cost.request;
+    return true;
   }
-  return out;
+}
+
+const embeddedText=(path,mimeType,body)=>({type:"resource",resource:{uri:pathToFileURL(path).href,mimeType,text:body}});
+const UTF8_EXACT=new TextDecoder("utf-8",{fatal:true});
+
+// The text of a file that may go embedded, or null. It must be a regular file of at most textBytes that reads as UTF-8 (a leading
+// byte-order mark dropped), hold no NUL unless nul allows one, have at most textCharacters, and fit in the message as a JSON string.
+async function embeddableText(path,room,{nul}){
+  const info=await stat(path).catch(()=>null);
+  if(!info?.isFile()||info.size>ANTIGRAVITY_LIMITS.textBytes)return null;
+  const bytes=await readFile(path).catch(()=>null);
+  if(!bytes||bytes.length>ANTIGRAVITY_LIMITS.textBytes)return null;
+  let body;
+  try{body=UTF8_EXACT.decode(bytes)}catch{return null}
+  if(body.length>ANTIGRAVITY_LIMITS.textCharacters||(!nul&&body.includes("\0")))return null;
+  return room.claim(onTheLine(Buffer.byteLength(JSON.stringify(body))))?body:null;
+}
+
+// A regular file's bytes when its size, as costOf counts it, fits in the message; null otherwise. A file that cannot be read goes
+// to unreadable.
+async function bytesWithRoom(path,room,costOf,unreadable){
+  const info=await stat(path).catch(unreadable);
+  if(!info?.isFile()||!room.admits(costOf(info.size)))return null;
+  return readFile(path).catch(unreadable);
+}
+
+// An image of a type Antigravity takes goes as itself. One it would take that cannot go refuses the whole message, by the image's
+// name, before Antigravity is asked anything, since the path of a file Antigravity cannot open would never reach the model. An
+// image of another type is named by its saved file, or said not sent when Trebell has no saved copy.
+function unsendableImage(saved,overLimit){
+  const name=attachmentName(saved);
+  return new SessionRefusalError(overLimit
+    ?`The image "${name}" is over ${ANTIGRAVITY_LIMITS.imageBytes/MB} MB, the most Antigravity's models take for one image. Attach a smaller copy of it.`
+    :`The image "${name}" does not fit in this message to Antigravity with the other attachments. Send it in a message of its own.`);
+}
+async function agyImage(part,{takes,room}){
+  if(part?.type!=="image")return null;
+  const saved=part[PROMPT_IMAGE_PATH]||"";
+  if(!takes.image||!ANTIGRAVITY_IMAGE_TYPES.has(String(part.mimeType||"").toLowerCase())){
+    return [{type:"text",text:saved?attachmentLine("image",basename(saved),saved):unsentImageLine()}];
+  }
+  const data=String(part.data||"");
+  if(Buffer.byteLength(data,"base64")>ANTIGRAVITY_LIMITS.imageBytes)throw unsendableImage(saved,true);
+  if(!room.claim(onTheLine(data.length)))throw unsendableImage(saved,false);
+  return [part];
+}
+
+// The audio file a part stands for, with its media type: the relay's line naming an attached audio file (agent-relay acpPrompt),
+// or a file link to an .aac.
+function audioFileOf(part){
+  let path=null;
+  if(part?.type==="text")path=part[PROMPT_AUDIO_PATH]||null;
+  else if(part?.type==="resource_link"){const linked=fileUriPath(part.uri);if(linked&&extensionOf(linked)===".aac")path=linked}
+  const media=path&&AUDIO_MEDIA.get(extensionOf(path));
+  return media?{path,media}:null;
+}
+// With audio offered, the part that names the file stays, so every attachment is named in the text, and the sound follows it as
+// base64 when the message has room for it. No audio file has a limit of its own: Google gives audio a length, not a size, and the
+// message's room bounds it. Every audio file with room goes: Vertex AI's page lists one audio file a prompt, but the Gemini API's
+// audio page sets no count. A file that is gone refuses the message.
+async function agyAudio(part,{takes,room}){
+  const audio=takes.audio?audioFileOf(part):null;
+  if(!audio)return null;
+  const unreadable=error=>{throw unreadableAttachment("file",audio.path,error)};
+  const bytes=await bytesWithRoom(audio.path,room,size=>onTheLine(asBase64(size)),unreadable);
+  if(!bytes||!room.claim(onTheLine(asBase64(bytes.length))))return [part];
+  return [part,{type:"audio",mimeType:audio.media,data:bytes.toString("base64")}];
+}
+
+// A document (document-text.mjs) stays a link, followed by the line naming the file its text was extracted to; with embedded
+// context that text follows too, since Antigravity cannot open the file in Trebell's attachments folder.
+async function agyDocument(part,{takes,room}){
+  const extracted=part?.type==="resource_link"?part[PROMPT_TEXT_PATH]:null;
+  if(!extracted)return null;
+  const body=takes.embedded?await embeddableText(extracted,room,{nul:true}):null;
+  return body===null?[part,acpDocumentLine(part)]:[part,acpDocumentLine(part),embeddedText(extracted,"text/plain",body)];
+}
+
+// With embedded context, a linked PDF within pdfBytes goes as a document link with its type while the request has room for it, and
+// any other linked file that holds text goes as that text in place of the link; a file that holds anything else stays a link. So
+// does a document of a kind Trebell reads into text (document-reading.mjs) with no text read from it, as its own bytes are its
+// format's (an .rtf's markup, a broken .docx); its text, once read, goes by agyDocument. Trebell writes file links as
+// percent-encoded file: URLs (agent-relay acpPrompt).
+async function agyLinkedFile(part,{takes,room}){
+  if(!takes.embedded||part?.type!=="resource_link")return null;
+  const path=fileUriPath(part.uri);
+  if(!path)return null;
+  const extension=extensionOf(path);
+  if(extension===".pdf"){
+    const info=await stat(path).catch(()=>null);
+    const typed=info?.isFile()&&info.size<=ANTIGRAVITY_LIMITS.pdfBytes&&room.claim(readByAntigravity(info.size));
+    return [typed?{...part,mimeType:"application/pdf"}:part];
+  }
+  if(documentKind(extension))return null;
+  const body=await embeddableText(path,room,{nul:false});
+  return body===null?null:[embeddedText(path,TEXT_MEDIA.get(extension)||"text/plain",body)];
+}
+
+const AGY_CONTENT_RULES=[agyImage,agyAudio,agyDocument,agyLinkedFile];
+async function antigravityContentFor(part,message){
+  for(const rule of AGY_CONTENT_RULES){
+    const sent=await rule(part,message);
+    if(sent)return sent;
+  }
+  return [part];
+}
+export async function antigravityPromptParts(parts,promptCapabilities={}){
+  const offered=Object(promptCapabilities??{});
+  const message={takes:{image:offered.image===true,audio:offered.audio===true,embedded:offered.embeddedContext===true},room:new MessageRoom()};
+  const content=[];
+  for(const part of Array.isArray(parts)?parts:[])content.push(...await antigravityContentFor(part,message));
+  return content;
 }
 
 // The client services each harness is offered: ACP agents run their own file and shell tools behind
@@ -176,8 +287,8 @@ function offeredClientService(capabilities,method){
 }
 function selected(optionId){return {outcome:{outcome:"selected",optionId}}}
 const CANCELLED_OUTCOME=Object.freeze({outcome:Object.freeze({outcome:"cancelled"})});
-function optionOfKind(options,kind,optionId=undefined){
-  return (Array.isArray(options)?options:[]).find(option=>option?.kind===kind&&text(option.optionId)&&(optionId===undefined||text(option.optionId)===optionId))?.optionId||null;
+function optionOfKind(options,kind){
+  return (Array.isArray(options)?options:[]).find(option=>option?.kind===kind&&text(option.optionId))?.optionId||null;
 }
 
 // Reads follow the sandbox alone and never ask: every Trebell mode lets the agent read,
@@ -194,50 +305,65 @@ export function acpPermissionChoice(options=[],mode="supervised",kind=null,polic
   return null;
 }
 
-// Maps the user's decision to the request's option. Grok's only session-scoped answer is its
-// "allow all edits this session" option; its other always-allow rows are saved for the project.
-export function acpDecisionOption(runtime,options=[],decision="decline"){
-  if(decision==="acceptForSession")return runtime==="grok"
-    ?optionOfKind(options,"allow_always",GROK_ALLOW_EDITS_SESSION)||optionOfKind(options,"allow_once")
-    :optionOfKind(options,"allow_always")||optionOfKind(options,"allow_once");
-  if(decision==="accept")return optionOfKind(options,"allow_once");
-  if(decision==="decline")return optionOfKind(options,"reject_once");
-  return null;
-}
-
-function securityWarning(option){
-  const warning=option?._meta?.["agy.security.warning"];
-  const value=text(warning?.message)||text(warning?.title);
-  return value.length>512?value.slice(0,509)+"...":value;
-}
-
-// The approval choices a request can honor, in the wording Trebell gives Grok's and Antigravity's choices; other agents keep
-// their own option names.
-export function acpApprovalOptions(runtime,options=[]){
-  const list=Array.isArray(options)?options:[];
-  const find=(kind,optionId=undefined)=>list.find(option=>option?.kind===kind&&text(option.optionId)&&(optionId===undefined||text(option.optionId)===optionId));
-  if(runtime==="grok")return [
-    {decision:"cancel",label:"Cancel"},
-    ...(find("reject_once")?[{decision:"decline",label:"Decline"}]:[]),
-    ...(find("allow_always",GROK_ALLOW_EDITS_SESSION)?[{decision:"acceptForSession",label:"Allow edits for the rest of this session"}]:[]),
-    ...(find("allow_once")?[{decision:"accept",label:"Approve"}]:[]),
-  ];
-  if(runtime==="antigravity"){
-    const always=find("allow_always"),warning=always?securityWarning(always):"";
-    return [
-      ...(find("allow_once")?[{decision:"accept",label:"Allow once"}]:[]),
-      ...(always?[{decision:"acceptForSession",label:"Allow for this thread",...(warning?{warning}:{})}]:[]),
-      ...(find("reject_once")?[{decision:"decline",label:"Deny"}]:[]),
-      {decision:"cancel",label:"Cancel"},
-    ];
+// ---- What the person can answer a permission request with
+// The card shows the harness's own options (ACP's session/request_permission: each option's name is the label to show, its kind
+// a hint), in the order the harness sent them, and the person's answer comes back as a decision that picks the option again.
+// Both sides read the options through answerableOptions, so a button always picks the option whose name it showed.
+// An option is answerable when it has an id and its kind is one Trebell answers with: allow_once accepts once, allow_always
+// accepts for the session, reject_once declines. A remembered refusal (reject_always) never is: Trebell's decline answers only
+// the one request. The answer names only its decision, so the first answerable option of each decision stands for it.
+// Grok Build keeps its always answers for the whole project, all but its edits-for-this-session option (its own documentation:
+// that grant "is held in memory only"), and Trebell answers Grok's requests itself at the thread's access level: an answer Grok
+// kept past the session would let it act later without asking. So that option is Grok's only session answer.
+const DECISION_BY_KIND=Object.freeze({allow_once:"accept",allow_always:"acceptForSession",reject_once:"decline"});
+function keptPastSession(runtime,option){return runtime==="grok"&&text(option.optionId)!==GROK_SESSION_EDITS_ID}
+function answerableOptions(runtime,options){
+  const byDecision=new Map();
+  for(const option of Array.isArray(options)?options:[]){
+    if(!text(option?.optionId)||typeof option.kind!=="string"||!Object.hasOwn(DECISION_BY_KIND,option.kind))continue;
+    const decision=DECISION_BY_KIND[option.kind];
+    if(byDecision.has(decision)||(decision==="acceptForSession"&&keptPastSession(runtime,option)))continue;
+    byDecision.set(decision,option);
   }
-  const once=find("allow_once"),always=find("allow_always"),reject=find("reject_once");
-  return [
-    ...(reject?[{decision:"decline",label:text(reject.name)||"Deny"}]:[]),
-    ...(always?[{decision:"acceptForSession",label:text(always.name)||"Allow always"}]:[]),
-    ...(once?[{decision:"accept",label:text(once.name)||"Allow once"}]:[]),
-    {decision:"cancel",label:"Cancel"},
-  ];
+  return byDecision;
+}
+
+// The option a decision picks, answered with its id as the harness sent it; null (the request is answered cancelled) for
+// Trebell's stop or anything else. A session answer where the harness offered none for the session is answered once.
+export function acpDecisionOption(runtime,options=[],decision="decline"){
+  const answerable=answerableOptions(runtime,options);
+  const option=answerable.get(decision)??(decision==="acceptForSession"?answerable.get("accept"):undefined);
+  return option?option.optionId:null;
+}
+
+// The card's buttons: one per answerable option under the name the harness gave it, then Trebell's own button that answers this
+// one request cancelled, picking none of the options. It does not stop the turn (the composer's Stop does, with session/cancel),
+// and a harness may read it as a refusal of the one call and go on (Cursor does), so it is named for the request alone. Trebell
+// has words only for an option that came without a name, taken from what ACP says each kind means.
+const WORDS_FOR_NAMELESS=Object.freeze({accept:"Allow this time",acceptForSession:"Allow and remember",decline:"Don't allow"});
+const CANCEL_REQUEST=Object.freeze({decision:"cancel",label:"Cancel this request"});
+export function acpApprovalOptions(runtime,options=[]){
+  const buttons=[...answerableOptions(runtime,options)].map(([decision,option])=>{
+    const button={decision,label:text(option.name)||WORDS_FOR_NAMELESS[decision]};
+    const warning=securityNote(option);
+    return warning?{...button,warning}:button;
+  });
+  return [...buttons,{...CANCEL_REQUEST}];
+}
+
+// Antigravity's security warning on an option (_meta "agy.security.warning"): its message, else its title. The card shows it above
+// the buttons, kept to about four lines of its warning line at the card's widest (680 px of 10.5 px monospace holds about 100
+// characters a line): a longer one ends after its last whole word that fits, with "…".
+const SECURITY_NOTE_MAX=400;
+function securityNote(option){
+  const note=option?._meta?.["agy.security.warning"];
+  const said=text(note?.message)||text(note?.title);
+  return said.length>SECURITY_NOTE_MAX?shortenOnWord(said,SECURITY_NOTE_MAX):said;
+}
+// At most max characters, "…" included: cut at the last blank when it falls in the last quarter of the room, else at the room's end.
+function shortenOnWord(said,max){
+  const room=said.slice(0,max-1),blank=room.search(/\s\S*$/);
+  return (blank>=Math.floor(max*3/4)?room.slice(0,blank):room).trimEnd()+"…";
 }
 
 // fs/read_text_file: the file as it is unless a range is asked for; ranges split on "\n" only so
@@ -250,17 +376,19 @@ export function acpFileSlice(content,line=null,limit=null){
   return lines.slice(start,end).join("\n");
 }
 
-// ACP availableCommands as composer slash commands.
+// The composer's slash commands from an ACP availableCommands list: each name once (trimmed, without its leading slashes), with
+// its description and input hint when it has them, less the commands Trebell leaves out for this harness (COMMANDS_LEFT_OUT).
 export function acpCommandsFromAvailable(list=[],runtime=null){
-  const out=[],seen=new Set();
+  const leftOut=commandsLeftOut(runtime),byName=new Map();
   for(const entry of Array.isArray(list)?list:[]){
     const name=text(entry?.name).replace(/^\/+/,"");
-    if(!name||seen.has(name)||(runtime==="grok"&&GROK_HIDDEN_COMMANDS.has(name)))continue;
-    seen.add(name);
-    const description=text(entry?.description),hint=text(entry?.input?.hint);
-    out.push({name,...(description?{description}:{}),...(hint?{input:{hint}}:{})});
+    if(name===""||leftOut.has(name)||byName.has(name))continue;
+    const command={name},description=text(entry?.description),hint=text(entry?.input?.hint);
+    if(description)command.description=description;
+    if(hint)command.input={hint};
+    byName.set(name,command);
   }
-  return out;
+  return [...byName.values()];
 }
 
 // A harness runs a slash command only when the message starts with it (Grok: "other commands must start the message"). The
@@ -284,25 +412,75 @@ export function acpModeAgents(setup){
   });
 }
 
-function grokAnswerValues(answer){
-  return (Array.isArray(answer)?answer:[answer]).map(value=>typeof value==="string"?value.trim():"").filter(Boolean);
+// ---- Grok Build's ask_user_question answer
+// Grok reads the answer by each question's text: the option labels chosen, or "Other" when the person wrote their own words, which
+// go with it as notes. A single-choice question's chosen option may carry a preview, which goes back with it too.
+// The values an answer gives: one or a list, only the non-empty strings, trimmed.
+const saidValues=answer=>[answer].flat().filter(value=>typeof value==="string").map(value=>value.trim()).filter(Boolean);
+function grokAnswerFor(question,said){
+  const labelledOptions=new Map((Array.isArray(question?.options)?question.options:[]).map(option=>[String(option?.label||""),option]));
+  const chosen=[],ownWords=[];
+  for(const value of said)(labelledOptions.has(value)?chosen:ownWords).push(value);
+  const note={};
+  if(question?.multiSelect!==true){
+    for(const label of chosen){const preview=text(labelledOptions.get(label)?.preview);if(preview){note.preview=preview;break}}
+  }
+  if(ownWords.length)note.notes=ownWords.join("\n");
+  return {labels:chosen.length?chosen:["Other"],note:Object.keys(note).length?note:null};
+}
+export function grokQuestionResponse(questions=[],answers={}){
+  const given=answers&&typeof answers==="object"?answers:{};
+  const response={outcome:"accepted",answers:{}},annotations={};
+  for(const question of Array.isArray(questions)?questions:[]){
+    const key=String(question?.question||"");
+    // The person's answer sits under the question's id when it has one, and under its text otherwise.
+    const said=saidValues([question?.id??key,key].map(name=>given[name]).find(value=>value!=null));
+    if(!said.length)continue;
+    const {labels,note}=grokAnswerFor(question,said);
+    response.answers[key]=labels;
+    if(note)annotations[key]=note;
+  }
+  if(Object.keys(annotations).length)response.annotations=annotations;
+  return response;
 }
 
-// The answer to Grok's questions: keyed by question text with the chosen option labels;
-// free text goes to annotations as notes under the "Other" label.
-export function grokQuestionResponse(questions=[],answers={}){
-  const out={},annotations={};
-  for(const question of Array.isArray(questions)?questions:[]){
-    const questionText=String(question?.question||"");
-    const values=grokAnswerValues(answers[question?.id??questionText]??answers[questionText]);
-    if(!values.length)continue;
-    const byLabel=new Map((question?.options||[]).map(option=>[String(option?.label||""),option]));
-    const labels=values.filter(value=>byLabel.has(value)),notes=values.filter(value=>!byLabel.has(value));
-    const preview=question?.multiSelect===true?"":labels.map(label=>text(byLabel.get(label)?.preview)).find(Boolean)||"";
-    out[questionText]=labels.length?labels:["Other"];
-    if(preview||notes.length)annotations[questionText]={...(preview?{preview}:{}),...(notes.length?{notes:notes.join("\n")}:{})};
+// ---- Antigravity's multiple-choice questions
+// Antigravity asks them as permission requests (an interaction_ tool call) and takes only one of the options it offered as the
+// answer. So the person picks among the options that have an id (the first of an id offered twice), each carried by its id so that
+// two options of one name stay apart, and the question takes no words of their own. Null when no option has an id. A question
+// Antigravity sent without a title asks in Trebell's words.
+const ANTIGRAVITY_UNTITLED_QUESTION="Antigravity asks you to pick one of these.";
+function antigravityChoiceQuestion(toolCall,options){
+  const choices=new Map();
+  for(const option of options){
+    const id=text(option?.optionId);
+    if(id&&!choices.has(id))choices.set(id,{optionId:option.optionId,label:text(option.name)||id});
   }
-  return {outcome:"accepted",answers:out,...(Object.keys(annotations).length?{annotations}:{})};
+  if(!choices.size)return null;
+  const prompt={id:text(toolCall?.toolCallId),header:"Question",question:text(toolCall?.title)||ANTIGRAVITY_UNTITLED_QUESTION,multiSelect:false,allowCustomAnswer:false,
+    options:[...choices].map(([value,choice])=>({value,label:choice.label,description:""}))};
+  return {prompt,choices};
+}
+// The option the person's answer picks, by its id or else by a name only one option has, answered with the id Antigravity offered;
+// cancelled when it picks none.
+function antigravityChoiceAnswer(choices,picked){
+  if(!picked)return CANCELLED_OUTCOME;
+  const byId=choices.get(picked);
+  if(byId)return selected(byId.optionId);
+  const named=[...choices.values()].filter(choice=>choice.label===picked);
+  return named.length===1?selected(named[0].optionId):CANCELLED_OUTCOME;
+}
+
+// ---- Cursor's questions and plans (cursor/ask_question, cursor/create_plan, as Cursor's ACP page documents them)
+// A question Cursor sent without a prompt is still shown, in Trebell's words, with whatever options it has.
+const CURSOR_WORDLESS_QUESTION="Cursor sent this question without any words.";
+// What a plan request shows in the turn: its plan text (markdown); without any, its overview under the plan's name; with
+// neither, Trebell's note that Cursor sent none.
+const CURSOR_PLAN_WITHOUT_TEXT="# No plan text from Cursor\n\nCursor proposed a plan but sent none of its text.";
+function cursorPlanMarkdown(params){
+  const plan=text(params?.plan),overview=text(params?.overview);
+  if(plan)return plan;
+  return overview?`# ${text(params?.name)||"Cursor's plan"}\n\n${overview}`:CURSOR_PLAN_WITHOUT_TEXT;
 }
 
 function unwrapGrokParams(raw){
@@ -314,14 +492,18 @@ function boundedDetail(value){
   return detail.length>1500?detail.slice(0,1497)+"...":detail;
 }
 
+// The failure of a Grok turn its rate limit ended, as a usage limit: Trebell's sentence, then Grok's own detail when it gave one,
+// with the prompt error's data when it carried some.
+function grokUsageLimitFailure(detail,data){
+  const failure=new Error(detail?`${GROK_ALLOWANCE_USED_UP}\n${detail}`:GROK_ALLOWANCE_USED_UP);
+  return Object.assign(failure,{code:GROK_RATE_LIMIT_CODE,usageLimit:true},data===undefined?{}:{data});
+}
+
 // Grok settles a failed prompt with prompt_complete (stopReason rate_limit or error) before or
 // with its session/prompt error.
 export function grokCompletionFailure(notice){
   const reason=text(notice?.stopReason);
-  if(reason==="rate_limit"){
-    const detail=boundedDetail(notice?.agentResult);
-    return Object.assign(new Error(detail?`${GROK_USAGE_LIMIT_MESSAGE}\n${detail}`:GROK_USAGE_LIMIT_MESSAGE),{code:GROK_RATE_LIMIT_CODE,usageLimit:true});
-  }
+  if(reason==="rate_limit")return grokUsageLimitFailure(boundedDetail(notice?.agentResult));
   if(reason==="error"){
     const detail=boundedDetail(notice?.agentResult);
     return Object.assign(new Error(detail||"Grok Build reported an error and ended the turn."),{code:-32603});
@@ -329,13 +511,21 @@ export function grokCompletionFailure(notice){
   return null;
 }
 
+// A session/prompt error from Grok: its rate limit (code -32003, or a rate_limit notice) as a usage limit whose detail is the
+// error's own words unless they only say "Rate limited", else the notice's; any other error as the notice reads, or itself.
 export function grokPromptError(error,notice=null){
-  const message=text(error?.message);
-  if(error?.code===GROK_RATE_LIMIT_CODE||text(notice?.stopReason)==="rate_limit"){
-    const detail=message&&message.toLowerCase()!=="rate limited"?boundedDetail(message):boundedDetail(notice?.agentResult);
-    return Object.assign(new Error(detail?`${GROK_USAGE_LIMIT_MESSAGE}\n${detail}`:GROK_USAGE_LIMIT_MESSAGE),{code:GROK_RATE_LIMIT_CODE,usageLimit:true,...(error?.data!==undefined?{data:error.data}:{})});
-  }
-  return grokCompletionFailure(notice)||error;
+  if(error?.code!==GROK_RATE_LIMIT_CODE&&text(notice?.stopReason)!=="rate_limit")return grokCompletionFailure(notice)||error;
+  const said=text(error?.message),saysMore=said!==""&&said.toLowerCase()!=="rate limited";
+  return grokUsageLimitFailure(boundedDetail(saysMore?said:notice?.agentResult),error?.data);
+}
+
+// Why a thread's model cannot run on this sign-in, and what to do instead. Antigravity and Cursor list the models of the account
+// they are signed in with.
+function unlistedModelText(runtime,label,model){
+  const instead=name=>`Choose one of the models ${name} lists in the composer.`;
+  if(runtime==="antigravity")return `This Google account cannot use the model '${model}' in Antigravity. ${instead("Antigravity")}`;
+  if(runtime==="cursor")return `This Cursor account cannot use the model '${model}'. ${instead("Cursor")}`;
+  return `${label} does not list the model '${model}'. ${instead("it")}`;
 }
 
 function requestedModel(runtime,model){
@@ -516,7 +706,7 @@ export class AcpAgentSession{
     const model=this.#modelLabel();
     if(!command&&(!this.runtimeContextSent||this.runtimeContextModel!==model))parts.push({type:"text",text:runtimeInstructions({harness:this.label,model})});
     let markDone;const done=new Promise(resolve=>{markDone=resolve});
-    const active={promptId:this.runtime==="grok"?randomUUID():null,cancelled:false,transport:this.runtime==="cursor"?new CursorTransportFailure():null,done,taken:!command&&typeof onDelivered==="function"?onDelivered:null};
+    const active={promptId:this.runtime==="grok"?randomUUID():null,cancelled:false,transport:this.runtime==="cursor"?new CursorLostBackendReply():null,done,taken:!command&&typeof onDelivered==="function"?onDelivered:null};
     this.activePrompt=active;
     const compactions=this.compactions;
     try{
@@ -528,7 +718,7 @@ export class AcpAgentSession{
       else if(!command&&this.compactions===compactions){this.runtimeContextSent=true;this.runtimeContextModel=model}
       // Cursor streams a lost backend connection as the reply and ends the turn normally. The failure
       // carries that last message, the dump with its stack lines, so the relay keeps as the turn's reply only what came before it.
-      const failure=active.transport?.failure;
+      const failure=active.transport?.diagnostic;
       if(failure&&result?.stopReason!=="cancelled")throw Object.assign(new Error(failure),{code:"CURSOR_TRANSPORT_FAILURE",dump:active.message||""});
       return result;
     }catch(error){
@@ -613,6 +803,13 @@ export class AcpAgentSession{
     return result;
   }
 
+  // A model the harness does not list for this sign-in is refused before any switch, saying what to pick instead. Antigravity's
+  // list is always checked; another harness's only once it lists some models.
+  #refuseUnlisted(choices,model){
+    if(choices.some(choice=>choice.value===model))return;
+    if(this.runtime==="antigravity"||choices.length)throw new Error(unlistedModelText(this.runtime,this.label,model));
+  }
+
   // The model a thread runs on, applied in the way each harness takes a model.
   async #applyModel(requested){
     const current=acpConfigSelect(this.sessionSetup,"model");
@@ -632,7 +829,7 @@ export class AcpAgentSession{
     if(this.runtime==="cursor"){
       // Cursor saves its model globally, so every session pins the thread's model, Auto ("default") when none.
       const target=requestedModel("cursor",requested)||"default";
-      if(current.choices.length&&!current.choices.some(choice=>choice.value===target))throw new Error(`Cursor model '${target}' is not available for this account. Select an available model.`);
+      this.#refuseUnlisted(current.choices,target);
       try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"model",target)}
       catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
       this.model=acpConfigSelect(this.sessionSetup,"model").current||target;
@@ -642,14 +839,14 @@ export class AcpAgentSession{
     if(this.runtime==="antigravity"){
       const target=requestedModel("antigravity",requested);
       if(!target){this.model=current.current;return}
-      if(!current.choices.some(choice=>choice.value===target))throw new Error(`Antigravity does not offer the model '${target}' to this Google account. Select an available model.`);
+      this.#refuseUnlisted(current.choices,target);
       try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"model",target)}
       catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
       this.model=target;return;
     }
     const target=text(requested);
     if(!target||target===current.current){this.model=current.current||target||null;return}
-    if(current.choices.length&&!current.choices.some(choice=>choice.value===target))throw new Error(`${this.label} does not offer the model '${target}'. Select an available model.`);
+    this.#refuseUnlisted(current.choices,target);
     try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"model",target)}
     catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
     this.model=acpConfigSelect(this.sessionSetup,"model").current||target;
@@ -674,38 +871,26 @@ export class AcpAgentSession{
     if(this.runtime==="cursor")return this.#applyCursorOptions();
   }
 
-  // Cursor's per-model options after its model: the effort option (effort, reasoning or
-  // reasoning_effort) when an effort is chosen, the Fast switch once a turn has named a speed, and each other setting the
-  // user picked (context, thinking) by its id, when the model offers it.
+  // Cursor's per-model settings after its model, in this order: the chosen effort, the Fast switch once a turn has named a
+  // speed, then each setting picked in the composer (context, thinking). Each is looked up in the option list as it stands at
+  // that step, since Cursor can answer a change with a new list.
   async #applyCursorOptions(){
-    const options=()=>this.sessionSetup?.configOptions;
-    const effort=this.reasoningEffort,effortOption=effort?cursorEffortOption(options()):null;
-    if(effortOption){
-      const value=acpConfigChoices(effortOption).find(choice=>(cursorEffortValue(choice.value)||cursorEffortValue(choice.name))===effort)?.value;
-      if(value)await this.#setCursorOption(effortOption,value,"effort");
-    }
-    const fastOption=this.serviceTier!==undefined?cursorFastOption(options()):null;
-    if(fastOption){
-      const value=cursorSwitchValue(fastOption,this.serviceTier==="fast");
-      if(value!==undefined)await this.#setCursorOption(fastOption,value,"Fast");
-    }
-    for(const [id,picked] of Object.entries(this.modelOptions)){
-      const list=options()||[],option=list.find(entry=>text(entry?.id)===id);
-      if(!option||option===cursorEffortOption(list)||option===cursorFastOption(list))continue;
-      const lower=picked.toLowerCase(),choices=acpConfigChoices(option);
-      const value=option.type==="boolean"?(lower==="true"?true:lower==="false"?false:undefined)
-        :(choices.find(choice=>choice.value===picked)||choices.find(choice=>choice.value.toLowerCase()===lower))?.value;
-      if(value!==undefined)await this.#setCursorOption(option,value,id);
-    }
+    const current=()=>this.sessionSetup?.configOptions;
+    if(this.reasoningEffort)await this.#changeCursorSetting(cursorEffortChange(current(),this.reasoningEffort));
+    if(this.serviceTier!==undefined)await this.#changeCursorSetting(cursorFastChange(current(),this.serviceTier==="fast"));
+    for(const [id,picked] of Object.entries(this.modelOptions))await this.#changeCursorSetting(cursorPickedChange(current(),id,picked));
   }
 
-  async #setCursorOption(option,value,label){
-    if(String(option.currentValue??"")===String(value))return;
+  // Sends one planned change unless the option already holds that value. The session's copy of the option then shows the
+  // value, also when Cursor answers without its option list.
+  async #changeCursorSetting(change){
+    if(!change||String(change.option.currentValue??"")===String(change.value))return;
+    const {option,value,label}=change;
     try{await this.setConfigOption(option.id,value)}
     catch(error){throw Object.assign(new Error(`${this.label} could not set ${text(option.name)||label} to ${value}: ${error?.message||error}`,{cause:error}),{code:error?.code})}
-    // An answer without the option list still means the value took effect.
-    const updated=(this.sessionSetup?.configOptions||[]).find(entry=>text(entry?.id)===text(option.id));
-    if(updated&&String(updated.currentValue??"")!==String(value))this.sessionSetup={...this.sessionSetup,configOptions:(this.sessionSetup.configOptions||[]).map(entry=>entry===updated?{...entry,currentValue:value}:entry)};
+    const held=this.sessionSetup?.configOptions,id=text(option.id);
+    const stale=Array.isArray(held)?held.find(entry=>text(entry?.id)===id):null;
+    if(stale&&String(stale.currentValue??"")!==String(value))this.sessionSetup={...this.sessionSetup,configOptions:held.map(entry=>entry===stale?{...entry,currentValue:value}:entry)};
   }
 
   // The mode each turn runs in: Antigravity's from the access level, Cursor's from the
@@ -793,8 +978,8 @@ export class AcpAgentSession{
   #watchCursorMessage(active,type,update){
     if(CURSOR_MESSAGE_BREAKS.has(type)){active.messageEnded=true;return}
     if(type!=="agent_message_chunk"||update.content?.type!=="text")return;
-    if(active.messageEnded){active.transport=new CursorTransportFailure();active.message="";active.messageEnded=false}
-    active.transport.push(update.content.text);active.message=(active.message||"")+String(update.content.text??"");
+    if(active.messageEnded){active.transport=new CursorLostBackendReply();active.message="";active.messageEnded=false}
+    active.transport.append(update.content.text);active.message=(active.message||"")+String(update.content.text??"");
   }
 
   #decorate(params,update,type){
@@ -859,7 +1044,7 @@ export class AcpAgentSession{
   async #permission(params){
     const options=Array.isArray(params?.options)?params.options:[],toolCall=params?.toolCall||{};
     // Antigravity asks its multiple-choice questions through the permission method.
-    if(this.runtime==="antigravity"&&text(toolCall.toolCallId).startsWith("interaction_"))return this.#antigravityQuestion(params,options);
+    if(this.runtime==="antigravity"&&text(toolCall.toolCallId).startsWith("interaction_"))return this.#antigravityQuestion(toolCall,options);
     const kind=toolCall.kind??params?.kind??null;
     // In Grok's Auto mode Grok decides routine actions itself; whatever it asks about goes to the user.
     const askUser=this.runtime==="grok"&&this.permissionMode==="auto";
@@ -870,19 +1055,11 @@ export class AcpAgentSession{
     return optionId?selected(optionId):CANCELLED_OUTCOME;
   }
 
-  // Only one of the offered choices answers Antigravity, so the question takes no words of
-  // the person's own, and each choice carries its option id as its value, so two choices of one name stay apart. An id offered twice
-  // is one choice.
-  async #antigravityQuestion(params,options){
-    const ids=new Set(),choices=options.filter(option=>{const id=text(option?.optionId);if(!id||ids.has(id))return false;ids.add(id);return true});
-    if(!choices.length)return CANCELLED_OUTCOME;
-    const id=text(params.toolCall.toolCallId),label=option=>text(option.name)||text(option.optionId);
-    const answers=await this.#ask([{id,header:"Question",question:text(params.toolCall.title)||"Choose an option.",multiSelect:false,allowCustomAnswer:false,options:choices.map(option=>({value:text(option.optionId),label:label(option),description:""}))}]);
-    const value=answers?.[id]?.[0];
-    if(!value)return CANCELLED_OUTCOME;
-    const exact=choices.find(option=>text(option.optionId)===value);if(exact)return selected(exact.optionId);
-    const labelled=choices.filter(option=>label(option)===value);
-    return labelled.length===1?selected(labelled[0].optionId):CANCELLED_OUTCOME;
+  async #antigravityQuestion(toolCall,options){
+    const question=antigravityChoiceQuestion(toolCall,options);
+    if(!question)return CANCELLED_OUTCOME;
+    const answers=await this.#ask([question.prompt]);
+    return antigravityChoiceAnswer(question.choices,answers?.[question.prompt.id]?.[0]);
   }
 
   // Shows a plan the agent proposed (Cursor create_plan, Grok exit_plan_mode) as part of the turn's reply.
@@ -904,7 +1081,7 @@ export class AcpAgentSession{
 
   async #cursorAskQuestion(params){
     const list=Array.isArray(params?.questions)?params.questions:[];
-    const questions=list.map((question,index)=>({id:text(question?.id)||`q${index+1}`,header:text(params?.title)||"Question",question:text(question?.prompt)||"Choose an option.",multiSelect:question?.allowMultiple===true,options:(question?.options||[]).map(option=>({label:text(option?.label)||text(option?.id),description:""}))}));
+    const questions=list.map((question,index)=>({id:text(question?.id)||`q${index+1}`,header:text(params?.title)||"Question",question:text(question?.prompt)||CURSOR_WORDLESS_QUESTION,multiSelect:question?.allowMultiple===true,options:(question?.options||[]).map(option=>({label:text(option?.label)||text(option?.id),description:""}))}));
     if(!questions.length)return {outcome:{outcome:"skipped",reason:"No questions were asked"}};
     const answers=await this.#ask(questions);
     if(!answers)return {outcome:{outcome:"cancelled"}};
@@ -976,7 +1153,7 @@ export class AcpAgentSession{
     if(this.runtime==="cursor"){
       if(method==="cursor/ask_question")return this.#cursorAskQuestion(params);
       if(method==="cursor/create_plan"){
-        this.#emitPlanText(text(params?.plan)||"# Plan\n\n(Cursor did not supply plan text.)");
+        this.#emitPlanText(cursorPlanMarkdown(params));
         if(Array.isArray(params?.todos)&&params.todos.length)this.#emitTodos(params.todos,false);
         return {outcome:{outcome:"accepted"}};
       }

@@ -1,6 +1,6 @@
 import { reasoningHistoryMessage } from "./reasoning-text.js";
 import { splitCodexAttachmentText } from "./codex-turn-options.js";
-import { withoutCodexGoalStart } from "../../src/codex-goal-start.mjs";
+import { codexMessageAsTyped } from "../../src/codex-goal-start.mjs";
 
 export function messageText(item){
   if(typeof item?.text==="string")return item.text;
@@ -11,12 +11,14 @@ export function messageText(item){
 // A message the person sent, as its bubble shows it again: the files Codex names after its text (codexTurnInput) come off the text,
 // and those its input carries as items (an image, audio or a file, as the agent relay keeps them) join them, so the message names
 // the files that went with it as it did when it was sent; null for a message with neither text nor files. A Codex goal's first
-// message reads as the objective the person typed (codex-goal-start.mjs).
+// message reads as the objective the person typed, without the instruction Codex got in front of it (codex-goal-start.mjs). What
+// Trebell recorded the person typing says where an earlier release's instruction ends: the turn's checkpoint label (the start of
+// the message as typed), and goalObjective, the thread's goal.
 const FILE_INPUTS=new Set(["localImage","localAudio","mention"]);
-function userHistoryMessage(item,turnId,checkpointByTurn){
+function userHistoryMessage(item,turnId,checkpointByTurn,goalObjective){
   const {text,paths}=splitCodexAttachmentText(messageText(item).trim());
   for(const entry of Array.isArray(item.content)?item.content:[])if(FILE_INPUTS.has(entry?.type)&&entry.path&&!String(entry.path).includes("://"))paths.push(String(entry.path));
-  const attachments=[...new Set(paths)],shown=withoutCodexGoalStart(text.trim());
+  const attachments=[...new Set(paths)],shown=codexMessageAsTyped(text.trim(),[checkpointByTurn?.[turnId]?.label,goalObjective]);
   return shown||attachments.length?{id:item.id,role:"user",text:shown,turnId,checkpointId:checkpointByTurn[turnId]?.id||null,...(attachments.length?{attachments}:{})}:null;
 }
 
@@ -37,12 +39,13 @@ export function withSessionHandoff(messages=[],row){
   return at<0?[...list,row]:[...list.slice(0,at+1),row,...list.slice(at+1)];
 }
 
-export function historyFromTurns(turns=[],checkpointByTurn={}){
+// goalObjective: the thread's goal, when the window has it (userHistoryMessage).
+export function historyFromTurns(turns=[],checkpointByTurn={},goalObjective=null){
   const out=[];
   for(const turn of turns||[]){
     for(const item of turn?.items||[]){
       if(item?.type==="userMessage"){
-        const message=userHistoryMessage(item,turn.id,checkpointByTurn);if(message)out.push(message);
+        const message=userHistoryMessage(item,turn.id,checkpointByTurn,goalObjective);if(message)out.push(message);
       }else if(item?.type==="agentMessage"&&item.text?.trim()){
         out.push({id:item.id,role:"assistant",text:item.text,turnId:turn.id});
       }else if(item?.type==="reasoning"){
@@ -55,13 +58,13 @@ export function historyFromTurns(turns=[],checkpointByTurn={}){
   return out;
 }
 
-export function historyFromItemEntries(entries=[],checkpointByTurn={}){
+export function historyFromItemEntries(entries=[],checkpointByTurn={},goalObjective=null){
   const out=[];
   for(const entry of entries||[]){
     const turnId=entry?.turnId,item=entry?.item;
     if(!turnId||!item)continue;
     if(item.type==="userMessage"){
-      const message=userHistoryMessage(item,turnId,checkpointByTurn);if(message)out.push(message);
+      const message=userHistoryMessage(item,turnId,checkpointByTurn,goalObjective);if(message)out.push(message);
     }else if(item.type==="agentMessage"&&item.text?.trim()){
       out.push({id:item.id,role:"assistant",text:item.text,turnId});
     }else if(item.type==="reasoning"){

@@ -16,7 +16,7 @@ test("specialized task language exposes only relevant capability groups",()=>{
   assert.deepEqual(specializedToolSelection("Use computer use to click the Windows desktop with the mouse",all),{browser:false,computer:true,sourceControl:false,delegation:false});
   assert.deepEqual(specializedToolSelection("Delegate two independent subtasks and run them in parallel",all),{browser:false,computer:false,sourceControl:false,delegation:true});
   // Background processes are no longer chosen by wording: Native always has them (nativeToolNamespaceOptions).
-  assert.deepEqual(specializedToolSelection("Start the dev server in the background and keep it running",all),{browser:false,computer:false,sourceControl:false,delegation:false});
+  assert.deepEqual(specializedToolSelection("Launch the API with npm start as a background job and leave it running",all),{browser:false,computer:false,sourceControl:false,delegation:false});
 });
 
 test("unavailable capability groups never become exposed from task wording",()=>{

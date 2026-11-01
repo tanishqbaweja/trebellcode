@@ -34,7 +34,7 @@ function codexWindow({running=false,goal=null,endAfterMs=20,turnEnds=true,stopFa
 test("a new Codex goal's first turn asks for the work toward it, and the Goal panel keeps the objective as written",async()=>{
   const app=codexWindow();
   assert.equal(await runSlashCommand(app.deps,"/goal Make the login tests pass"),true);
-  assert.deepEqual(app.log,[["startTurn",{text:"Make the login tests pass",inputText:"Start working toward this goal: Make the login tests pass",goalPatch:{objective:"Make the login tests pass",status:"active"},goalResume:false}]]);
+  assert.deepEqual(app.log,[["startTurn",{text:"Make the login tests pass",inputText:"Begin work on the goal: Make the login tests pass",goalPatch:{objective:"Make the login tests pass",status:"active"},goalResume:false}]]);
 });
 
 test("/goal with an objective sent while a turn runs stops that turn and sets and starts the goal once it has ended",async()=>{
@@ -67,6 +67,17 @@ test("/goal clear and /goal pause stop a running turn only when the goal drives 
   const idle=codexWindow({running:false,goal:{objective:"Ship it",status:"active"}});
   await runSlashCommand(idle.deps,"/goal pause");
   assert.deepEqual(idle.steps(),["thread/goal/get","thread/goal/set"]);
+});
+
+test("/goal alone notes the thread's goal in one line with its status in words and opens the Goal panel, and stops nothing",async()=>{
+  const app=codexWindow({running:true,goal:{objective:"Tidy the changelog",status:"usageLimited"}}),panels=[];
+  app.deps.openRightPanel=tab=>panels.push(tab);
+  await runSlashCommand(app.deps,"/goal");
+  assert.deepEqual(app.notes,["Goal usage limited: Tidy the changelog"]);
+  assert.deepEqual(panels,["goal"]);assert.deepEqual(app.steps(),["thread/goal/get"]);
+  const none=codexWindow();
+  await runSlashCommand(none.deps,"/goal edit");
+  assert.deepEqual(none.notes,["This thread has no goal."]);
 });
 
 test("a goal whose running turn could not be stopped keeps the draft and says why",async()=>{

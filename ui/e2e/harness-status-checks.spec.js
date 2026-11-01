@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
+import { GROK_MODELS_SIGNED_IN, GROK_MODELS_SIGNED_OUT } from "../../tests/fixtures/grok-cli-output.mjs";
 
 // What Settings shows for harnesses whose status checks do not answer as a quick, signed-in CLI does. The harness list is the one
 // the server's own status checks give (AgentRuntimeManager's snapshot, run here with each CLI's answers stubbed, as the server's
@@ -20,12 +21,12 @@ const json=(route,value,status=200)=>route.fulfill({status,contentType:"applicat
 const answered=stdout=>({ok:true,code:0,error:null,stdout,stderr:""});
 const TIMED_OUT={ok:false,code:null,error:"probe timed out",stdout:"",stderr:""};
 function harnessList(home){
-  const grokModels=["You are not authenticated.\n","You are logged in with grok.com.\n"];
+  const grokModels=[GROK_MODELS_SIGNED_OUT,GROK_MODELS_SIGNED_IN];
   const answer=(kind,args,timeoutMs)=>{
     if(kind==="claude")return args[0]==="--version"?(8000<=timeoutMs?answered("2.1.310 (Claude Code)\n"):TIMED_OUT):{ok:false,code:1,error:null,stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"}),stderr:""};
     if(kind==="opencode")return TIMED_OUT;
     if(kind==="cursor")return {ok:false,code:1,error:null,stdout:"",stderr:"Error: Cannot find module 'index.js'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1207:15)\n"};
-    if(kind==="grok")return args[0]==="models"?answered(grokModels.shift()||"You are logged in with grok.com.\n"):answered("grok 1.0.41 (4220f3b224a6)\n");
+    if(kind==="grok")return args[0]==="models"?answered(grokModels.shift()||GROK_MODELS_SIGNED_IN):answered("grok 1.0.41 (4220f3b224a6)\n");
     return {ok:false,code:null,error:"spawn codex ENOENT",stdout:"",stderr:""};
   };
   const instances=["codex","claude","cursor","grok","opencode"].map(kind=>{
@@ -62,7 +63,7 @@ test("Settings shows a slow, hung or failing harness CLI as installed with what 
     // Claude Code answered once it had time, and runs through a gateway: the row says so and offers a switch, and no Sign in, as
     // `claude auth login` has nothing to do with the gateway's credentials. It is installed, so no Install; and no Update either, as
     // this list knows of no newer release (it read no registry), and a binary in a folder of its own is not Trebell's to update.
-    await expect(said("Claude Code")).toHaveText("Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts.");
+    await expect(said("Claude Code")).toHaveText("Claude Code sends its requests to this profile's own API endpoint, which holds the credentials. A session checks them when it starts.");
     await expect(action("Claude Code")).toHaveText("Switch");
     await expect(row("Claude Code").getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(row("Claude Code").getByRole("button",{name:"Install",exact:true})).toHaveCount(0);

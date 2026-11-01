@@ -6,12 +6,13 @@ import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpStartFailure } from "./acp-start-exit.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-config.mjs";
 import { withProbeAdvice } from "./agent-runtime-manager.mjs";
-import { claudeExplainedApiError, claudeRejectedLimit, claudeResultFailure, claudeSignedOutMessage, claudeUsageLimitHint, claudeUsageLimited } from "./claude-agent-session.mjs";
-import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
+import { claudeExplainedApiError, claudeLimitHolds, claudeRefusedWindow, claudeResultFailure, claudeSignedOutMessage, claudeUsageLimitHint } from "./claude-agent-session.mjs";
+import { adminMcpFilePresent } from "./claude-managed-mcp.mjs";
 import { acpApiKeyMethod } from "./harness-auth.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
-import { museApprovalChoices, museApprovalToolCall } from "./muse-agent-session.mjs";
+import { museApprovalToolCall } from "./muse-agent-session.mjs";
+import { museDecisionChoices } from "./muse-asking.mjs";
 import { MuseHost, museServeArgs, museWorkspaceRoot } from "./muse-host.mjs";
 import { resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
 import { checkedOpenCodeProviders, connectedOpenCodeModels, openCodeModelPreferences, startOpenCodeServer } from "./opencode-agent-session.mjs";
@@ -150,7 +151,7 @@ async function claudeText(ctx){
   const env={...runtimeManager.childEnv(instance),CLAUDE_AGENT_SDK_CLIENT_APP:`trebell-code/${ctx.version}`};
   // Next to an administrator's managed-mcp.json Claude Code loads only the managed servers and exits at startup on
   // --strict-mcp-config; a Claude Code started elsewhere reads its own machine's file, so it keeps the flag.
-  const managedMcp=!spawnProcess&&await hasClaudeManagedMcpConfig({exists:ctx.deps.claudeManagedMcpExists});ctx.check();
+  const managedMcp=!spawnProcess&&await adminMcpFilePresent({exists:ctx.deps.claudeManagedMcpExists});ctx.check();
   const runtime=query({prompt:ctx.prompt,options:{
     cwd,...(model?{model}:{}),
     // A Windows .cmd shim cannot be spawned directly; the SDK runs a native binary or a .js entry itself.
@@ -166,17 +167,17 @@ async function claudeText(ctx){
   let result=null,usedModel=model,streamed="",signedOut=null,explained=null,rateLimited=false,blocked=null;const limits=new Map();
   for await(const message of runtime){
     if(message?.type==="system"&&message.subtype==="init"){usedModel=message.model||usedModel;continue}
-    if(message?.type==="rate_limit_event"){const rejected=claudeRejectedLimit(message);if(rejected)limits.set(rejected.rateLimitType||"unknown",rejected);continue}
+    if(message?.type==="rate_limit_event"){const rejected=claudeRefusedWindow(message);if(rejected)limits.set(rejected.rateLimitType||"unknown",rejected);continue}
     // An assistant message that carries an error is the API error the result reports, never the reply; a sign-in failure, a usage
     // limit or an error Claude does not retry (an unknown model) names the failure, as in a Claude thread, until a later reply goes through.
-    if(message?.type==="assistant"){if(message.error){if(message.error==="authentication_failed")signedOut=claudeSignedOutMessage(spawnProcess||String(env.CLAUDE_CONFIG_DIR||"")!==String(process.env.CLAUDE_CONFIG_DIR||"")?env.CLAUDE_CONFIG_DIR:"");rateLimited=message.error==="rate_limit";explained=claudeExplainedApiError(message);blocked=claudeRejectedLimit(message);continue}rateLimited=false;explained=null;blocked=null;for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
+    if(message?.type==="assistant"){if(message.error){if(message.error==="authentication_failed")signedOut=claudeSignedOutMessage(spawnProcess||String(env.CLAUDE_CONFIG_DIR||"")!==String(process.env.CLAUDE_CONFIG_DIR||"")?env.CLAUDE_CONFIG_DIR:"");rateLimited=message.error==="rate_limit";explained=claudeExplainedApiError(message);blocked=claudeRefusedWindow(message);continue}rateLimited=false;explained=null;blocked=null;for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
     if(message?.type==="result"){result=message;break}
   }
   if(!result)throw new Error("Claude Code ended without a result");
   if(blocked&&!limits.has(blocked.rateLimitType||"unknown"))limits.set(blocked.rateLimitType||"unknown",blocked);
   // The user-facing failure, as a Claude thread turn reports it (CLI diagnostics are never the message).
-  const failureHint=signedOut||(claudeUsageLimited(result,rateLimited||limits.size>0)?claudeUsageLimitHint([...limits.values()]):null);
-  const failure=claudeResultFailure(result,{failureHint,explainedError:explained});if(failure)throw new Error(failure);
+  const knownCause=signedOut||(claudeLimitHolds(result,rateLimited||limits.size>0)?claudeUsageLimitHint([...limits.values()]):null);
+  const failure=claudeResultFailure(result,{knownCause,explainedError:explained});if(failure)throw new Error(failure);
   return {text:String(result.result||streamed||""),model:usedModel||null};
 }
 
@@ -191,7 +192,8 @@ function openCodeData(result,label){
 // OpenCode". No `tools` map is sent either: OpenCode would replace these rules with it.
 const OPENCODE_BUILTIN_PERMISSIONS=Object.freeze(["read","edit","glob","grep","list","bash","task","external_directory","todowrite","question","webfetch","websearch","lsp","doom_loop","skill"]);
 export const OPENCODE_GIT_TEXT_PERMISSION=Object.freeze([{permission:"*",pattern:"*",action:"deny"},...OPENCODE_BUILTIN_PERMISSIONS.map(permission=>({permission,pattern:"*",action:"ask"}))]);
-export const OPENCODE_GIT_TEXT_REFUSAL="Tools are not available while writing Git text. Everything you need is in the user message: reply once with exactly the requested text.";
+// The reason OpenCode hands the model with a refused tool call (permission.reply's message), so it answers instead of asking again.
+export const GIT_TEXT_TOOL_DECLINE="Trebell declined this tool call: Git text is written without tools, and the message already holds the diff and all the context. Answer in one reply that contains only the text that was asked for.";
 // Remote OpenCode answers through its ACP server, as remote OpenCode threads do. ACP never asks the client about tools OpenCode allows
 // (its default build agent runs bash and edits unasked), so the process starts with this config (OPENCODE_CONFIG_CONTENT works in
 // OpenCode 1.x and 2.x), the session switches to its agent before the prompt (without that agent nothing is sent), and the same rules
@@ -218,7 +220,7 @@ function refuseOpenCodeAsks({client,v2Client,directory,sessionId}){
         if(String(p.sessionID||"")!==sessionId||!requestID)continue;
         if(event.type==="permission.asked"){
           refusals++;const feedback=refusals<=OPENCODE_GIT_TEXT_FEEDBACK_REFUSALS;
-          const replied=await Promise.resolve(v2Client?.permission?.reply?.({requestID,directory,reply:"reject",...(feedback?{message:OPENCODE_GIT_TEXT_REFUSAL}:{})})).then(result=>Boolean(result)&&!result.error,()=>false);
+          const replied=await Promise.resolve(v2Client?.permission?.reply?.({requestID,directory,reply:"reject",...(feedback?{message:GIT_TEXT_TOOL_DECLINE}:{})})).then(result=>Boolean(result)&&!result.error,()=>false);
           if(!replied)await legacyReject(requestID);
         }
         else if(event.type==="permission.updated")await legacyReject(requestID);
@@ -369,76 +371,206 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
   return {text,model:chosen||models.current||null};
 }
 
-// Muse Code: one turn in a fresh session on a host of Trebell's own in an empty folder, read-only (`muse serve
-// --disable-shell --disable-write`: no shell, no file writes and no trust in a workspace's skills and rules), its session log kept, since
-// Muse derives a turn's events, its end too, from that log. The session denies whatever its policy does not allow (denyUnmatched); an
-// approval Muse asks all the same is denied with its own denied choice and a question cancelled, and either fails the request, as a gap
-// in what Muse delivered, its connection closing and its exit do. The reply is the turn's last agent message that was not retracted,
-// and one Muse cut short is refused. The model is the thread's when Muse lists it, else the list's default row (or Muse's own), at Low.
-async function museText(ctx){
-  const {runtimeManager,instance,environmentId}=ctx,cwd=await scratchFolder(ctx),said=value=>String(value??"").trim();
-  const catalog=runtimeManager.museModelCatalog?.(instance)||null,listed=Array.isArray(catalog?.models)?catalog.models:[];
-  const model=ctx.models.find(id=>listed.includes(id))||catalog?.preferred||null;
-  const reasoningEffort=resolveMuseReasoningEffort((Array.isArray(catalog?.metadata)?catalog.metadata:[]).find(row=>row?.id===model)||null,"low");
-  const host=(ctx.deps.museHost||(options=>new MuseHost(options)))({command:runtimeManager.executable(instance,{environmentId}),args:museServeArgs("read-only"),cwd,env:runtimeManager.childEnv(instance),authMethod:runtimeManager.authMethod?.(instance)||"sign-in"});
-  ctx.defer(()=>host.close());
-  await host.start({version:ctx.version,requestedCapabilities:[]});ctx.check();
-  const connection=host.connection,sessionId=connection.mintCommandId(),turnId=connection.mintCommandId(),replies=new Map(),answered=new Set();
-  let settle=null;const finished=new Promise((resolve,reject)=>{settle={resolve,reject}});finished.catch(()=>{});
-  const fail=message=>settle.reject(new Error(message));
-  // Muse asks an approval or a question both as a notification and as a server request: each is answered once, and ends the request.
-  const refuse=(kind,params={})=>{
-    const id=said(kind==="approval"?params.approvalId:params.userInputId);
-    if(!id||params.sessionId!==sessionId||answered.has(kind+":"+id))return;answered.add(kind+":"+id);
-    if(kind==="approval"){
-      const denied=museApprovalChoices(params.availableChoices).get("decline");
-      if(denied)void connection.command("approval/decide",{sessionId,approvalId:id,requirementId:params.currentRequirementId,choiceId:denied.choiceId},{maxAttempts:1}).catch(()=>{});
-      return fail(`Muse Code asked for permission (${museApprovalToolCall(params).title}) while writing the Git text, and Trebell declined it: Git text generation is read-only and tool-less.`);
-    }
-    void connection.command("userInput/cancel",{sessionId,userInputId:id,reason:"Trebell Git text generation cannot ask the user. Reply with exactly the requested text."},{maxAttempts:1}).catch(()=>{});
-    fail("Muse Code asked a question while writing the Git text, and Trebell cancelled it: Git text generation cannot ask the user.");
+// Git text through Muse Code. Trebell starts its own `muse serve --disable-shell --disable-write` in an empty temp folder (a host
+// without a shell, without file writes and without trust in any workspace's skills or rules), opens a new session whose policy
+// denies whatever it does not allow (denyUnmatched), and runs one turn on the thread's model when Muse lists it (else the
+// catalog's default row, else Muse's own) at Low Thinking. Muse's session log stays on: Muse reads a turn's events, its end
+// included, back from it. The request fails on whatever keeps the answer from arriving whole: an approval or a question Muse
+// raises anyway (Trebell turns it down), a gap in the events, a frame Trebell cannot read, the connection closing, the host exiting.
+const museWords=value=>String(value??"").trim();
+// Revisions only go up: a copy replaces the kept one when its revision is higher, and one without a numeric revision counts as 0.
+const museRevision=item=>{const value=Number(item?.revision);return Number.isFinite(value)?value:0};
+
+// The model and Thinking level of the turn: the first of the thread's models the catalog lists, else the catalog's default row,
+// else none (Muse's own model); Low where that model offers it, the model's own rule otherwise.
+function museGitTextModel(catalog,candidates){
+  const offered=id=>Array.isArray(catalog?.models)&&catalog.models.includes(id);
+  const modelId=candidates.find(offered)||catalog?.preferred||null;
+  const row=modelId&&Array.isArray(catalog?.metadata)?catalog.metadata.find(entry=>entry?.id===modelId):null;
+  return {modelId,effort:resolveMuseReasoningEffort(row||null,"low")};
+}
+
+// The turn as Muse reports it: its agent replies, each at its highest revision and in the order Muse first showed them, and what
+// its end makes of them.
+class MuseGitTextTurn{
+  constructor(sessionId,turnId){this.sessionId=sessionId;this.turnId=turnId;this.replies=new Map()}
+  // A whole item (item/started, item/updated, item/completed): kept when it is one of this turn's agent replies and newer than
+  // the copy kept so far. Muse's other kinds and other turns' replies are not the answer.
+  note(item){
+    if(item?.kind!=="agentMessage"||!item.itemId||item.turnId!==this.turnId)return;
+    const kept=this.replies.get(item.itemId);
+    if(!kept||museRevision(item)>museRevision(kept))this.replies.set(item.itemId,item);
+  }
+  // The last reply Muse still stands by (not retracted) is the answer; the ones before it are commentary.
+  answer(){
+    let last=null;
+    for(const reply of this.replies.values())if(!reply.retracted)last=reply;
+    return last;
+  }
+  // turn/start's acknowledgement names the turn Muse runs the request in: this one, or none at all.
+  owns(ack){return !ack?.turnId||ack.turnId===this.turnId}
+  // What turn/completed means for the request: {text} when the turn completed with a whole reply (or none), else {error}.
+  end(params){
+    const terminal=museWords(params.terminal);
+    if(terminal!=="completed")return {error:museTurnFailure(terminal,params)};
+    const reply=this.answer();
+    if(reply?.truncated)return {error:new Error("Muse Code cut its reply short, so Trebell did not use it. Try again.")};
+    return {text:String(reply?.text??"")};
+  }
+}
+
+// Why a turn that did not complete left no answer. A signed-out Muse says how to sign in (signedOut: the caller's recheck then adds
+// no advice of its own); any other end gives Muse's own words, the failure's message before the turn's reason, else the terminal.
+function museTurnFailure(terminal,{error,reason}){
+  const {kind,message}=Object(error);
+  if(kind==="authRequired")return Object.assign(new Error("Muse Code is signed out. Sign in with muse login, then try again."),{signedOut:true});
+  const words=[message,reason].map(museWords).find(Boolean);
+  if(words)return new Error(words);
+  if(terminal==="cancelled")return new Error("Muse Code cancelled the Git text request.");
+  return new Error(`Muse Code ended the turn ${terminal||"without an answer"}.`);
+}
+
+// The asks Muse may raise during the turn, each both as a notification and as a server request. Trebell answers each once (an
+// approval declined with Muse's own denied choice, never one that saves a rule; a question cancelled) and the request fails.
+const MUSE_GIT_TEXT_ASKS=Object.freeze({
+  approval:{
+    idOf:ask=>ask.approvalId,
+    answer(connection,sessionId,id,ask){
+      const decline=museDecisionChoices(ask.availableChoices).get("decline");
+      if(!decline)return null;
+      return connection.command("approval/decide",{sessionId,approvalId:id,requirementId:ask.currentRequirementId,choiceId:decline.choiceId},{maxAttempts:1});
+    },
+    reason:ask=>`Muse Code asked for permission (${museApprovalToolCall(ask).title}) while writing the Git text, and Trebell declined it: Git text generation is read-only and tool-less.`,
+  },
+  question:{
+    idOf:ask=>ask.userInputId,
+    answer:(connection,sessionId,id)=>connection.command("userInput/cancel",{sessionId,userInputId:id,reason:"Trebell Git text generation cannot ask the user. Reply with exactly the requested text."},{maxAttempts:1}),
+    reason:()=>"Muse Code asked a question while writing the Git text, and Trebell cancelled it: Git text generation cannot ask the user.",
+  },
+});
+// The asks Muse sends as server requests, by method (a Map, so a method named like a key every object has is no ask).
+const MUSE_ASK_REQUESTS=new Map([["approval/request","approval"],["userInput/request","question"]]);
+// The answer to a server request Trebell does not serve, as MSP spells an unknown method.
+const museUnknownMethod=(sdk,method)=>new sdk.MspError({data:{kind:"methodNotFound",retryable:false},code:-32601,message:`method not found: ${method}`});
+
+// The request's one outcome: the first answer or failure stands, and a failure nobody waits for any more is dropped. failed only
+// ever rejects (with that failure), for the steps that wait on Muse before the turn.
+function museOutcome(){
+  let succeed,reject;
+  const settled=new Promise((resolve,fail)=>{succeed=resolve;reject=fail});
+  const failed=settled.then(()=>new Promise(()=>{}));
+  settled.catch(()=>{});failed.catch(()=>{});
+  return {settled,failed,succeed,fail:reason=>reject(reason instanceof Error?reason:new Error(String(reason)))};
+}
+// What a promise gives within ms, else null (a rejection gives null too).
+async function museSettledWithin(promise,ms){
+  let timer;
+  const late=new Promise(resolve=>{timer=setTimeout(resolve,ms,null);timer.unref?.()});
+  try{return await Promise.race([Promise.resolve(promise).catch(()=>null),late])}finally{clearTimeout(timer)}
+}
+
+// The host for one request, started: Muse's read-only serve in the request's own folder, with the profile's environment and
+// sign-in (so a key the profile did not approve never reaches Muse), asking for no session MCP servers. Its close joins the
+// request's teardown the moment the host exists, so a stop while it starts still closes it. A test hands in its own host maker.
+async function museStartedGitTextHost(ctx,folder){
+  const {runtimeManager:manager,instance,environmentId}=ctx;
+  const options={
+    cwd:folder,
+    args:museServeArgs("read-only"),
+    command:manager.executable(instance,{environmentId}),
+    authMethod:manager.authMethod?.(instance)||"sign-in",
+    env:manager.childEnv(instance),
   };
+  const host=ctx.deps.museHost?ctx.deps.museHost(options):new MuseHost(options);
+  ctx.defer(()=>host.close());
+  await host.start({requestedCapabilities:[],version:ctx.version});
+  return host;
+}
+
+// Reads what Muse sends during the request against the turn: replies and the turn's end (the answer or Muse's failure), asks
+// (each turned down once), gaps, frames Trebell cannot read, and the connection or the host going away. Each settles the outcome.
+function followMuseGitText(host,turn,outcome){
+  const connection=host.connection,turnedDown={approval:new Set(),question:new Set()};
+  // Muse hears Trebell's answer first; then the request fails with the reason.
+  const turnDown=(kind,ask)=>{
+    if(ask?.sessionId!==turn.sessionId)return;
+    const rule=MUSE_GIT_TEXT_ASKS[kind],id=museWords(rule.idOf(ask));
+    if(!id||turnedDown[kind].has(id))return;
+    turnedDown[kind].add(id);
+    try{rule.answer(connection,turn.sessionId,id,ask)?.catch?.(()=>{})}catch{}
+    outcome.fail(rule.reason(ask));
+  };
+  const keep=params=>turn.note(params.item);
+  const notices=new Map([
+    ["item/started",keep],["item/updated",keep],["item/completed",keep],
+    ["turn/completed",params=>{
+      if(params.turnId!==turn.turnId)return;
+      const ending=turn.end(params);
+      if(ending.error)outcome.fail(ending.error);else outcome.succeed(ending.text);
+    }],
+    ["view/gap",()=>outcome.fail("Muse Code dropped part of its reply before it reached Trebell. Try again.")],
+    ["approval/requested",params=>turnDown("approval",params)],
+    ["userInput/requested",params=>turnDown("question",params)],
+  ]);
+  // Only this session's notifications count.
   connection.onNotification(frame=>{
-    const method=said(frame?.method),params=frame?.params||{};if(params.sessionId!==sessionId)return;
-    if(method==="view/gap")return fail("Muse Code dropped part of its reply before it reached Trebell. Try again.");
-    if(method==="approval/requested")return refuse("approval",params);
-    if(method==="userInput/requested")return refuse("question",params);
-    // Each reply keeps its highest revision; another turn's replies are not this one's.
-    const item=params.item;
-    if(/^item\/(?:started|updated|completed)$/.test(method)&&item?.kind==="agentMessage"&&item.itemId&&item.turnId===turnId){
-      const previous=replies.get(item.itemId);if(!previous||Number(item.revision)>Number(previous.revision))replies.set(item.itemId,item);
-      return;
-    }
-    if(method!=="turn/completed"||params.turnId!==turnId)return;
-    const terminal=said(params.terminal),error=params.error&&typeof params.error==="object"?params.error:{};
-    if(terminal==="completed"){
-      // A turn may write commentary before its answer: the answer is the last reply Muse did not take back.
-      const answer=[...replies.values()].findLast(reply=>!reply.retracted);
-      return answer?.truncated?fail("Muse Code cut its reply short, so Trebell did not use it. Try again."):settle.resolve(String(answer?.text??""));
-    }
-    // It says how to sign in, so the check after a failed request adds no second sign-in advice (signedOut).
-    if(error.kind==="authRequired")return settle.reject(Object.assign(new Error("Muse Code is signed out. Sign in with muse login, then try again."),{signedOut:true}));
-    fail(said(error.message)||said(params.reason)||(terminal==="cancelled"?"Muse Code cancelled the Git text request.":`Muse Code ended the turn ${terminal||"without an answer"}.`));
+    const params=frame?.params;
+    if(params?.sessionId===turn.sessionId)notices.get(museWords(frame.method))?.(params);
   });
+  // A server request gets its receipt once Trebell has turned the ask down; any other request is refused as unknown.
   connection.onServerRequest(async request=>{
-    if(request?.method==="approval/request"||request?.method==="userInput/request"){refuse(request.method==="approval/request"?"approval":"question",request.params||{});return {}}
-    throw new host.sdk.MspError({code:-32601,message:`method not found: ${request?.method}`,data:{kind:"methodNotFound",retryable:false}});
+    const kind=MUSE_ASK_REQUESTS.get(request?.method);
+    if(!kind)throw museUnknownMethod(host.sdk,request?.method);
+    turnDown(kind,request.params||{});
+    return {};
   });
-  connection.onProtocolError(error=>fail(`Muse Code sent a frame Trebell could not read: ${error?.message||error}`));
-  // A connection that closes as Muse exits says why Muse exited (its exit code and last line), as a Muse Code turn does.
-  void connection.closed.then(async()=>{
-    let timer;const exit=await Promise.race([host.exited,new Promise(resolve=>{timer=setTimeout(resolve,2000);timer.unref?.()})]).finally(()=>clearTimeout(timer));
-    fail(exit?host.exitMessage(exit):"Muse Code closed its connection to Trebell before it returned the Git text. Try again.");
-  });
-  void host.exited.then(exit=>fail(host.exitMessage(exit)));
-  const started=await connection.command("session/start",{sessionId,workspaceRoot:await museWorkspaceRoot(cwd,{verbatim:false}),providerId:"meta",...(model?{modelId:model}:{}),approvalMode:"denyUnmatched"},{maxAttempts:1});ctx.check();
-  // The turn's end can come before its start is acknowledged, which settles the request just as well.
-  connection.command("turn/start",{sessionId,input:[{type:"text",text:HARNESS_TEXT_INSTRUCTIONS+"\n\n"+ctx.prompt}],...(reasoningEffort?{reasoningEffort}:{})},{commandId:turnId}).then(
-    ack=>{if(ack?.turnId&&ack.turnId!==turnId)fail("Muse Code took the Git text request into another turn than the one Trebell started.")},
-    error=>settle.reject(error),
-  );
-  const text=await finished;
-  return {text,model:said(started?.session?.modelId)||model};
+  connection.onProtocolError(error=>outcome.fail(`Muse Code sent a frame Trebell could not read: ${error?.message||error}`));
+  // When the connection drops, Muse's exit explains it if the exit comes within 2 s: its exit code and its last line.
+  const dropped=async()=>{
+    const exit=await museSettledWithin(host.exited,2000);
+    outcome.fail(exit?host.exitMessage(exit):"Muse Code closed its connection to Trebell before it returned the Git text. Try again.");
+  };
+  connection.closed.then(dropped,dropped);
+  host.exited.then(exit=>outcome.fail(host.exitMessage(exit)));
+}
+
+// session/start, tried once: a fresh session of Trebell's minting in the request's folder on Meta's models, whose policy denies
+// whatever it does not allow, on the chosen model when there is one (else Muse's own).
+function museOpenGitTextSession(connection,turn,{workspaceRoot,modelId}){
+  const params={sessionId:turn.sessionId,providerId:"meta",approvalMode:"denyUnmatched",workspaceRoot};
+  if(modelId)params.modelId=modelId;
+  return connection.command("session/start",params,{maxAttempts:1});
+}
+// turn/start under the turn's own id (Muse names a fresh turn after its command id): one text part, Trebell's instructions and
+// then the prompt, at the chosen Thinking level when there is one. Its acknowledgement is not waited for, since Muse may end the
+// turn before it or never send one, and the turn's end settles the request; one for another turn, or Muse refusing the start,
+// fails it.
+function museStartGitTextTurn(connection,turn,{prompt,effort},outcome){
+  const params={sessionId:turn.sessionId,input:[{type:"text",text:`${HARNESS_TEXT_INSTRUCTIONS}\n\n${prompt}`}]};
+  if(effort)params.reasoningEffort=effort;
+  connection.command("turn/start",params,{commandId:turn.turnId}).then(ack=>{
+    if(!turn.owns(ack))outcome.fail("Muse Code took the Git text request into another turn than the one Trebell started.");
+  },outcome.fail);
+}
+
+// The Muse Code adapter: the request's folder, model and host, then one session and one turn, read through to the outcome.
+async function museText(ctx){
+  const folder=await scratchFolder(ctx);
+  // Muse wants the root spelled as the disk spells it (it refuses another letter case).
+  const workspaceRoot=await museWorkspaceRoot(folder,{verbatim:false});ctx.check();
+  const {modelId,effort}=museGitTextModel(ctx.runtimeManager.museModelCatalog?.(ctx.instance)||null,ctx.models);
+  const host=await museStartedGitTextHost(ctx,folder);ctx.check();
+  const {connection}=host,outcome=museOutcome();
+  const turn=new MuseGitTextTurn(connection.mintCommandId(),connection.mintCommandId());
+  followMuseGitText(host,turn,outcome);
+  // The session's answer is awaited unless the request fails first (a frame Trebell cannot read, Muse exiting).
+  const opening=museOpenGitTextSession(connection,turn,{workspaceRoot,modelId});
+  opening.catch(()=>{});
+  const session=(await Promise.race([opening,outcome.failed]))?.session;ctx.check();
+  museStartGitTextTurn(connection,turn,{prompt:ctx.prompt,effort},outcome);
+  // The model Muse says the session runs, else the one Trebell asked for.
+  const model=museWords(session?.modelId)||modelId;
+  return {text:await outcome.settled,model};
 }
 
 export async function generateTextWithHarness({runtimeManager,instance=null,prompt,cwd=process.cwd(),environmentId=undefined,models=[],timeoutMs=HARNESS_TEXT_TIMEOUT_MS,version="0.0.0",codexAppServer=null,signal=null,deps={}}={}){

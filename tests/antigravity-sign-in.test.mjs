@@ -1,8 +1,9 @@
 // Antigravity's own sign-in (signInAntigravity), against a stand-in for Antigravity's ACP server (fixtures/antigravity-acp-agent.mjs):
 // it picks one of Antigravity's own logins (Google's first, never the key method), records it in Antigravity's home before the agent
 // runs it, and opens its one session in a throwaway folder, never the project. No key is in its environment, whatever the launch
-// held. It gives up after 5 minutes saying how to finish, and says in plain words why when Antigravity exits for want of IPv6
-// sockets, when Google wants a subscription or when its session cannot start. Settings' route: antigravity-sign-in-route.test.mjs.
+// held. It gives up after 5 minutes saying how to finish (as it signs in or as it opens its session), and says in plain words why
+// when Antigravity exits for want of IPv6 sockets, when Google wants a subscription or when its session cannot start. Settings'
+// route: antigravity-sign-in-route.test.mjs. The home "~" stands for and the IPv6 check alone: antigravity-home-and-ipv6.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -17,7 +18,6 @@ const inside=(path,root)=>{const rel=relative(resolve(root),resolve(path));retur
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 // Trebell words these itself: sentences written elsewhere for them are not reused.
 const UNREACHABLE="Antigravity's sign-in did not finish within 5 minutes. Finish it in the browser page Antigravity opened; Antigravity does not fall back to IPv4 when IPv6 fails, so also check that this machine reaches Google, then sign in again.";
-const BORROWED_WORDS=/could not reach Google\. Check this machine's network connection|Broken IPv6 is a common cause|eligible Antigravity subscription/;
 
 // A scenario for the stand-in in a folder of its own, removed after the test; env is a launch's environment as Trebell builds it.
 async function standIn(t,scenario,{key=null}={}){
@@ -71,7 +71,6 @@ test("a sign-in Antigravity never finishes ends after 5 minutes saying how to fi
   await signing;
   assert.ok(settled instanceof Error,"the sign-in failed");
   assert.equal(settled.message,UNREACHABLE);
-  assert.doesNotMatch(settled.message,BORROWED_WORDS,"Trebell's own sentences");
 });
 
 test("an Antigravity that exits for want of IPv6 sockets says it needs them, as it starts or as it signs in",async t=>{
@@ -81,14 +80,40 @@ test("an Antigravity that exits for want of IPv6 sockets says it needs them, as 
   }
 });
 
+// Note (2026-11-01): the subscription and session sentences are new wording of Trebell's own, which this test now pins in place of
+// the earlier wording; the cases and their order are as before.
+const NO_SUBSCRIPTION="Google says this account's plan does not include Antigravity (SUBSCRIPTION_REQUIRED). Sign in with an account whose plan includes it, or set Antigravity to run on a Google Gemini API key.";
 test("Google's subscription refusal, a refused sign-in and a session that cannot start each say so, in plain words",async t=>{
   const cases=[
-    [{authenticate:{code:-32603,message:"Internal error",data:{message:"SUBSCRIPTION_REQUIRED: this account has no Antigravity access"}}},/^Google refused Antigravity for this account, saying it needs a subscription that includes Antigravity \(SUBSCRIPTION_REQUIRED\)\.$/],
-    [{sessionNew:{code:-32603,message:"Internal error",data:{message:"could not load models"}}},/^Antigravity signed in but could not start a session or load its models: could not load models$/],
-    [{authenticate:{code:-32000,message:"Login was cancelled"}},/^Antigravity could not sign in: Login was cancelled$/],
+    [{authenticate:{code:-32603,message:"Internal error",data:{message:"SUBSCRIPTION_REQUIRED: this account has no Antigravity access"}}},NO_SUBSCRIPTION,-32603],
+    // Google's reason code deep in the error's data (a google.rpc.ErrorInfo), under a message that says nothing.
+    [{authenticate:{code:-32603,message:"Internal error",data:{error:{status:"PERMISSION_DENIED",details:[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",reason:"SUBSCRIPTION_REQUIRED"}]}}}},NO_SUBSCRIPTION,-32603],
+    // The same code after the sign-in, as the session reads the account's models.
+    [{sessionNew:{code:-32603,message:"Internal error",data:{message:"could not read the account's plan\nSUBSCRIPTION_REQUIRED"}}},NO_SUBSCRIPTION,-32603],
+    [{sessionNew:{code:-32603,message:"Internal error",data:{message:"could not load models"}}},"The sign-in went through, but Antigravity failed to open a session and read the account's models: could not load models",-32603],
+    [{authenticate:{code:-32000,message:"Login was cancelled"}},"Antigravity could not sign in: Login was cancelled",-32000],
+    // A code inside a longer word is not Google's.
+    [{authenticate:{code:-32603,message:"NOT_SUBSCRIPTION_REQUIRED_HERE"}},"Antigravity could not sign in: NOT_SUBSCRIPTION_REQUIRED_HERE",-32603],
   ];
-  for(const [scenario,said] of cases){
+  for(const [scenario,said,code] of cases){
     const fx=await standIn(t,scenario);
-    await assert.rejects(signIn(fx),error=>{assert.match(error.message,said);assert.doesNotMatch(error.message,BORROWED_WORDS);return true});
+    await assert.rejects(signIn(fx),error=>{
+      assert.equal(error.message,said);assert.equal(error.code,code,"the agent's JSON-RPC code stays on the error");
+      assert.ok(error.cause instanceof Error,"what Antigravity answered is the cause");return true;
+    });
   }
+});
+
+test("a session Antigravity never opens after signing in ends after 5 minutes saying how to finish",{timeout:60_000},async t=>{
+  const fx=await standIn(t,{sessionNew:"hang"});
+  t.mock.timers.enable({apis:["setTimeout","Date"],now:Date.now()});
+  let settled=null;
+  const signing=signIn(fx).then(()=>{settled="signed in"},error=>{settled=error});
+  for(const deadline=performance.now()+30_000;!(await fx.log()).some(entry=>entry.method==="session/new");){assert.ok(performance.now()<deadline,"session/new was never sent");await turn()}
+  t.mock.timers.tick(299_999);for(let i=0;i<20;i++)await turn();
+  assert.equal(settled,null,"still waiting a moment before 5 minutes");
+  t.mock.timers.tick(1);
+  await signing;
+  assert.ok(settled instanceof Error,"the sign-in failed");
+  assert.equal(settled.message,UNREACHABLE);
 });

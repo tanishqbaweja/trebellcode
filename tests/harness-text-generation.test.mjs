@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { HARNESS_TEXT_INSTRUCTIONS, HARNESS_TEXT_TIMEOUT_MS, OPENCODE_GIT_TEXT_CONFIG, acpReadOnlyMode, claudeTextModel, codexGitTextConfig, declineCodexServerRequest, denyAcpRequest, generateTextWithHarness, harnessTextTimeout, OPENCODE_GIT_TEXT_PERMISSION, OPENCODE_GIT_TEXT_REFUSAL } from "../src/harness-text-generation.mjs";
+import { SIGN_IN_LINE } from "./fixtures/agent-log-lines.mjs";
+import { HARNESS_TEXT_INSTRUCTIONS, HARNESS_TEXT_TIMEOUT_MS, OPENCODE_GIT_TEXT_CONFIG, acpReadOnlyMode, claudeTextModel, codexGitTextConfig, declineCodexServerRequest, denyAcpRequest, generateTextWithHarness, harnessTextTimeout, OPENCODE_GIT_TEXT_PERMISSION, GIT_TEXT_TOOL_DECLINE } from "../src/harness-text-generation.mjs";
 
 const NAMES={codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"};
 const PROTOCOLS={codex:"codex",claude:"claude",opencode:"sdk"};
@@ -117,14 +118,14 @@ test("harness text generation refuses Trebell Native and reports an unavailable 
   await assert.rejects(()=>generateTextWithHarness({runtimeManager:fakeRuntimeManager("native"),prompt:"PROMPT"}),/Trebell Native writes Git text with its model provider/);
   let queried=false;
   const manager=fakeRuntimeManager("claude",{probe:async()=>({available:false,message:"Claude Code is installed but not authenticated"})});
-  await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",deps:{claudeQuery:()=>{queried=true;throw new Error("must not run")}}}),error=>error.code==="HARNESS_UNAVAILABLE"&&error.message==="Claude Code is installed but not authenticated");
+  await assert.rejects(()=>generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",deps:{claudeQuery:()=>{queried=true;throw new Error("a signed-out Claude Code was queried")}}}),error=>error.code==="HARNESS_UNAVAILABLE"&&error.message==="Claude Code is installed but not authenticated");
   assert.equal(queried,false);
 });
 
 // The probe answer a request starts on is kept for a minute: a harness that then fails is asked again once, as the relay asks after
 // a failed session, and an answer that it is not signed in (a sign-out outside Trebell) adds its advice after the harness's words.
 test("a harness that fails to write the Git text is asked again once, and a sign-out it finds adds the probe's advice",async()=>{
-  const advice="Claude Code is signed out. Sign in with `claude auth login` and try again.",rechecks=[];
+  const advice="Claude Code has no account signed in. Run `claude auth login`, then try again.",rechecks=[];
   const failing=()=>(async function*(){yield {type:"result",subtype:"error_during_execution",is_error:true,errors:["Claude Code process exited"]}})();
   let status={available:false,authenticated:false,message:advice};
   const manager=fakeRuntimeManager("claude",{recheck:async(instance,options)=>{rechecks.push({id:instance.id,options});return status}});
@@ -380,7 +381,9 @@ test("OpenCode Git text refuses every permission request and question of its ses
   const replies=calls.filter(([name])=>name==="permission.reply").map(([,request])=>request);
   assert.deepEqual(replies.map(request=>request.requestID),["per_1","per_2","per_3"],"only this session's requests are answered");
   assert.ok(replies.every(request=>request.reply==="reject"&&request.directory===calls[0][1].cwd));
-  assert.deepEqual(replies.map(request=>request.message??null),[OPENCODE_GIT_TEXT_REFUSAL,OPENCODE_GIT_TEXT_REFUSAL,null]);
+  assert.deepEqual(replies.map(request=>request.message??null),[GIT_TEXT_TOOL_DECLINE,GIT_TEXT_TOOL_DECLINE,null]);
+  // The reason the model reads: no tools for Git text, everything is in the message, one reply with only the text.
+  assert.equal(GIT_TEXT_TOOL_DECLINE,"Trebell declined this tool call: Git text is written without tools, and the message already holds the diff and all the context. Answer in one reply that contains only the text that was asked for.");
   assert.deepEqual(calls.filter(([name])=>name==="question.reject").map(([,request])=>request.requestID),["que_1"]);
   assert.equal(calls.some(([name])=>name==="permission.legacy"),false);
   const order=calls.map(([name])=>name);
@@ -516,6 +519,9 @@ test("ACP adapter cancels a prompt that is still running when the request times 
   }finally{await acp.cleanup()}
 });
 
+// What a signed-out ACP harness prints as it starts: a line asking for a Google sign-in (tests/fixtures/agent-log-lines.mjs).
+const SIGNED_OUT_LOG=SIGN_IN_LINE[0]+"\n";
+
 // An ACP harness whose process ends as it starts (it printed Google's sign-in line, or crashed) says so in its Git text failure as a
 // chat's message says it: the harness, its exit code and what it printed, and for a sign-in, where the harness signs in, not the ACP
 // client's "ACP runtime exited code=3 signal=null" with a link the message hides. The stand-in is Antigravity's (antigravity-acp-agent.mjs).
@@ -527,13 +533,12 @@ test("an ACP harness that stops as it starts says why in plain words when it can
     const manager=fakeRuntimeManager(kind,{executable:()=>process.execPath,childEnv:()=>({...childBaseEnv(),TREBELL_AGY_SCENARIO:path,...env}),acpArgs:()=>[agent]});
     return generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",cwd:root});
   };
-  const SIGN_IN="Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture&state=oauth-state-value&redirect_uri=http://127.0.0.1:4567/\n";
-  await assert.rejects(()=>write("antigravity",{exitAt:"initialize",exitCode:3,stderr:SIGN_IN},{GEMINI_API_KEY:KEY}),error=>{
+  await assert.rejects(()=>write("antigravity",{exitAt:"initialize",exitCode:3,stderr:SIGNED_OUT_LOG},{GEMINI_API_KEY:KEY}),error=>{
     assert.equal(error.code,"HARNESS_TEXT_FAILED");
     assert.equal(error.message,"Antigravity could not write the Git text: Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, though it runs on the Google Gemini API key saved in Settings. Check that key there, then try again.");
     return true;
   });
-  await assert.rejects(()=>write("cursor",{exitAt:"initialize",exitCode:3,stderr:SIGN_IN}),{message:"Cursor could not write the Git text: Cursor stopped as it started, with exit code 3, asking for a Google sign-in. Sign in to Cursor in Settings, then try again."});
+  await assert.rejects(()=>write("cursor",{exitAt:"initialize",exitCode:3,stderr:SIGNED_OUT_LOG}),{message:"Cursor could not write the Git text: Cursor stopped as it started, with exit code 3, asking for a Google sign-in. Sign in to Cursor in Settings, then try again."});
   await assert.rejects(()=>write("grok",{exitAt:"session/new",exitCode:4,stderr:"panic: the session store is locked\n"},{GEMINI_API_KEY:KEY}),{message:"Grok Build could not write the Git text: Grok Build stopped as it started, with exit code 4: panic: the session store is locked"});
 });
 
@@ -542,17 +547,16 @@ test("an ACP harness that stops as it starts says why in plain words when it can
 // switch to model ...: ACP runtime exited code=3 signal=null" with the link the message hides, nor only that it could not switch modes.
 test("an ACP harness that stops as it sets the Git text session's mode or model says why in plain words",async t=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-git-text-config-exit-"));t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100}));
-  const SIGN_IN="Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture&state=oauth-state-value&redirect_uri=http://127.0.0.1:4567/\n";
   // Antigravity sets the thread's model through its model config option (antigravity-acp-agent.mjs), which it ends at.
   const agent=fileURLToPath(new URL("./fixtures/antigravity-acp-agent.mjs",import.meta.url)),KEY="AIzaSyTrebellFixtureKey0123456789abcdef",scenario=join(root,"antigravity-scenario.json");
-  await writeFile(scenario,JSON.stringify({exitAt:"session/set_config_option",exitCode:3,stderr:SIGN_IN}));
+  await writeFile(scenario,JSON.stringify({exitAt:"session/set_config_option",exitCode:3,stderr:SIGNED_OUT_LOG}));
   const antigravity=fakeRuntimeManager("antigravity",{executable:()=>process.execPath,childEnv:()=>({...childBaseEnv(),TREBELL_AGY_SCENARIO:scenario,GEMINI_API_KEY:KEY}),acpArgs:()=>[agent]});
   const failure=async run=>{try{await run();return "written"}catch(error){return [error.code,error.message]}};
   const said=[await failure(()=>generateTextWithHarness({runtimeManager:antigravity,prompt:"PROMPT",cwd:root,models:["gemini-fixture-pro"]}))];
   // Cursor switches to its read-only ask mode (it opens in agent), then to the thread's model; it ends at the one, then at the other.
   for(const env of [
     {TREBELL_ACP_EXIT_AT:"session/set_mode",TREBELL_ACP_EXIT_CODE:"5",TREBELL_ACP_EXIT_STDERR:"panic: the ask mode's sandbox could not start\n"},
-    {TREBELL_ACP_MODES:"ask,agent",TREBELL_ACP_EXIT_AT:"session/set_model",TREBELL_ACP_EXIT_CODE:"3",TREBELL_ACP_EXIT_STDERR:SIGN_IN},
+    {TREBELL_ACP_MODES:"ask,agent",TREBELL_ACP_EXIT_AT:"session/set_model",TREBELL_ACP_EXIT_CODE:"3",TREBELL_ACP_EXIT_STDERR:SIGNED_OUT_LOG},
   ]){
     const acp=await acpFixture("trebell-acp-git-text-config-exit-");
     try{

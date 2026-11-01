@@ -2,19 +2,25 @@ import React,{useEffect,useRef,useState} from "react";
 import { Quote } from "lucide-react";
 import { focusBesideSelection } from "../selection-focus.js";
 
-export const MAX_ASSISTANT_CITATION_CHARS=8_000;
+// The most a selection Cite takes: a cited passage points the agent at a part of a reply, and Trebell keeps it near 1,500 tokens
+// (about four characters a token in English) so a citation never outweighs the message it goes with. A longer selection keeps the
+// button, turned off, saying so.
+export const CITE_SELECTION_LIMIT=6_000;
 
-function citationSource(node,container){
+// The reply text a selection starts in: App marks each reply's text with data-cite-reply, its message's id.
+function citedReply(node,container){
   if(!node||!container)return null;
   const element=node.nodeType===Node.ELEMENT_NODE?node:node.parentElement;
-  const source=element?.closest?.("[data-assistant-citation-source]")||null;
-  return source&&container.contains(source)?source:null;
+  const reply=element?.closest?.("[data-cite-reply]")||null;
+  return reply&&container.contains(reply)?reply:null;
 }
 
-export default function AssistantSelectionToolbar({containerRef,onCite}){
+// Cite, over text selected in one reply of the conversation (containerRef): it gives onCite the reply's id and the text.
+export default function ReplyCiteButton({containerRef,onCite}){
+  const button=useRef(null);
+  // The selection Cite stands over (null: no button), and whether a citation is on its way.
   const [selection,setSelection]=useState(null);
   const [busy,setBusy]=useState(false);
-  const button=useRef(null);
 
   useEffect(()=>{
     const container=containerRef.current;
@@ -28,7 +34,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
         const nativeSelection=window.getSelection();
         if(!nativeSelection||nativeSelection.isCollapsed||nativeSelection.rangeCount===0){clear();return}
         const range=nativeSelection.getRangeAt(0);
-        const start=citationSource(range.startContainer,container);
+        const start=citedReply(range.startContainer,container);
         if(!start){clear();return}
         // A selection that takes nothing beyond the reply it starts in is the reply's, as a triple-click on its last paragraph,
         // which ends at the start of what follows the reply (its outcome pill). One that ends in the reply leaves nothing beyond.
@@ -44,7 +50,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
         const top=Math.max(0,host.top),bottom=Math.min(window.innerHeight,host.bottom);
         const x=Math.max(54,Math.min(window.innerWidth-54,rect.left+rect.width/2));
         const y=Math.max(top+38,Math.min(bottom-8,rect.top-7));
-        setSelection({messageId:start.dataset.assistantCitationSource,text,x,y});
+        setSelection({messageId:start.dataset.citeReply,text,x,y});
       });
     };
     // Tab and Shift+Tab from the selection (nothing else has the keyboard) reach Cite above it, whichever reply it is in, and from Cite
@@ -55,25 +61,26 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
       else if(event.key==="Tab"&&button.current&&document.activeElement===button.current){if(focusBesideSelection(button.current,event.shiftKey))event.preventDefault()}
       else if(event.key==="Tab"&&document.activeElement?.contains(window.getSelection()?.anchorNode)){button.current?.focus();if(document.activeElement===button.current)event.preventDefault()}
     };
-    document.addEventListener("selectionchange",update);
-    container.addEventListener("pointerup",update);
-    document.addEventListener("keydown",onKey,true);
-    scrollHost?.addEventListener("scroll",clear,{passive:true});
-    window.addEventListener("resize",clear);
+    // What moves or ends the button, as [target, event, handler, options]: a new selection or a pointer let go in the conversation
+    // places it again; a key may clear it or move the keyboard (onKey, before the page's own keys); a scroll or a resize clears it.
+    const watched=[
+      [document,"selectionchange",update],
+      [container,"pointerup",update],
+      [document,"keydown",onKey,true],
+      [scrollHost,"scroll",clear,{passive:true}],
+      [window,"resize",clear],
+    ].filter(([target])=>target);
+    for(const [target,type,handler,options] of watched)target.addEventListener(type,handler,options);
     // App loads this at idle after the first paint (idle-parts.js): text selected in a reply before it came gets its button now.
     update();
     return()=>{
       cancelAnimationFrame(frame);
-      document.removeEventListener("selectionchange",update);
-      container.removeEventListener("pointerup",update);
-      document.removeEventListener("keydown",onKey,true);
-      scrollHost?.removeEventListener("scroll",clear);
-      window.removeEventListener("resize",clear);
+      for(const [target,type,handler,options] of watched)target.removeEventListener(type,handler,options);
     };
   },[containerRef]);
 
   if(!selection)return null;
-  const tooLong=selection.text.length>MAX_ASSISTANT_CITATION_CHARS;
+  const tooLong=selection.text.length>CITE_SELECTION_LIMIT;
   return <button
     ref={button}
     type="button"
@@ -83,7 +90,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
     style={{left:selection.x,top:selection.y}}
     disabled={tooLong||busy}
     aria-label={tooLong?"Too much selected to cite":busy?"Citing selected assistant text":"Cite selected assistant text"}
-    title={tooLong?`Select ${MAX_ASSISTANT_CITATION_CHARS.toLocaleString()} characters or fewer`:"Cite selected assistant text"}
+    title={tooLong?`Cite takes up to ${CITE_SELECTION_LIMIT.toLocaleString()} characters`:"Cite selected assistant text"}
     onPointerDown={event=>event.preventDefault()}
     onClick={async()=>{
       if(tooLong||busy)return;
@@ -95,7 +102,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
         setSelection(null);
       }finally{setBusy(false)}
     }}
-  ><Quote size={13}/>{tooLong?"Shorten selection":busy?"Citing…":"Cite"}</button>;
+  ><Quote size={13}/>{tooLong?"Too long":busy?"Citing…":"Cite"}</button>;
 }
 
 // Cite: the reply, or the text selected in it, goes to the composer as a context file, with the sentence that asks the agent to use

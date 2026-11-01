@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { activityItemStatus, commandFacts, commandLine, diffLines, durationLabel, exitCodeOf, fileChangeRows, finishedActivitySteps, nativeEditChanges, textChangeLines, turnDiffLines } from "../ui/src/activity-details.js";
 
 test("a command prints the line it ran: the relay's rawInput line over a descriptive title",()=>{
-  assert.equal(commandLine({command:"test -f missing.txt"}),"test -f missing.txt");
+  assert.equal(commandLine({command:"grep -q TODO notes.md"}),"grep -q TODO notes.md");
   assert.equal(commandLine({command:["git","status","--short"]}),"git status --short");
   assert.equal(commandLine({command:"Run the unit tests",rawInput:{command:"npm test -- --grep auth",description:"Run the unit tests"}}),"npm test -- --grep auth");
   assert.equal(commandLine({command:"List files",rawInput:{cmd:["ls","-la"]}}),"ls -la");

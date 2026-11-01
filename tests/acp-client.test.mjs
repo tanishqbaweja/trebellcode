@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AcpClient, ACP_STDERR_TAIL_MAX_CHARS, appendAcpStderrTail, defaultAcpClientCapabilities, sanitizeAcpStderrExcerpt } from "../src/acp-client.mjs";
+import { AcpClient, defaultAcpClientCapabilities } from "../src/acp-client.mjs";
+import { AGENT_LOG_KEPT_CHARS, agentLogExcerpt, extendAgentLog } from "../src/agent-log.mjs";
+import { BEARER_LINE, HIDDEN_IN_EXCERPT, PAIRING_LINE, SIGN_IN_LINE } from "./fixtures/agent-log-lines.mjs";
 
 test("ACP initialization advertises only client features Trebell actually handles",()=>{
   assert.deepEqual(defaultAcpClientCapabilities(),{
@@ -16,38 +18,61 @@ test("ACP initialization advertises only client features Trebell actually handle
   });
 });
 
-test("ACP stderr tail stays bounded and redacts secrets before surfacing",()=>{
-  const prefix="x".repeat(ACP_STDERR_TAIL_MAX_CHARS);
-  assert.equal(appendAcpStderrTail(prefix,"abc"),prefix.slice(3)+"abc");
-  const home=process.platform==="win32"?"C:\\Users\\ada":"/home/ada";
-  const value=sanitizeAcpStderrExcerpt([
-    "Invalid project config at "+home+"/.cursor/cli.json",
-    "Authorization: Bearer secret-token-value",
-    "Visit http://localhost:5733/pair#token=ABCDEF",
-    "openai=sk-proj-abcdefghijklmnopqrstuvwxyz012345",
-    "x-api-key: private-api-key",
-    "custom=totally-opaque-runtime-secret",
-  ].join("\n"),{...process.env,HOME:home,USERPROFILE:home,CUSTOM_RUNTIME_TOKEN:"totally-opaque-runtime-secret"});
-  assert.match(value,/~\/\.cursor\/cli\.json/);
-  assert.match(value,/Bearer \[redacted\]/);
-  assert.match(value,/\[pairing-url\]/);
-  assert.doesNotMatch(value,/secret-token-value|ABCDEF|sk-proj-|private-api-key|totally-opaque-runtime-secret/);
+// The client keeps the newest 4,096 characters of what the agent printed, for a failure to quote.
+test("an agent's log keeps its newest 4,096 characters, the oldest cut from the front",()=>{
+  assert.equal(AGENT_LOG_KEPT_CHARS,4096,"the bound");
+  // 60 numbered lines of 100 characters each, written one at a time: 6,000 characters.
+  const lines=Array.from({length:60},(_,index)=>`agent log line ${String(index).padStart(2,"0")} `.padEnd(99,"-")+"\n");
+  const kept=lines.reduce((tail,line)=>extendAgentLog(tail,line),"");
+  assert.equal(kept,lines.join("").slice(-4096),"the newest 4,096 characters");
+  assert.ok(kept.startsWith("t log line 19 -")&&kept.endsWith(lines[59]),"the cut falls 4 characters into line 19, and the last line is whole");
+  // Under the bound nothing goes; a missing piece adds nothing; one chunk longer than the bound keeps its own end.
+  assert.equal(extendAgentLog("booting\n","listening on stdio\n"),"booting\nlistening on stdio\n");
+  assert.equal(extendAgentLog(undefined,"only\n"),"only\n");
+  assert.equal(extendAgentLog("kept\n",null),"kept\n");
+  const burst="z".repeat(5000)+"<end>";
+  assert.equal(extendAgentLog("older\n",burst),burst.slice(-4096));
 });
 
+// What an error or a warning quotes of an agent's log: each line as the agent printed it, with the home folder written as ~ and
+// every secret, pairing link and Google sign-in address replaced by its marker, both ends trimmed.
+test("an agent's log excerpt hides its secrets, home folder and sign-in addresses, line by line",()=>{
+  const home=process.platform==="win32"?"C:\\Users\\mira":"/home/mira",relaySecret="r3lay-0paque-value-for-tests";
+  const lines=[
+    ["[agent] reading settings from "+home+"/.config/agent/settings.json","[agent] reading settings from ~/.config/agent/settings.json"],
+    BEARER_LINE,
+    PAIRING_LINE,
+    ["[agent] provider OPENAI=sk-test-4f1c9e2b7a6d accepted","[agent] provider OPENAI=[redacted] accepted"],
+    ["[agent] upstream header x-api-key: tbk-upstream-0000","[agent] upstream header x-api-key: [redacted]"],
+    ["[agent] relay session "+relaySecret+" opened","[agent] relay session [redacted] opened"],
+    SIGN_IN_LINE,
+  ];
+  const log="\n\n"+lines.map(([line])=>line).join("\n")+"\n\n";
+  const excerpt=agentLogExcerpt(log,{HOME:home,USERPROFILE:home,TREBELL_RELAY_TOKEN:relaySecret});
+  assert.equal(excerpt,lines.map(([,line])=>line).join("\n"));
+  assert.doesNotMatch(excerpt,/mira|sk-test|tbk-upstream|r3lay/);
+  assert.doesNotMatch(excerpt,HIDDEN_IN_EXCERPT,"no token, pairing code, state, loopback address or Google host is left");
+});
+
+// An agent that cannot read its own settings as it starts: the failure quotes what it printed, the settings file under ~ and the
+// token it was about to send hidden, instead of a generic closed-session error.
 test("ACP startup failures include the useful stderr instead of a generic closed-session error",async()=>{
   const home=process.platform==="win32"?"C:\\Users\\fixture":"/home/fixture";
-  const source=[
-    "process.stderr.write("+JSON.stringify("Invalid project config at "+home+"/.cursor/cli.json: schema validation failed. Unrecognized key(s): 'approvalMode', 'sandbox'\nAuthorization: Bearer secret-startup-token\n")+");",
-    "process.exit(1);",
-  ].join("");
+  const printed=[
+    "fixture-agent 0.9.2: could not load "+home+"/.config/fixture-agent/settings.toml",
+    "  line 7: unknown field `sandbox_mode`, expected one of `model`, `approvals`",
+    "fixture-agent: giving up before contacting https://agent.example/v1 (Authorization: Bearer startup.T0ken-7~x)",
+  ].join("\n")+"\n";
+  const source="process.stderr.write("+JSON.stringify(printed)+",()=>process.exit(2));";
   const client=new AcpClient({command:process.execPath,args:["-e",source],env:{...process.env,HOME:home,USERPROFILE:home},timeoutMs:3000});
   let failure=null;
   try{await client.start();await client.initialize()}catch(error){failure=error}
   assert.ok(failure);
-  assert.match(failure.message,/cli\.json/);
-  assert.match(failure.message,/Unrecognized key/);
-  assert.match(failure.message,/approvalMode/);
-  assert.doesNotMatch(failure.message,/secret-startup-token/);
+  assert.match(failure.message,/^ACP runtime exited code=2/);
+  assert.match(failure.message,/could not load ~\/\.config\/fixture-agent\/settings\.toml$/m,"the settings file, under ~");
+  assert.match(failure.message,/unknown field `sandbox_mode`/);
+  assert.match(failure.message,/\(Authorization: Bearer \[redacted\]\)$/m);
+  assert.doesNotMatch(failure.message,/T0ken|fixture[\\/]\.config/);
   assert.doesNotMatch(failure.message,/ACP runtime is not connected/);
   await client.stop().catch(()=>{});
 });

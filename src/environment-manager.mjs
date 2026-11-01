@@ -2,17 +2,17 @@ import { spawn } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, readFile, readdir, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { basename, join, resolve, posix } from "node:path";
 import { trebellHome } from "./paths.mjs";
 import { unreadableAttachment } from "./prompt-attachments.mjs";
 import { buildRuntimeEnvironment, CREDENTIAL_SETTING_WORDS } from "./runtime-environment.mjs";
+import { hostThemeReader, localThemeReader, readThemeFolder, THEME_FOLDER_LIMITS } from "./environment-themes.mjs";
+import { remoteToolPathPrelude } from "./remote-tool-path.mjs";
+
+export { remoteToolPathPrelude };
 
 const MAX_OUTPUT=2*1024*1024;
-const MAX_THEME_FILES=32;
-const MAX_THEME_FILE_BYTES=32*1024;
-const MAX_THEME_TOTAL_BYTES=192*1024;
-const RESERVED_THEME_IDS=new Set(["system","light","dark","midnight","black"]);
 const REMOTE_TRANSPORT_ENV_KEYS=["SSH_AUTH_SOCK","SSH_AGENT_PID","SSH_SK_PROVIDER","WSLENV","WSL_UTF8"];
 
 function cleanText(value=""){
@@ -105,42 +105,11 @@ export function remoteTransportEnvironment(parent=process.env,{platform=process.
   return buildRuntimeEnvironment("native",{parent,approved:REMOTE_TRANSPORT_ENV_KEYS,platform});
 }
 
-const REMOTE_TOOL_PATH_SCRIPT=`trebell_prepend_path() {
-  if [ -d "$1" ]; then
-    case ":$PATH:" in *":$1:"*) ;; *) PATH="$1:$PATH" ;; esac
-  fi
-}
-trebell_prepend_path "/bin"
-trebell_prepend_path "/usr/bin"
-trebell_prepend_path "/usr/local/bin"
-trebell_prepend_path "/home/linuxbrew/.linuxbrew/bin"
-trebell_prepend_path "/opt/homebrew/bin"
-trebell_prepend_path "$HOME/bin"
-trebell_prepend_path "$HOME/.local/bin"
-VOLTA_HOME="\${VOLTA_HOME:-$HOME/.volta}"; export VOLTA_HOME
-trebell_prepend_path "$VOLTA_HOME/bin"
-trebell_prepend_path "$HOME/.asdf/bin"
-trebell_prepend_path "$HOME/.asdf/shims"
-trebell_prepend_path "$HOME/.local/share/mise/shims"
-trebell_prepend_path "$HOME/.mise/shims"
-FNM_DIR="\${FNM_DIR:-$HOME/.local/share/fnm}"; export FNM_DIR
-trebell_prepend_path "$FNM_DIR"
-trebell_prepend_path "$HOME/.fnm"
-trebell_prepend_path "$HOME/.nodenv/bin"
-trebell_prepend_path "$HOME/.nodenv/shims"
-if [ -d "$HOME/.nvm/versions/node" ]; then
-  for trebell_node_bin in "$HOME"/.nvm/versions/node/*/bin; do
-    [ -d "$trebell_node_bin" ] && trebell_prepend_path "$trebell_node_bin"
-  done
-fi
-export PATH`;
-
-export function remoteToolPathPrelude(){return REMOTE_TOOL_PATH_SCRIPT}
-
-// prelude: lines the host runs before the cd and the command (a Codex profile's home, agent-runtime-manager.mjs).
+// The host's tool PATH (remote-tool-path.mjs), then prelude: lines the host runs before the cd and the command (a Codex profile's
+// home, agent-runtime-manager.mjs).
 function remoteShellCommand(command,working="",prelude=""){
   const run=working?("cd "+quotePosix(working)+" && "+command):command;
-  return REMOTE_TOOL_PATH_SCRIPT+"\n"+(prelude?prelude+"\n":"")+run;
+  return remoteToolPathPrelude()+"\n"+(prelude?prelude+"\n":"")+run;
 }
 
 // Ends a host process with the processes it started: taskkill /t on Windows; elsewhere the process group of a child spawned
@@ -160,17 +129,11 @@ export function terminateHostProcessTree(child,{force=true,processGroup=false}={
   try{child?.kill?.(signal)}catch{}
 }
 
-function publishedTheme(filename,raw){
-  const id=String(filename||"").replace(/\.json$/i,"");
-  if(!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(id)||RESERVED_THEME_IDS.has(id.toLowerCase()))return null;
-  let parsed;
-  try{parsed=JSON.parse(raw)}catch{return null}
-  if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))return null;
-  const colors=parsed.colors&&typeof parsed.colors==="object"&&!Array.isArray(parsed.colors)?parsed.colors:{};
-  const hasCanvas=/^#[0-9a-f]{3,8}$/i.test(String(parsed.canvas||""));
-  const hasEditor=/^#[0-9a-f]{3,8}$/i.test(String(colors["editor.background"]||colors.canvas||""));
-  if(!hasCanvas&&!hasEditor)return null;
-  return {...parsed,id,name:String(parsed.name||parsed.label||id).trim().slice(0,80)||id,published:true};
+// The environment a theme catalog belongs to; Settings keys the theme a person follows by environmentKey, "local" for this machine.
+function themeCatalogOwner(profile){
+  const local={environmentId:null,environmentKey:"local",environmentName:"Local machine",environmentType:"local"};
+  if(!profile)return local;
+  return {environmentId:profile.id||local.environmentId,environmentKey:profile.id||local.environmentKey,environmentName:profile.name||local.environmentName,environmentType:profile.type||local.environmentType};
 }
 
 async function runProcess(command,args=[],{
@@ -359,57 +322,14 @@ export class EnvironmentManager {
     return profile.themeDirectory||".trebell/themes";
   }
 
+  // The themes the environment publishes from its theme folder (environment-themes.mjs), for Settings.
   async themeCatalog(id=null){
     const profile=id?this.get(id):null;
     if(id&&!profile)throw new Error("Environment profile was not found");
     const directory=this.themeDirectory(id);
-    const themes=[];
-    let totalBytes=0;
-    if(!profile||profile.type==="local"){
-      const entries=(await readdir(directory).catch(()=>[])).filter(name=>/\.json$/i.test(name)).sort().slice(0,MAX_THEME_FILES);
-      for(const name of entries){
-        const path=join(directory,name);
-        const info=await lstat(path).catch(()=>null);
-        if(!info||!info.isFile()||info.isSymbolicLink()||info.size>MAX_THEME_FILE_BYTES)continue;
-        totalBytes+=info.size;if(totalBytes>MAX_THEME_TOTAL_BYTES)break;
-        const raw=await readFile(path,"utf8").catch(()=>null);if(raw==null)continue;
-        const theme=publishedTheme(name,raw);if(theme)themes.push(theme);
-      }
-    }else{
-      const exists=await this.executeArgv(id,{command:"test",args:["-d",directory],timeoutMs:5000});
-      if(exists.exitCode!==0)return {
-        environmentId:profile.id,
-        environmentKey:profile.id,
-        environmentName:profile.name,
-        environmentType:profile.type,
-        directory,
-        themes,
-        limits:{maxFiles:MAX_THEME_FILES,maxFileBytes:MAX_THEME_FILE_BYTES,maxTotalBytes:MAX_THEME_TOTAL_BYTES},
-      };
-      const listing=await this.executeArgv(id,{command:"find",args:[directory,"-maxdepth","1","-type","f","-name","*.json"],timeoutMs:12000});
-      if(listing.exitCode!==0)throw new Error(listing.stderr||`Could not read themes from ${profile.name}`);
-      const paths=String(listing.stdout||"").split("\n").map(value=>value.trim()).filter(Boolean).sort().slice(0,MAX_THEME_FILES);
-      for(const path of paths){
-        const name=posix.basename(path);
-        if(!/^[a-z0-9][a-z0-9._-]{0,79}\.json$/i.test(name))continue;
-        const measured=await this.executeArgv(id,{command:"wc",args:["-c",path],timeoutMs:5000});
-        const size=Number(String(measured.stdout||"").trim().split(/\s+/)[0]);
-        if(measured.exitCode!==0||!Number.isFinite(size)||size<0||size>MAX_THEME_FILE_BYTES)continue;
-        totalBytes+=size;if(totalBytes>MAX_THEME_TOTAL_BYTES)break;
-        const contents=await this.executeArgv(id,{command:"cat",args:[path],timeoutMs:5000});
-        if(contents.exitCode!==0)continue;
-        const theme=publishedTheme(name,contents.stdout);if(theme)themes.push(theme);
-      }
-    }
-    return {
-      environmentId:profile?.id||null,
-      environmentKey:profile?.id||"local",
-      environmentName:profile?.name||"Local machine",
-      environmentType:profile?.type||"local",
-      directory,
-      themes,
-      limits:{maxFiles:MAX_THEME_FILES,maxFileBytes:MAX_THEME_FILE_BYTES,maxTotalBytes:MAX_THEME_TOTAL_BYTES},
-    };
+    const onHost=Boolean(profile)&&profile.type!=="local";
+    const reader=onHost?hostThemeReader(options=>this.executeArgv(id,options),directory,profile.name):localThemeReader(directory);
+    return {...themeCatalogOwner(profile),directory,themes:await readThemeFolder(reader),limits:{...THEME_FOLDER_LIMITS}};
   }
 
   spawnSession(id,{command,cwd=null,stdio=["ignore","pipe","pipe"],detached=false,prelude=""}={}){
@@ -505,7 +425,7 @@ export class EnvironmentManager {
       };
     }
     const working=String(cwd??profile.cwd??"").trim();
-    const remoteCommand=REMOTE_TOOL_PATH_SCRIPT+"\n"+(prelude?prelude+"\n":"")+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(hostCommand(profile,executable),args);
+    const remoteCommand=remoteToolPathPrelude()+"\n"+(prelude?prelude+"\n":"")+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(hostCommand(profile,executable),args);
     if(profile.type==="wsl"){
       if(this.platform!=="win32")throw new Error("WSL environments are available only on Windows");
       return {environmentId:profile.id,environmentName:profile.name,environmentType:"wsl",cwd:undefined,shell:"wsl.exe",args:wslArgs(profile,remoteCommand)};

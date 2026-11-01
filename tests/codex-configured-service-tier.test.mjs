@@ -18,28 +18,30 @@ import { codexModelChoices } from "../ui/src/codex-turn-options.js";
 // picker shows it while nothing is picked, and no turn sends it, so Codex keeps applying its own config.
 const require=createRequire(import.meta.url);
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+// One entry of a model/list row's serviceTiers, as Codex describes a tier, and a model that lists Fast (Codex's priority tier)
+// and Flex with no default tier of its own.
+const listedTier=(id,name)=>({id,name,description:""});
+const fastAndFlex={serviceTiers:[listedTier("priority","Fast"),listedTier("flex","Flex")],defaultServiceTier:null};
 
 test("a model's tier that the Codex config names is its default tier: the Speed picker shows it while nothing is picked, and no turn sends it",()=>{
-  const metadata={serviceTiers:[{id:"priority",name:"Fast",description:""},{id:"flex",name:"Flex",description:""}],defaultServiceTier:null};
-  const configured=value=>tiers.codexConfiguredServiceTier(metadata,value);
+  const configured=value=>tiers.codexConfiguredServiceTier(fastAndFlex,value);
   assert.equal(configured("fast"),"priority","Codex's config says fast for the tier its models list as priority");
   assert.equal(configured("priority"),"priority");assert.equal(configured("flex"),"flex");assert.equal(configured("default"),"default");
   for(const value of ["ultrafast",null,"",undefined,"Not a tier!"])assert.equal(configured(value),null,String(value));
   assert.equal(tiers.codexConfiguredServiceTier({},"fast"),null,"a model with no tiers has none to show");
   assert.equal(tiers.codexConfiguredServiceTier({additionalSpeedTiers:["fast"]},"fast"),"fast","an older catalog's own fast tier");
-  const fast={...metadata,defaultServiceTier:configured("fast")};
+  const fast={...fastAndFlex,defaultServiceTier:configured("fast")};
   assert.equal(tiers.codexServiceTierPickerValue(null,fast),"priority");
   assert.equal(tiers.codexServiceTierForTurn({metadata:fast}),null,"nothing is sent, so Codex keeps applying its config");
   assert.deepEqual((({serviceTier,serviceTierPicker})=>({serviceTier,serviceTierPicker}))(codexModelChoices({settings:{},provider:"codex",model:"gpt-6.1-sol",metadata:fast})),{serviceTier:null,serviceTierPicker:"priority"});
-  // A pick still shows and goes with the turn.
   const picked={modelServiceTiers:{[tiers.modelServiceTierKey("codex","codex","gpt-6.1-sol")]:"default"}};
-  assert.deepEqual((({serviceTier,serviceTierPicker})=>({serviceTier,serviceTierPicker}))(codexModelChoices({settings:picked,provider:"codex",model:"gpt-6.1-sol",metadata:fast})),{serviceTier:"default",serviceTierPicker:"default"});
+  assert.deepEqual((({serviceTier,serviceTierPicker})=>({serviceTier,serviceTierPicker}))(codexModelChoices({settings:picked,provider:"codex",model:"gpt-6.1-sol",metadata:fast})),{serviceTier:"default",serviceTierPicker:"default"},"a pick still shows and goes with the turn");
 });
 
 // The model list's step for the config, over rows shaped as Codex 0.162.0's model/list gives them:
 // a model whose tiers hold the configured one takes it as its default tier, and the others keep their own.
 test("each Codex model that lists the configured tier takes it as its default tier, and the others keep Codex's",()=>{
-  const fast={id:"priority",name:"Fast",description:""};
+  const fast=listedTier("priority","Fast");
   const rows=[{id:"gpt-6.1-sol",serviceTiers:[fast],defaultServiceTier:null},{id:"gpt-6-luna",serviceTiers:[fast],defaultServiceTier:"priority"},{id:"gpt-6-mini",serviceTiers:[],defaultServiceTier:null}];
   assert.deepEqual(catalog.withConfiguredCodexServiceTier(rows,"fast").map(row=>row.defaultServiceTier),["priority","priority",null]);
   assert.deepEqual(catalog.withConfiguredCodexServiceTier(rows,"flex").map(row=>row.defaultServiceTier),[null,"priority",null],"a tier no model lists changes none");
@@ -96,12 +98,13 @@ test("the Codex model list gives each model the tier the person's Codex config r
     await writeFile(tierFile,tier);const started=Date.now();
     const catalog=await fetch(gui.url+"/api/models").then(response=>response.json());
     const rows=Object.fromEntries((catalog.metadata?.models||[]).map(row=>[row.id,row]));
-    return {ms:Date.now()-started,models:catalog.models,tiers:Object.fromEntries(Object.entries(rows).map(([id,row])=>[id,row.defaultServiceTier??null])),picker:Object.fromEntries(Object.entries(rows).map(([id,row])=>[id,tiers.codexServiceTierPickerValue(null,row)]))};
+    return {ms:Date.now()-started,models:catalog.models,defaultModel:catalog.defaultModel,tiers:Object.fromEntries(Object.entries(rows).map(([id,row])=>[id,row.defaultServiceTier??null])),picker:Object.fromEntries(Object.entries(rows).map(([id,row])=>[id,tiers.codexServiceTierPickerValue(null,row)]))};
   };
   try{
     gui=await createGuiServer({port:await freePort(),mock:false,env});
     const fast=await catalogFor("fast");
     assert.deepEqual(fast.models,["gpt-6.1-sol","gpt-6-luna","gpt-6-mini"]);
+    assert.equal(fast.defaultModel,"gpt-6.1-sol","a new thread starts on the model Codex flags as its default");
     assert.deepEqual(fast.tiers,{"gpt-6.1-sol":"priority","gpt-6-luna":"priority","gpt-6-mini":null});
     assert.deepEqual(fast.picker,{"gpt-6.1-sol":"priority","gpt-6-luna":"priority","gpt-6-mini":"default"},"the Speed picker reads Fast on every model that has it");
     const flex=await catalogFor("flex");

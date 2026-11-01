@@ -1,7 +1,8 @@
 // An .aac attached to an Antigravity chat, which takes audio/aac as audio when its promptCapabilities take audio. Trebell's
 // composer sends only mp3, wav, m4a, ogg and flac as audio (App.jsx inputsFor), so an .aac goes as a file link, which Antigravity 1.2.1
 // cannot open in Trebell's attachments folder, and its sound never reached the model. Antigravity's own prompt now adds the audio after
-// the link, within the same 20 MiB a file and 50 MiB a message; every other harness gets the link as before.
+// the link while the message has room for it, as for any audio (48 MiB of base64 on the prompt's line); every other harness gets the
+// link as before.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
@@ -28,8 +29,9 @@ test("an .aac attached to an Antigravity chat goes as audio after its file link 
   for(const capabilities of [{...ADVERTISED,audio:false},{},undefined])assert.deepEqual(shape(await antigravityPromptParts(parts,capabilities)),[["text","What does it say?"],["resource_link","voice.aac"]]);
 });
 
-test("an .aac over 20 MiB stays the link alone, and one that is gone is refused by its name, as an mp3 is",async t=>{
-  const root=await folder(t),big=join(root,"big.aac");await writeFile(big,"");await truncate(big,20*MiB+1);
+test("an .aac with no room in the message stays the link alone, and one that is gone is refused by its name, as an mp3 is",async t=>{
+  // 37 MiB is over 49 MiB as base64, more than the prompt's line holds (an audio file could be 20 MiB before 2026-11-01).
+  const root=await folder(t),big=join(root,"big.aac");await writeFile(big,"");await truncate(big,37*MiB);
   const link=path=>contextualAgentPrompt([{type:"mention",name:"x.aac",path}]);
   assert.deepEqual(shape(await antigravityPromptParts(await link(big),ADVERTISED)),[["resource_link","x.aac"]]);
   await assert.rejects(antigravityPromptParts(await link(join(root,"1761500000000-ab12cd34-gone.aac")),ADVERTISED),error=>{

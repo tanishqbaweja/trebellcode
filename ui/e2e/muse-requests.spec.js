@@ -181,7 +181,8 @@ test("a retry Muse schedules shows on the turn's retry row while the turn goes o
     // Muse retries the turn's model request: the row says so while it waits, and reads recovered once the reply comes.
     await send(page,"Please retry once");
     const row=page.locator(".tool-event.kind-retry");
-    const retrying="Retrying: Muse Code is trying again in 2 s (attempt 2 of 3): 429 Too Many Requests";
+    // Re-pinned with the retry row's Trebell wording (src/retry-notice.mjs): what failed, then when Muse sends the request again.
+    const retrying="Retrying: 429 Too Many Requests. Muse Code sends the request again in 2 s, as try 2 of 3.";
     await expect(row.locator("summary strong")).toHaveText(retrying,{timeout:20_000});
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);await row.scrollIntoViewIfNeeded();
@@ -194,9 +195,9 @@ test("a retry Muse schedules shows on the turn's retry row while the turn goes o
     await expect(row.locator("summary strong")).toHaveText("Recovered after retrying");
     // A turn the subscription quota stopped: the usage limit and its reset in the person's own time, not Meta's 429.
     await send(page,"This one hits the quota");
-    const resets=new Date("2031-03-14T07:20:00Z").toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
-    const failed=page.locator(".tool-event.kind-error").filter({hasText:"Muse Code usage limit reached"});
-    await expect(failed.locator("summary strong")).toHaveText(`Muse Code usage limit reached. Send the message again after it resets at ${resets}.`,{timeout:20_000});
+    const resets=new Date("2031-03-14T07:20:00Z").toLocaleString(undefined,{weekday:"short",year:"numeric",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+    const failed=page.locator(".tool-event.kind-error").filter({hasText:"Muse Code is out of usage"});
+    await expect(failed.locator("summary strong")).toHaveText(`Muse Code is out of usage until its allowance resets on ${resets}. Try the message again after that.`,{timeout:20_000});
     await expect(failed).toHaveClass(/status-error/);
     await expect(page.locator(".conversation-history")).not.toContainText("API error 429");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await failed.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-usage-limit-${mode}-1280x800.png`})}

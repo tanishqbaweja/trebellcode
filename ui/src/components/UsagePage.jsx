@@ -69,7 +69,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       if(tried&&credits){
         const unused=tried.creditId?(credits.credits||[]).some(item=>item.id===tried.creditId&&item.status==="available"):tried.available>0&&Number(credits.availableCount)>=tried.available;
         next.unknownReset=null;
-        if(unused)next.failure=failureText("Could not use the reset credit",tried.error);else{next.failure="";next.notice="The reset credit was used."}
+        if(unused)next.failure=failureText("Could not spend the reset credit",tried.error);else{next.failure="";next.notice="The reset credit is spent."}
       }
       return next;
     });
@@ -187,7 +187,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       setCodex(current=>({...current,notice:labels[result?.outcome]||String(result?.outcome||"Reset request completed.")}));
     }catch(err){
       // Codex refused it (its answer is the reason), or no answer came: then the credit may have been used all the same.
-      if(err?.trebellRpcResponse)setCodex(current=>({...current,loading:false,failure:failureText("Could not use the reset credit",err)}));
+      if(err?.trebellRpcResponse)setCodex(current=>({...current,loading:false,failure:failureText("Could not spend the reset credit",err)}));
       else setCodex(current=>({...current,loading:false,failure:failureText("Could not tell whether the reset credit was used",err),unknownReset:{...tried,error:err}}));
     }
   }

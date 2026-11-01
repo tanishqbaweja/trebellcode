@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { codexAppServerEnvironment } from "../src/gui-server.mjs";
 import { remoteEnvironmentCommand } from "../src/environment-manager.mjs";
-import { buildRuntimeEnvironment, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
+import { buildRuntimeEnvironment, GROK_BUILD_ENVIRONMENT_KEYS, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
 
 const PROXY_NAMES=["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","NO_PROXY","http_proxy","https_proxy","all_proxy","no_proxy"];
 
@@ -121,6 +121,22 @@ test("a Claude Code on an SSH or WSL host gets no key, token or cloud-provider n
   assert.deepEqual([status.available,status.authenticated,status.authMethod],[false,false,"api-key"]);
   assert.equal(status.message,"Claude Code runs on an API key only on this machine: Trebell Code never sends a saved key to a WSL or SSH environment. In this environment, set Claude Code to Sign in and sign in there with claude auth login.");
   for(const command of sent)assert.equal(command.includes("ANTHROPIC_API_KEY"),false,command.slice(0,80));
+});
+
+// A Grok Build profile's processes get Grok Build's own settings from Trebell's environment (its home among them, where the runtime
+// manager also looks for who installed it), on this machine and from a WSL or SSH host's own shell, and never its sign-in or a key.
+test("Grok Build's processes get its home, sign-in service and service addresses, here and on a host, and no sign-in or key",()=>{
+  const env=parentWith({GROK_HOME:"/home/me/.grok-work",GROK_OIDC_ISSUER:"https://sso.example",GROK_MODELS_BASE_URL:"https://models.example/v1",GROK_CONFIG_PATH:"/home/me/grok-overlay.toml",
+    GROK_AUTH:"{}",GROK_AUTH_PROVIDER_COMMAND:"/usr/local/bin/sso-token",XAI_API_KEY:"xai-fixture",GROK_CODE_XAI_API_KEY:"xai-older-fixture",OPENAI_API_KEY:"sk-fixture"});
+  const manager=new AgentRuntimeManager({state:{settings:()=>({})},platform:"linux",env});
+  const grok=manager.childEnv({id:"grok-default",kind:"grok"});
+  assert.deepEqual([grok.GROK_HOME,grok.GROK_OIDC_ISSUER,grok.GROK_MODELS_BASE_URL,grok.GROK_CONFIG_PATH],["/home/me/.grok-work","https://sso.example","https://models.example/v1","/home/me/grok-overlay.toml"]);
+  assert.equal(grok.JAVA_HOME,TOOLCHAIN.JAVA_HOME);assert.equal(grok.HTTPS_PROXY,PROXY.HTTPS_PROXY);
+  for(const name of ["GROK_AUTH","GROK_AUTH_PROVIDER_COMMAND","XAI_API_KEY","GROK_CODE_XAI_API_KEY","OPENAI_API_KEY",...Object.keys(SECRETS)])assert.equal(grok[name],undefined,name);
+  // On a host each name is taken from the host's own shell, as NAME="${NAME-}"; a sign-in or key name never is.
+  const command=remoteEnvironmentCommand("grok agent stdio",manager.childEnvironmentKeys({id:"grok-default",kind:"grok"}));
+  for(const name of GROK_BUILD_ENVIRONMENT_KEYS)assert.ok(command.includes(name+'="$'+"{"+name+'-}"'),name);
+  for(const name of ["GROK_AUTH","GROK_AUTH_PROVIDER_COMMAND","XAI_API_KEY","GROK_CODE_XAI_API_KEY","OPENAI_API_KEY"])assert.equal(command.includes(name+"="),false,name);
 });
 
 // The login shell's __MISE_DIFF (login-shell-environment.mjs) can encode the values of mise's [env], secrets among them: a harness

@@ -16,7 +16,7 @@ import { api } from "./api.js";
 // "top" loads the page above the first message shown; "gap" the newest history's next older page, which sits below the gap
 // under a detached find hit (with nothing detached the two are the same page). Above a detached hit, pages are turn pages.
 export function loadEarlierMessages(deps,target="top"){
-  const {activeThreadRef,activeTurnId,checkpointByTurn,conversationScrollRef,followConversationEndRef,historyLoadRef,historyPage,historyTurnPageLimit,loadItemHistoryPage,messages,pendingHistoryPrependRef,rpc,rpcStatus,setHistoryAnchorItemId,setHistoryPage,setMessages,setTurnActivity,setTurnInfo,setTurnOrder,turnOutcomePagesRef,turnOutcomesForItemPage}=deps;
+  const {activeThreadRef,activeTurnId,checkpointByTurn,conversationScrollRef,followConversationEndRef,goalObjective=null,historyLoadRef,historyPage,historyTurnPageLimit,loadItemHistoryPage,messages,pendingHistoryPrependRef,rpc,rpcStatus,setHistoryAnchorItemId,setHistoryPage,setMessages,setTurnActivity,setTurnInfo,setTurnOrder,turnOutcomePagesRef,turnOutcomesForItemPage}=deps;
   const threadId=activeThreadRef.current?.id;
   if(!rpc||rpcStatus!=="connected"||!threadId||historyPage.threadId!==threadId||historyPage.loading)return Promise.resolve();
   const detached=historyPage.detached||null,above=target==="top"&&Boolean(detached);
@@ -35,7 +35,7 @@ export function loadEarlierMessages(deps,target="top"){
       const outcomeTurns=itemPaging?await turnOutcomesForItemPage(rpc,threadId,turnOutcomePagesRef.current,page?.data):page?.data||[];
       if(activeThreadRef.current?.id!==threadId)return;
       const data=[...(page?.data||[])].reverse(),nextCursor=page?.nextCursor||null;
-      const earlier=itemPaging?historyFromItemEntries(data,checkpointByTurn):historyFromTurns(data,checkpointByTurn);
+      const earlier=itemPaging?historyFromItemEntries(data,checkpointByTurn,goalObjective):historyFromTurns(data,checkpointByTurn,goalObjective);
       const pageTurnIds=[...new Set(data.map(entry=>itemPaging?entry?.turnId:entry?.id).filter(Boolean).map(String))];
       // The view is measured when the page lands, not when it was asked for (the person may have scrolled or sent meanwhile); a
       // view that follows the end keeps following it. A view whose rows all fit has no end to follow: its rows stay put.
@@ -98,7 +98,7 @@ async function placeFoundHistory(deps,threadId,occurrence,found,stale){
   setHistoryPage(current=>current.threadId===threadId?{...current,detached:{ids:found.map(message=>String(message.id)),turnIds:turnId?[turnId]:[],cursor:earlierCursor,missing},error:null}:current);
 }
 export async function focusThreadFindOccurrence(deps,occurrence,expectedSeq=null,afterPage=false){
-  const {activeThreadRef,activeTurnId,checkpointByTurn,conversationScrollRef,focusThreadFindLatest,followConversationEndRef,historyItemPageLimit,historyItemScanPages,historyLoadRef,historyPage,messages,rpc,rpcStatus,runtimeCapabilities,setHistoryPage,setThreadFind,setTurnActivity,setTurnInfo,threadFindSeqRef}=deps;
+  const {activeThreadRef,activeTurnId,checkpointByTurn,conversationScrollRef,focusThreadFindLatest,followConversationEndRef,goalObjective=null,historyItemPageLimit,historyItemScanPages,historyLoadRef,historyPage,messages,rpc,rpcStatus,runtimeCapabilities,setHistoryPage,setThreadFind,setTurnActivity,setTurnInfo,threadFindSeqRef}=deps;
   if(!occurrence||!runtimeCapabilities.threadSearch||!rpc||rpcStatus!=="connected")return;
   const threadId=activeThreadRef.current?.id;if(!threadId)return;
   const itemId=String(occurrence.itemId||"");
@@ -118,7 +118,7 @@ export async function focusThreadFindOccurrence(deps,occurrence,expectedSeq=null
           let cursor=null;
           for(let pageIndex=0;pageIndex<historyItemScanPages;pageIndex++){
             const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:historyItemPageLimit,sortDirection:"asc"});
-            found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));scanned.push(...(page?.data||[]));scanEnded=!page?.nextCursor;
+            found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn,goalObjective));scanned.push(...(page?.data||[]));scanEnded=!page?.nextCursor;
             if(found.some(message=>String(message.id)===itemId)||!page?.nextCursor)break;
             cursor=page.nextCursor;
           }
@@ -126,7 +126,7 @@ export async function focusThreadFindOccurrence(deps,occurrence,expectedSeq=null
       }
       if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
         const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
-        found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));foundTurns=page?.data||[];
+        found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn,goalObjective));foundTurns=page?.data||[];
         setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
       }
       if(stale())return;

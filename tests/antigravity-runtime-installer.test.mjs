@@ -191,8 +191,8 @@ test("a downloaded runtime whose PyInstaller loader fails says the loader's own 
 test("a drive without room for the download and what it unpacks to is refused before the download is read, naming how much is needed",async t=>{
   const fx=await home(t);
   const {error,download,requests}=await install(fx,{freeBytes:()=>100*MB+12345});
-  // A download of under 1 MB: 1 MB for it, 1 MB to unpack it, and the 256 MB kept free.
-  assert.equal(error?.message,`Google Antigravity ${VERSION} needs 258 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and at least as much again once unpacked, and 256 MB to spare), and 100 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+  // A download of under 1 MB: 1 MB for it, 1 MB to unpack it, and the 512 MB kept free (re-pinned from 256: Trebell's own floor).
+  assert.equal(error?.message,`Google Antigravity ${VERSION} needs 514 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and at least as much again once unpacked, and 512 MB to spare), and 100 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
   assert.deepEqual(requests,[ACP_REGISTRY_URL,ARCHIVE]);
   assert.equal(download.read,false,"the download's body was not read");assert.equal(download.cancelled,true,"the download was cancelled");
   assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
@@ -207,15 +207,15 @@ test("a download that unpacks to more than the drive has room for is refused onc
   // has 200 MB once the download is in.
   let reads=0;
   const short=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>reads++===0?64*1024*MB:200*MB+4321});
-  assert.equal(short.error?.message,`Google Antigravity ${VERSION} needs 262 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 256 MB to spare), and 200 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+  assert.equal(short.error?.message,`Google Antigravity ${VERSION} needs 518 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 512 MB to spare), and 200 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
   assert.deepEqual(extracted,[],"no file was written: the sizes come from the archive's central directory");
   assert.equal(short.launches.length,0);assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
-  // 259 MB free passes the estimate before the download (twice its 1 MB and 256 MB), and the whole amount is still named after it.
-  const close=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>259*MB});
-  assert.equal(close.error?.message,`Google Antigravity ${VERSION} needs 262 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 256 MB to spare), and 259 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+  // 515 MB free passes the estimate before the download (twice its 1 MB and 512 MB), and the whole amount is still named after it.
+  const close=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>515*MB});
+  assert.equal(close.error?.message,`Google Antigravity ${VERSION} needs 518 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 512 MB to spare), and 515 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
   assert.deepEqual(extracted,[]);
   // With room for it all, it installs.
-  const room=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>262*MB});
+  const room=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>518*MB});
   assert.equal(room.error,null,String(room.error?.message));assert.equal(extracted.length,1);
   assert.equal((await stat(join(fx.current,"data.bin"))).size,5*MB-30);
 });
@@ -243,7 +243,7 @@ test("a drive that runs short while the download unpacks is refused before the f
   const fx=await home(t);
   // Room for the download, then 200 MB once unpacking starts.
   const {error,launches}=await install(fx,{freeBytes:path=>basename(path)==="extracted"?200*MB:64*1024*MB});
-  assert.equal(error?.message,`Google Antigravity ${VERSION} needs 257 MB free on the drive that holds ${fx.runtimes} to unpack agy_acp_server.exe (1 MB for it, and 256 MB to spare), and 200 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+  assert.equal(error?.message,`Google Antigravity ${VERSION} needs 513 MB free on the drive that holds ${fx.runtimes} to unpack agy_acp_server.exe (1 MB for it, and 512 MB to spare), and 200 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
   assert.equal(launches.length,0);assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
   // A drive that fills anyway says so in words, not as ENOSPC.
   const full=await install(fx,{extractImpl:async()=>{throw Object.assign(new Error("ENOSPC: no space left on device, write"),{code:"ENOSPC"})}});

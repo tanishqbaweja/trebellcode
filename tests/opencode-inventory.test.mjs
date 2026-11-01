@@ -5,7 +5,8 @@ import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { fakeOpenCode1Catalog, fakeOpenCode2Catalog, openCodeModels as models } from "./fixtures/fake-opencode-catalog-servers.mjs";
 
 // OpenCode's command, skill and agent lists. OpenCode lists MCP prompts among its commands, which can take long (an MCP server that is
-// slow to start): a catalog read waits for each list at most ten seconds, and a session's start waits for none but the agents.
+// slow to start): a catalog read waits for each list at most twelve seconds (COMMAND_LIST_TIMEOUT_MS), and a session's start waits
+// for none but the agents.
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function eventually(check,{timeoutMs=5000,message="condition was not met in time"}={}){
   const startedAt=Date.now();
@@ -14,7 +15,7 @@ async function eventually(check,{timeoutMs=5000,message="condition was not met i
 // Fails a wait that the code under test would never end.
 const within=(promise,ms,what)=>Promise.race([promise,delay(ms).then(()=>{throw new Error(`${what} took longer than ${ms} ms`)})]);
 
-test("an OpenCode command list that does not answer holds discovery at most ten seconds and is marked pending, for both server generations",async()=>{
+test("an OpenCode command list that does not answer holds discovery at most twelve seconds and is marked pending, for both server generations",async()=>{
   const never=()=>{};
   const v1=await fakeOpenCode1Catalog({routes:{"GET /command":never}}),v2=await fakeOpenCode2Catalog({routes:{"GET /api/command":never}});
   try{
@@ -22,8 +23,10 @@ test("an OpenCode command list that does not answer holds discovery at most ten 
     const [first,second]=await within(Promise.all([
       discoverOpenCodeModelCatalog({cwd:"/repo",serverUrl:v1.url,env:{},readText:async()=>null}),
       discoverOpenCode2ModelCatalog({cwd:"/repo",serverUrl:v2.url,env:{}}),
-    ]),20_000,"discovery with a command list that never answers");
-    const elapsed=Date.now()-startedAt;assert.ok(elapsed>=9_000&&elapsed<15_000,`discovery took ${elapsed} ms`);
+    ]),25_000,"discovery with a command list that never answers");
+    // Re-pinned note: the list's wait is Trebell's own 12 s now, above 2.1.2's 10 s (the 8 s before it was shorter than 2.1.2's).
+    const elapsed=Date.now()-startedAt;
+    assert.ok(elapsed>=11_500&&elapsed<17_000,`discovery took ${elapsed} ms`);
     assert.deepEqual([first.pending,first.inventory.commands,first.inventory.skills.map(item=>item.name),first.inventory.agents.map(item=>item.name)],[["commands"],[],["pdf"],["build"]]);
     assert.deepEqual([second.pending,second.inventory.commands,second.models.length],[["commands"],[],2]);
   }finally{await v1.close();await v2.close()}

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
+import { GROK_MODELS_SIGNED_IN } from "../../tests/fixtures/grok-cli-output.mjs";
 
 // What Settings offers for a newer release of each harness, read as the server reads it: the harness list and the installs are
 // AgentRuntimeManager's own (its snapshot and install), run over folders laid out as each installer leaves them, with a stand-in
@@ -118,7 +119,7 @@ test("Update shows only for a newer release Trebell installs itself: npm's Claud
         return answered(args[0]==="--version"?"11.0.0\n":args[0]==="view"?"\"2.1.320\"\n":"changed 1 package in 12s\n");
       }
       if(command===claude)return answered(args[0]==="--version"?claudeVersion+" (Claude Code)\n":JSON.stringify({loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty"}));
-      if(command===grok)return answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41 (4220f3b224a6)\n");
+      if(command===grok)return answered(args[0]==="models"?GROK_MODELS_SIGNED_IN:"grok 1.0.41 (4220f3b224a6)\n");
       if(command===codex)return answered("codex-cli 0.164.0\n");
       return missing(command);
     }});
@@ -207,7 +208,7 @@ test("a harness row with a note, a refused switch or its key fields under it kee
     let cursorAccount="{}";
     const fx=machine(root,{path:folder,instances:[{id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true,binaryPath:cursor,environment:{}},{id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,auth:"api-key",environment:{}}],latest:{"@anthropic-ai/claude-code":"2.1.320","@xai-official/grok":"1.0.70"},answer:(command,args)=>{
       if(/^claude(\.exe)?$/i.test(basename(command)))return args[0]==="--version"?answered("2.1.300 (Claude Code)\n"):{ok:false,code:1,error:null,stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"}),stderr:""};
-      if(command===grok)return answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41 (4220f3b224a6)\n");
+      if(command===grok)return answered(args[0]==="models"?GROK_MODELS_SIGNED_IN:"grok 1.0.41 (4220f3b224a6)\n");
       if(command===cursor)return args[0]==="--version"?answered("2026.10.22-5f1a2b3\n"):args[0]==="about"?answered(cursorAccount):missing(command);
       return missing(command);
     }});
@@ -283,7 +284,7 @@ test("each command Trebell tells a person to run, in a harness's note, its statu
     const managed=machine(notesRoot,{path:[pnpm,bun].join(";"),latest:{"@anthropic-ai/claude-code":"2.1.320","@xai-official/grok":"1.0.70"},answer:(command,args)=>{
       const name=basename(command).toLowerCase();
       if(name.startsWith("claude"))return args[0]==="--version"?answered("2.1.300 (Claude Code)\n"):claudeSignedIn?answered(JSON.stringify({loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty"})):{ok:false,code:1,error:null,stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"}),stderr:""};
-      if(name.startsWith("grok"))return answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41 (4220f3b224a6)\n");
+      if(name.startsWith("grok"))return answered(args[0]==="models"?GROK_MODELS_SIGNED_IN:"grok 1.0.41 (4220f3b224a6)\n");
       return missing(command);
     }});
     await serve(page,managed.manager);
@@ -305,7 +306,7 @@ test("each command Trebell tells a person to run, in a harness's note, its statu
     const claudeRow=harnessRow(page,"Claude Code"),refused=claudeRow.getByRole("alert"),status=claudeRow.locator("button").first().locator("small");
     await page.setViewportSize({width:1280,height:900});await switchMode(page,"dark");
     await claudeRow.locator("button").first().click();
-    await expect(refused).toHaveText("Could not switch to Claude Code: Claude Code is signed out. Sign in with claude auth login and try again.");
+    await expect(refused).toHaveText("Could not switch to Claude Code: Claude Code has no account signed in. Run claude auth login, then try again.");
     for(const width of [1280,900,700])for(const mode of ["dark","light"]){
       await page.setViewportSize({width,height:900});await switchMode(page,mode);
       seen.push({where:`Claude Code's refused switch at ${width} in ${mode}`,command:"claude auth login",...await commandShown(refused,"claude auth login",{within:".agent-runtime-option"})});
@@ -314,7 +315,7 @@ test("each command Trebell tells a person to run, in a harness's note, its statu
     }
     await page.setViewportSize({width:1280,height:900});await switchMode(page,"dark");
     await page.getByRole("button",{name:"Refresh",exact:true}).click();
-    await expect(status).toHaveText("Claude Code is signed out. Sign in with claude auth login and try again.");
+    await expect(status).toHaveText("Claude Code has no account signed in. Run claude auth login, then try again.");
     for(const width of [1280,900,700])for(const mode of ["dark","light"]){
       await page.setViewportSize({width,height:900});await switchMode(page,mode);
       seen.push({where:`Claude Code's status line at ${width} in ${mode}`,command:"claude auth login",...await commandShown(status,"claude auth login",{within:".agent-runtime-option"})});

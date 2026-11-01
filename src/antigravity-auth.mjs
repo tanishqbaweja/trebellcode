@@ -21,9 +21,10 @@ export const ANTIGRAVITY_API_KEY_METHOD="gemini-api-key";
 // Antigravity's own logins as its initialize lists them, in the order Settings' Sign in picks one: Google's, then Gemini Enterprise's
 // and Agent Platform's, then any other the agent runs itself.
 const OWN_SIGN_IN_METHODS=["oauth-personal","oauth-business","agent-platform"];
-// How long a sign-in may take: the person finishes it in the browser, and Antigravity's bundled
-// Python has no IPv4 fallback, so where IPv6 is broken each request to Google waits about two minutes before it fails.
-export const ANTIGRAVITY_SIGN_IN_TIMEOUT_MS=300_000;
+// How long a sign-in may take: the person finishes it in the browser, and Antigravity's bundled Python has no IPv4 fallback, so
+// where IPv6 is broken each request to Google waits about two minutes before it fails. Five minutes: two such waits and a minute
+// for the person.
+export const ANTIGRAVITY_SIGN_IN_TIMEOUT_MS=5*60_000;
 export const ANTIGRAVITY_SIGN_IN_NEEDED="Antigravity is not signed in. Press Sign in to sign in with Antigravity's own sign-in, or set it to run on a Google Gemini API key.";
 export const ANTIGRAVITY_SIGNED_IN="Signed in with Antigravity's own sign-in.";
 export const ANTIGRAVITY_KEY_READY="Runs on the Google Gemini API key.";
@@ -42,22 +43,62 @@ export async function antigravitySignInState({env=process.env}={}){
   return {method,token,signedIn:Boolean(method&&method!==ANTIGRAVITY_API_KEY_METHOD&&token)};
 }
 
-// The Google credentials, projects and homes Antigravity reads from its environment, and its own AGY_ACP_
-// switches: none comes from Trebell's environment, a name a profile approves or a profile's variable, whatever its case (Windows reads
-// names so). The launch gets Trebell's home for it, file storage for its logins, and, for a profile set to an API key, the Gemini
-// key as GEMINI_API_KEY, which only the key method reads (GOOGLE_API_KEY would take its place, as Google's client prefers it).
-const GOOGLE_NAMES=new Set(["GEMINI_API_KEY","GOOGLE_API_KEY","GOOGLE_APPLICATION_CREDENTIALS","GOOGLE_CLOUD_PROJECT","GOOGLE_CLOUD_LOCATION","GOOGLE_CLOUD_QUOTA_PROJECT","GOOGLE_GENAI_USE_VERTEXAI","GCLOUD_PROJECT","CLOUDSDK_CORE_PROJECT","GEMINI_HOME"]);
-const googleName=name=>{const upper=String(name).toUpperCase();return GOOGLE_NAMES.has(upper)||upper.startsWith("AGY_ACP_")};
-export function antigravityEnvironment(env={},{home,apiKey=null}={}){
-  const kept={};for(const [name,value] of Object.entries(env||{}))if(!googleName(name))kept[name]=value;
-  return {...kept,GEMINI_HOME:home,AGY_ACP_FORCE_FILE_STORAGE:"1",...(apiKey?{GEMINI_API_KEY:apiKey}:{})};
+// Variables Google's tools read by themselves. Through them Antigravity would sign in otherwise than the person chose in Settings,
+// run on someone's Google Cloud project or keep its logins outside its home in Trebell, so none reaches an Antigravity launch from
+// Trebell's environment, a name a profile approves or a variable a profile sets.
+const NOT_FOR_ANTIGRAVITY={
+  // A key, or the credential file of Application Default Credentials.
+  signIn:["GEMINI_API_KEY","GOOGLE_API_KEY","GOOGLE_APPLICATION_CREDENTIALS"],
+  // The Google Cloud project (by its current, older and gcloud names), the project billed for quota, the region, and the Gen AI
+  // client's switch to Vertex AI.
+  cloud:["GOOGLE_CLOUD_PROJECT","GCLOUD_PROJECT","CLOUDSDK_CORE_PROJECT","GOOGLE_CLOUD_QUOTA_PROJECT","GOOGLE_CLOUD_LOCATION","GOOGLE_GENAI_USE_VERTEXAI"],
+  // The folder it keeps its settings and logins in, such as the person's own ~/.gemini.
+  home:["GEMINI_HOME"],
+};
+const notForAntigravity=new Set(Object.values(NOT_FOR_ANTIGRAVITY).flat());
+// Antigravity's own switches (AGY_ACP_ENABLE_OAUTH, for one) all start so: none is inherited, and Trebell sets the one it needs.
+const ANTIGRAVITY_SWITCHES="AGY_ACP_";
+
+// Whether Antigravity may inherit a variable. Windows reads a name in any case as the same variable (Gemini_Api_Key is
+// GEMINI_API_KEY there), so the name is compared upper-cased on every platform.
+function antigravityInherits(name){
+  const asWindowsReadsIt=name.toUpperCase();
+  return !notForAntigravity.has(asWindowsReadsIt)&&!asWindowsReadsIt.startsWith(ANTIGRAVITY_SWITCHES);
 }
 
-// The person's home as Antigravity's Python expands ~: USERPROFILE, else HOMEDRIVE and HOMEPATH, on
-// Windows, and HOME elsewhere.
-function personHome(env,platform){
-  if(platform==="win32")return env.USERPROFILE||(env.HOMEDRIVE&&env.HOMEPATH?env.HOMEDRIVE+env.HOMEPATH:homedir());
-  return env.HOME||homedir();
+// The environment an Antigravity process starts with: env's variables Antigravity may inherit, values and order as they were, then
+// its home (Trebell's for it, or the installer's throwaway one), file storage for its logins (never the system keychain), and, for a
+// profile set to an API key, the Gemini key under the one name its key method reads (not GOOGLE_API_KEY, which Google's client would
+// take first). A new object: env is left as it was.
+export function antigravityEnvironment(env={},{home,apiKey=null}={}){
+  const inherited=Object.entries(env??{}).filter(([name])=>antigravityInherits(name));
+  const launch=[["GEMINI_HOME",home],["AGY_ACP_FORCE_FILE_STORAGE","1"]];
+  if(apiKey)launch.push(["GEMINI_API_KEY",apiKey]);
+  return Object.fromEntries([...inherited,...launch]);
+}
+
+// Where Antigravity's bundled Python finds "~" (os.path.expanduser), as groups of variables tried in turn, each group's values
+// joined: on Windows USERPROFILE, then the drive in HOMEDRIVE followed by the path in HOMEPATH; on every other platform HOME.
+const TILDE_SOURCES={windows:[["USERPROFILE"],["HOMEDRIVE","HOMEPATH"]],unix:[["HOME"]]};
+
+// A variable's value, "" when it is unset or empty. Windows reads a name in any case, so there another spelling of it counts,
+// after the name as written.
+function variableValue(env,name,platform){
+  if(!env)return "";
+  if(env[name])return String(env[name]);
+  if(platform!=="win32")return "";
+  const spelled=Object.keys(env).find(key=>key!==name&&key.toUpperCase()===name&&env[key]);
+  return spelled?String(env[spelled]):"";
+}
+
+// The folder "~" stands for when Antigravity expands it: the first group of TILDE_SOURCES whose variables all have a value. Where
+// none has one, Python would leave "~" as it is, and the operating system's home for the person stands in.
+export function homeForTilde(env,platform=process.platform){
+  for(const group of TILDE_SOURCES[platform==="win32"?"windows":"unix"]){
+    const values=group.map(name=>variableValue(env,name,platform));
+    if(values.every(value=>value!==""))return values.join("");
+  }
+  return homedir();
 }
 const samePath=(a,b,platform)=>platform==="win32"?resolve(a).toLowerCase()===resolve(b).toLowerCase():resolve(a)===resolve(b);
 // The person's global skills (~/.gemini/config/skills and ~/.gemini/antigravity-cli/skills) through a link each in Antigravity's
@@ -92,29 +133,95 @@ export async function prepareAntigravityHome({env=process.env,platform=process.p
     await writeFile(temporary,JSON.stringify({...current,auth:type?{...rest,type}:rest},null,2),{encoding:"utf8",mode:0o600});
     await rename(temporary,settingsPath);
   }
-  await linkPersonSkills(home,personHome(env,platform),platform);
+  await linkPersonSkills(home,homeForTilde(env,platform),platform);
   return {home,settingsPath};
 }
 
-// An Antigravity process that ended because this machine gives it no IPv6 sockets, as its log says (AF_INET6 or
-// enforce_kernel_ipv6_support): the failure that says so, or null.
-const IPV6_EXIT=/\b(?:AF_INET6|enforce_kernel_ipv6_support)\b/;
-export function antigravityIpv6Failure(error){
-  const said=[error?.message,error?.cause?.message].filter(Boolean).join("\n");
-  return /ACP runtime exited\b/.test(said)&&IPV6_EXIT.test(said)?Object.assign(new Error(ANTIGRAVITY_IPV6_MESSAGE,{cause:error}),{code:"ANTIGRAVITY_IPV6"}):null;
+// The words of a text: its runs of ASCII letters, digits and underscores, which is how a log or an error names a constant, a
+// setting or a reason code.
+const wordsOf=text=>String(text??"").split(/[^A-Za-z0-9_]+/).filter(Boolean);
+
+// How a process exit is recorded: the ACP client ends every request of an agent whose process exited with a failure that carries
+// processExit (its code, signal and log excerpt; acp-client.mjs). Callers may wrap that failure (cause), so the wrappers are
+// followed, a few at most.
+const WRAPPERS_FOLLOWED=5;
+function processExitBehind(failure){
+  let link=failure;
+  for(let hop=0;hop<=WRAPPERS_FOLLOWED&&link&&typeof link==="object";hop++){
+    if(link.processExit)return link.processExit;
+    link=link.cause;
+  }
+  return null;
 }
 
-// What a sign-in that failed at step (initialize, authenticate or session) says, in plain words, with the
-// agent's own where they help.
-function signInFailure(error,step){
-  const ipv6=antigravityIpv6Failure(error);if(ipv6)return ipv6;
-  const said=redactSecretText(String(error?.message||error||""),{redactHomes:true,trim:true}),detail=said||"Antigravity gave no reason",code=error?.code;
-  const subscription=/\bSUBSCRIPTION_REQUIRED\b/.test(said)||/\bSUBSCRIPTION_REQUIRED\b/.test(JSON.stringify(error?.data??""));
-  const message=subscription?"Google refused Antigravity for this account, saying it needs a subscription that includes Antigravity (SUBSCRIPTION_REQUIRED)."
-    :/^(?:authenticate|session\/new) timed out$/.test(said)?UNREACHABLE
-    :step==="session"&&code===-32603?`Antigravity signed in but could not start a session or load its models: ${detail}`
-    :`Antigravity could not sign in: ${detail}`;
-  return Object.assign(new Error(message,{cause:error}),code!=null?{code}:{});
+// Words Antigravity's log holds when the machine gives it no IPv6 socket: Python's socket error names the address family it
+// could not open (AF_INET6, after "Address family not supported by protocol"), and gRPC names its enforce_kernel_ipv6_support
+// setting.
+const NO_IPV6_LOG_WORDS=new Set(["AF_INET6","enforce_kernel_ipv6_support"]);
+
+// A new error for the person to read, with the failure behind it as its cause and, when there is one, a code.
+function failureExplained(sentence,failure,code){
+  const explained=new Error(sentence,{cause:failure});
+  if(code!=null)explained.code=code;
+  return explained;
+}
+
+// An Antigravity process that exited because this machine gives it no IPv6 sockets, as its log says: a failure that explains it
+// (code ANTIGRAVITY_IPV6, the failure given as its cause), or null for any other failure.
+export function antigravityIpv6Failure(error){
+  const exit=processExitBehind(error);
+  if(!exit||!wordsOf(exit.excerpt).some(word=>NO_IPV6_LOG_WORDS.has(word)))return null;
+  return failureExplained(ANTIGRAVITY_IPV6_MESSAGE,error,"ANTIGRAVITY_IPV6");
+}
+
+// Google's reason code for an account whose plan does not include Antigravity.
+const NO_SUBSCRIPTION_CODE="SUBSCRIPTION_REQUIRED";
+// The request through which a sign-in step waits on Google. The ACP client ends one with no answer in time as "<method> timed out".
+const WAITS_ON_GOOGLE={authenticate:"authenticate",session:"session/new"};
+// JSON-RPC 2.0's code for an error inside the server. Antigravity answers the session it opens after signing in with it when the
+// account's session or model list cannot be set up.
+const JSON_RPC_INTERNAL_ERROR=-32603;
+
+const messageOf=failure=>typeof failure==="string"?failure:String(failure?.message??"");
+// Every string of a JSON-RPC error's data, its keys too, however it nests: the data came as JSON, and JSON.stringify's replacer
+// is shown each key and value of it once.
+function dataStrings(data){
+  const strings=[];
+  try{JSON.stringify(data??null,(key,value)=>{if(key)strings.push(key);if(typeof value==="string")strings.push(value);return value})}catch{}
+  return strings;
+}
+
+// What stopped a sign-in that did not end for want of IPv6, by name, from the failure and the step of signInAntigravity that was
+// running (start, initialize, authenticate or session). The first of these that fits: Google's code for a plan without
+// Antigravity, in the message or the error's data; no answer in time to the request the step waits on Google through; an error
+// inside Antigravity as it opens the session after the sign-in; else a refusal.
+function signInTrouble(failure,step){
+  const said=messageOf(failure);
+  if(new Set([said,...dataStrings(failure?.data)].flatMap(wordsOf)).has(NO_SUBSCRIPTION_CODE))return "no-subscription";
+  const waitedOn=WAITS_ON_GOOGLE[step];
+  if(waitedOn&&said.trim()===`${waitedOn} timed out`)return "no-answer";
+  if(step==="session"&&failure?.code===JSON_RPC_INTERNAL_ERROR)return "no-session";
+  return "refused";
+}
+
+// A sentence followed by the agent's own words, or by the fact that it gave none.
+const followedBy=(sentence,words)=>words?`${sentence}: ${words}`:`${sentence}, and it gave no reason.`;
+// What the person reads for each, given the agent's words (agentWords).
+const SIGN_IN_SENTENCES={
+  "no-subscription":()=>`Google says this account's plan does not include Antigravity (${NO_SUBSCRIPTION_CODE}). Sign in with an account whose plan includes it, or set Antigravity to run on a Google Gemini API key.`,
+  "no-answer":()=>UNREACHABLE,
+  "no-session":words=>followedBy("The sign-in went through, but Antigravity failed to open a session and read the account's models",words),
+  refused:words=>followedBy("Antigravity could not sign in",words),
+};
+
+// The agent's own words, for the person to read: its message with secrets and home folders hidden, both ends trimmed.
+const agentWords=failure=>redactSecretText(messageOf(failure),{redactHomes:true,trim:true});
+
+// Why Antigravity's own sign-in failed, as the person reads it in Settings: the IPv6 explanation when that is why, else the
+// sentence for the trouble signInTrouble names. The new error keeps the failure as its cause and its JSON-RPC code.
+function explainSignInFailure(failure,step){
+  return antigravityIpv6Failure(failure)
+    ??failureExplained(SIGN_IN_SENTENCES[signInTrouble(failure,step)](agentWords(failure)),failure,failure?.code);
 }
 
 // The login Settings' Sign in runs: the one asked for when the agent lists it, else Antigravity's own logins in their order, else
@@ -147,7 +254,7 @@ export async function signInAntigravity({command,args=[],processCwd=null,env={},
     step="session";const opened=await acpProbeSession(client,initialized,{cwd:folder,timeoutMs:left()});
     if(!opened.sessionId)throw new Error("Antigravity did not open a session after it signed in");
     return {setup:opened.setup,methodId:method.id,methodName:method.name||method.id};
-  }catch(error){throw signInFailure(error,step)}
+  }catch(error){throw explainSignInFailure(error,step)}
   finally{
     await client.stop().catch(()=>{});
     await rm(folder,{recursive:true,force:true,maxRetries:10,retryDelay:200}).catch(()=>{});

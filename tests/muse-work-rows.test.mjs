@@ -42,10 +42,10 @@ test("a harness's call that has not started reads pending, and one its turn ende
 });
 
 test("a row of work that runs on past its turn stays as it is at the turn's end in the open window, and the thread's history settles it as before",()=>{
-  const workflow=mapped({toolCallId:"wf-1",title:"Workflow alpha-beta",kind:"other",status:"in_progress",runsPastTurn:true});
+  const workflow=mapped({toolCallId:"flow-alpha-beta",title:"Workflow alpha-beta",kind:"other",status:"in_progress",runsPastTurn:true});
   assert.equal(workflow.runsPastTurn,true);
   for(const flag of [undefined,false,"yes"])assert.equal("runsPastTurn" in mapped({toolCallId:"t",title:"x",kind:"other",status:"in_progress",runsPastTurn:flag}),false);
-  const running=activityRow(workflow,{turnId:"turn-1"}),scheduled=live({toolCallId:"wf-1:agent:alpha",title:"Workflow alpha-beta · alpha",kind:"other",status:"pending",runsPastTurn:true});
+  const running=activityRow(workflow,{turnId:"turn-1"}),scheduled=live({toolCallId:"flow-alpha-beta:agent:alpha",title:"Workflow alpha-beta · alpha",kind:"other",status:"pending",runsPastTurn:true});
   for(const [row,ended] of [[running,"done"],[scheduled,"notRun"]]){
     assert.equal(settledRow(row,{keepPast:true}),row,"left for the work's own rows");
     assert.equal(settledRow(row).status,ended);
@@ -61,7 +61,8 @@ async function workSession(){
   return {...fixture,seen};
 }
 const rowsOf=(seen,id)=>seen.filter(entry=>entry.update.toolCallId===id).map(entry=>entry.update);
-const workflowItem=(turnId,revision,children,fields={})=>({itemId:"wf-1",kind:"workflow",revision,status:"inProgress",turnId,entryId:"alpha-beta",children,...fields});
+// Muse Code's workflow item, one item id across its revisions, with the entry Trebell's recorded workflow names.
+const flowRevision=(turnId,revision,agents,extra={})=>({kind:"workflow",itemId:"flow-alpha-beta",turnId,revision,status:"inProgress",entryId:"alpha-beta",children:agents,...extra});
 
 test("Muse Code's workflow, its agents and a command it sends to the background say on each of their rows, to the one that settles them, that they run on past their turn; its other steps do not",async()=>{
   const fixture=await workSession(),{session,seen}=fixture,sid=session.sessionId;
@@ -74,24 +75,24 @@ test("Muse Code's workflow, its agents and a command it sends to the background 
   fixture.muse.write(itemFrame("item/started",sid,call("dev",1,"inProgress")));
   fixture.muse.write(itemFrame("item/updated",sid,call("dev",2,"inProgress",{background:true,backgroundInitiator:"timeout"})));
   fixture.muse.write(itemFrame("item/completed",sid,call("dev",3,"completed",{background:true,backgroundInitiator:"timeout",visibleOutput:"Running in the background."})));
-  fixture.muse.write(itemFrame("item/started",sid,workflowItem(turnId,1,[])));
-  await until(()=>rowsOf(seen,"wf-1").length===1,"the workflow's row");
+  fixture.muse.write(itemFrame("item/started",sid,flowRevision(turnId,1,[])));
+  await until(()=>rowsOf(seen,"flow-alpha-beta").length===1,"the workflow's row");
   fixture.muse.notify("turn/completed",{sessionId:sid,viewCursor:"v",terminal:"completed",turnId});
   assert.equal((await running).stopReason,"end_turn");
   // Past the turn's end: the agent is scheduled, then the workflow and the command in the background end.
-  fixture.muse.write(itemFrame("item/updated",sid,workflowItem(turnId,2,[{childId:"alpha",attempt:1,status:"scheduled",label:"alpha"}])));
-  fixture.muse.write(itemFrame("item/completed",sid,workflowItem(turnId,3,[{childId:"alpha",attempt:1,status:"terminal",terminal:"completed"}],{status:"completed",finalSummary:"done"})));
+  fixture.muse.write(itemFrame("item/updated",sid,flowRevision(turnId,2,[{attempt:1,childId:"alpha",label:"alpha",status:"scheduled"}])));
+  fixture.muse.write(itemFrame("item/completed",sid,flowRevision(turnId,3,[{attempt:1,childId:"alpha",status:"terminal",terminal:"completed"}],{status:"completed",finalSummary:"done"})));
   const end={itemId:"dev-finished",kind:"backgroundTerminalCompletion",turnId,revision:1,status:"completed",backgroundTerminalCompletion:{command:"npm run dev",output:"Dev server stopped.",outputTruncated:false,terminalStatus:"completed",toolCallId:"call_dev"}};
   fixture.muse.write(itemFrame("item/completed",sid,end));
-  await until(()=>rowsOf(seen,"dev").some(row=>row.rawOutput==="Dev server stopped.")&&rowsOf(seen,"wf-1:agent:alpha").length===2,"the work's ends");
+  await until(()=>rowsOf(seen,"dev").some(row=>row.rawOutput==="Dev server stopped.")&&rowsOf(seen,"flow-alpha-beta:agent:alpha").length===2,"the work's ends");
   const shape=id=>rowsOf(seen,id).map(row=>[row.status,row.runsPastTurn===true]);
-  assert.deepEqual(shape("wf-1"),[["in_progress",true],["completed",true]]);
-  assert.deepEqual(shape("wf-1:agent:alpha"),[["pending",true],["completed",true]]);
+  assert.deepEqual(shape("flow-alpha-beta"),[["in_progress",true],["completed",true]]);
+  assert.deepEqual(shape("flow-alpha-beta:agent:alpha"),[["pending",true],["completed",true]]);
   assert.deepEqual(shape("dev"),[["in_progress",false],["in_progress",true],["in_progress",true],["completed",true]],"from the update that sent it to the background, running until Muse tells its end, though Muse settled the call as it went there");
   assert.deepEqual(shape("check"),[["in_progress",false],["completed",false]],"a step that ends in its turn says nothing of the kind");
   assert.ok(seen.filter(entry=>entry.update.toolCallId).every(entry=>entry.turnKey===turnId),"every row names the turn that started it");
   // Through the relay's mapping, the window gets the agent's row pending, the work's rows as running past the turn.
-  assert.deepEqual(rowsOf(seen,"wf-1:agent:alpha").map(row=>[mapped(row).status,mapped(row).runsPastTurn]),[["pending",true],["completed",true]]);
+  assert.deepEqual(rowsOf(seen,"flow-alpha-beta:agent:alpha").map(row=>[mapped(row).status,mapped(row).runsPastTurn]),[["pending",true],["completed",true]]);
   // In the window (each item notification merged as App merges it), the dev server's row runs on past the turn's end with what Muse
   // said as it sent the command there, which the turn's end leaves it once the streamed output goes.
   let shown=null;for(const [index,update] of rowsOf(seen,"dev").slice(0,3).entries())shown=mergeLiveRow(shown,activityRow(mapped(update),{turnId}),{phase:index?"progress":"started"});

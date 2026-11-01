@@ -79,14 +79,14 @@ test("a turn's first reply carries the harness heading and its last reply carrie
 // too. While the live card lists the failure, the card says it, once.
 test("the last reply of a turn that failed or was stopped says the error the turn ended with, unless the live card lists that failure",()=>{
   const turnInfo={
-    [turnInfoKey("th","t1")]:{status:"failed",durationMs:1200,error:"Claude Code stopped after the API kept failing."},
+    [turnInfoKey("th","t1")]:{status:"failed",durationMs:1200,error:"Claude Code ended the turn after its requests to the Claude API failed again and again."},
     [turnInfoKey("th","t2")]:{status:"interrupted",error:"Stopped while the tests ran."},[turnInfoKey("th","t3")]:{status:"completed",durationMs:900},
     [turnInfoKey("th","t4")]:{status:"failed"},
   };
   const messages=[user("u1","t1"),reply("a1","t1"),thought("r1","t1"),reply("a2","t1"),user("u2","t2"),reply("a3","t2"),user("u3","t3"),reply("a4","t3"),user("u4","t4"),reply("a5","t4")];
   const rows=assistantRowDecorations(messages,{harnessLabel:"Claude Code",turnInfo,threadId:"th"});
   assert.deepEqual(rows.get("a1"),{heading:"Claude Code",outcomeLabel:"",outcomeTone:""});
-  assert.deepEqual(rows.get("a2"),{heading:"",outcomeLabel:"failed · 1.2s",outcomeTone:"err",outcomeMessage:"Claude Code stopped after the API kept failing."});
+  assert.deepEqual(rows.get("a2"),{heading:"",outcomeLabel:"failed · 1.2s",outcomeTone:"err",outcomeMessage:"Claude Code ended the turn after its requests to the Claude API failed again and again."});
   assert.deepEqual(rows.get("a3"),{heading:"Claude Code",outcomeLabel:"stopped",outcomeTone:"warn",outcomeMessage:"Stopped while the tests ran."});
   assert.deepEqual(rows.get("a4"),{heading:"Claude Code",outcomeLabel:"done · 0.9s",outcomeTone:"ok"});
   assert.deepEqual(rows.get("a5"),{heading:"Claude Code",outcomeLabel:"failed",outcomeTone:"err"},"an error nobody sent is not made up");
@@ -111,7 +111,7 @@ test("a turn whose replies a steered message split says its error once, under it
 });
 
 test("a turn's error reads as the activity card worded it, and a turn that recorded none has no message",()=>{
-  assert.equal(turnFailureText({status:"failed",error:{message:"Grok Build usage limit reached. Send the message again once it resets."}}),"Grok Build usage limit reached. Send the message again once it resets.");
+  assert.equal(turnFailureText({status:"failed",error:{message:"Grok Build has used up its usage allowance. Try the message again when it resets."}}),"Grok Build has used up its usage allowance. Try the message again when it resets.");
   assert.equal(turnFailureText({status:"failed",error:{message:"You've hit your usage limit.",codexErrorInfo:"usageLimitExceeded"}}),"You've hit your usage limit. · See Usage for your Codex limits.");
   assert.equal(turnFailureText({status:"failed",error:{message:"stream disconnected",additionalDetails:"Connection reset by peer"}}),"Connection reset by peer");
   assert.equal(turnFailureText({status:"failed",error:"  Claude Code could not authenticate.  "}),"Claude Code could not authenticate.");
@@ -217,7 +217,7 @@ test("the card's own turn's outcome row reads below the card, an earlier turn's 
 test("the turns whose failure the card lists are the ones it shows an error row for",()=>{
   const events=[
     {id:"codex-error-t1",kind:"error",title:"You've hit your usage limit. · See Usage for your Codex limits.",status:"done",raw:{message:"You've hit your usage limit."}},
-    {id:"error-1700000000000",kind:"error",title:"Grok Build usage limit reached.",status:"done",raw:{threadId:"th",turnId:"t2",message:"Grok Build usage limit reached."}},
+    {id:"error-1700000000000",kind:"error",title:"Grok Build has used up its usage allowance.",status:"done",raw:{threadId:"th",turnId:"t2",message:"Grok Build has used up its usage allowance."}},
     // A harness's own retry is its own kind of row (activity-item.js retryActivityRow), retrying or settled.
     {id:"retry-t3",kind:"retry",title:"Retrying (1/5): stream disconnected",status:"running",output:"stream disconnected",raw:{threadId:"th",turnId:"t3"},turnId:"t3"},
     {id:"retry-t8",kind:"retry",title:"Stopped while retrying",status:"stopped",output:"stream disconnected",raw:{threadId:"th",turnId:"t8"},turnId:"t8"},

@@ -307,7 +307,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // output says so where it was.
   const screenContent=id=>{
     const screen=screens.current.get(id);if(!screen?.chunks.length)return "Terminal connected.\n";
-    return <>{screen.dropped>0&&<span className="terminal-dropped">Earlier output was dropped: the screen keeps the last {TERMINAL_SCROLLBACK_LINES.toLocaleString()} lines, up to {TERMINAL_SCROLLBACK_CHARS.toLocaleString()} characters.</span>}{screen.chunks.map(chunk=><span key={chunk.id}>{chunk.text}</span>)}</>;
+    return <>{screen.dropped>0&&<span className="terminal-dropped">Older output is gone: this screen holds the last {TERMINAL_SCROLLBACK_LINES.toLocaleString()} lines, at most {TERMINAL_SCROLLBACK_CHARS.toLocaleString()} characters.</span>}{screen.chunks.map(chunk=><span key={chunk.id}>{chunk.text}</span>)}</>;
   };
   const paneSessions=paneIds.map(id=>sessions.find(session=>session.id===id)).filter(Boolean);
   // Stacked panes keep room for a few lines and the command line each, and side-by-side panes room for a usable command field;

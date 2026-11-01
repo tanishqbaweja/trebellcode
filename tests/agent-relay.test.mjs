@@ -8,7 +8,7 @@ import { WebSocket } from "ws";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
-import { openCodeMessageId, openCodePermissionRules } from "../src/opencode-agent-session.mjs";
+import { openCodeMessageId, openCodeSessionRules } from "../src/opencode-agent-session.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { acpPlanEvent,agentApprovalReason,agentTextAfterToolCall,agentThreadTitleSeed,agentTurnOwnerError,nativeApprovalGrantKey,nativeApprovalReason,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,claudeRewindProviderMeta,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
@@ -33,7 +33,9 @@ test("external thread starts preserve Trebell permission profiles across runtime
 
 test("a new thread is listed by its first message",()=>{
   assert.equal(agentThreadTitleSeed([{type:"text",text:"  Fix the\n\nlogin   bug  "}]),"Fix the login bug");
-  assert.equal(agentThreadTitleSeed([{type:"text",text:"x".repeat(60)}]),"x".repeat(50)+"...");
+  // Re-pinned note: a title holds Trebell's own 80 characters now (2.1.2 held 50).
+  assert.equal(agentThreadTitleSeed([{type:"text",text:"x".repeat(80)}]),"x".repeat(80));
+  assert.equal(agentThreadTitleSeed([{type:"text",text:"x".repeat(90)}]),"x".repeat(80)+"...");
   assert.equal(agentThreadTitleSeed([{type:"localImage",path:"C:\\shots\\screen.png"}]),"Image: screen.png");
   assert.equal(agentThreadTitleSeed([{type:"text",text:"key sk-live"}],"key [REDACTED]"),"key [REDACTED]","the stored, redacted text is what is listed");
   assert.equal(agentThreadTitleSeed([]),null);
@@ -1180,14 +1182,14 @@ test("the relay runs an OpenCode thread with its mode's rules and the model's va
     const started=await rpc("thread/start",{cwd:root,model,permissionProfile:"edits"}),threadId=started.thread.id;
     assert.equal(started.thread.providerSessionId,"ses_1");
     // The new session carries the thread's mode as OpenCode session rules.
-    assert.deepEqual(fixture.called("POST /session").map(call=>call.body.permission),[openCodePermissionRules("edits")]);
+    assert.deepEqual(fixture.called("POST /session").map(call=>call.body.permission),[openCodeSessionRules("edits")]);
     // Each turn runs with the thread's current mode, and the composer's reasoning level as the model's OpenCode variant.
     await runTurn(threadId,"Reply with exactly OK",{permissionProfile:"supervised",reasoningEffort:"high"});
     await runTurn(threadId,"Reply with exactly OK again",{permissionProfile:"supervised",reasoningEffort:null});
     const prompts=fixture.called("POST /session/ses_1/message").map(call=>call.body);
     assert.deepEqual(prompts.map(body=>body.variant??null),["high",null]);
     const patches=fixture.called("PATCH /session/ses_1");
-    assert.deepEqual(patches.map(call=>call.body.permission),[openCodePermissionRules("supervised")],"a mode change is applied once");
+    assert.deepEqual(patches.map(call=>call.body.permission),[openCodeSessionRules("supervised")],"a mode change is applied once");
     assert.ok(fixture.calls.indexOf(patches[0])<fixture.calls.findIndex(call=>call.key==="POST /session/ses_1/message"),"the mode applies before the turn");
     const [u1,,u2]=fixture.sessions.get("ses_1").messages.map(message=>message.id);
     // Every turn keeps the ID Trebell gave its user message: the turn's rewind point.
@@ -1209,7 +1211,7 @@ test("the relay runs an OpenCode thread with its mode's rules and the model's va
     const kept=fixture.sessions.get("ses_fork2").messages.map(message=>message.id),rewound=threadStore.get(threadId);
     assert.equal(kept.length,2);assert.equal(rewound.providerSessionId,"ses_fork2");
     assert.deepEqual(rewound.turns.map(turn=>turn.providerMessageId),[kept[0]]);
-    assert.deepEqual(fixture.called("PATCH /session/ses_fork2").map(call=>call.body.permission),[openCodePermissionRules("supervised")]);
+    assert.deepEqual(fixture.called("PATCH /session/ses_fork2").map(call=>call.body.permission),[openCodeSessionRules("supervised")]);
     await runTurn(threadId,"Try another way",{permissionProfile:"supervised",reasoningEffort:null});
     assert.equal(fixture.called("POST /session/ses_fork2/message").length,1);assert.equal(fixture.called("POST /session/ses_1/message").length,2);
   }finally{
@@ -1425,8 +1427,8 @@ test("a Claude Code approval waiting when its thread is deleted leaves the windo
 
 test("an attached audio file reaches every harness by its saved path",async()=>{
   const prompt=await contextualAgentPrompt([{type:"text",text:"Transcribe this"},{type:"localAudio",path:"/recordings/memo 1.mp3"}]);
-  assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}]);
+  assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Audio attachment "memo 1.mp3" at /recordings/memo 1.mp3]'}]);
   // The line keeps its file for Antigravity's session, which adds the audio after it when Antigravity takes audio
   // (tests/antigravity-prompt-capabilities.test.mjs); what the other harnesses are sent is the line alone.
-  assert.equal(JSON.stringify(prompt[1]),JSON.stringify({type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}));
+  assert.equal(JSON.stringify(prompt[1]),JSON.stringify({type:"text",text:'[Audio attachment "memo 1.mp3" at /recordings/memo 1.mp3]'}));
 });

@@ -8,7 +8,12 @@ import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 const CHECKPOINT_NESTED_REPO_MAX_CANDIDATES=64;
 const NESTED_GIT_ENV_KEYS=["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY","GIT_ALTERNATE_OBJECT_DIRECTORIES"];
 const CHECKPOINT_GIT_ENV_KEYS=["EMAIL","GIT_AUTHOR_NAME","GIT_AUTHOR_EMAIL","GIT_COMMITTER_NAME","GIT_COMMITTER_EMAIL","GIT_CONFIG_GLOBAL","GIT_CONFIG_SYSTEM","GIT_CONFIG_NOSYSTEM","GIT_CEILING_DIRECTORIES","GIT_DISCOVERY_ACROSS_FILESYSTEM"];
-const CHECKPOINT_DURABLE_WRITE=["-c","core.fsync=objects,reference","-c","core.fsyncMethod=fsync"];
+// A checkpoint must outlive a crash or a power cut once Trebell records it. git config's core.fsync documents "committed" as the
+// mode that hardens what git commit and similar commands write (today the objects and the refs), which is what a checkpoint's add,
+// write-tree, commit-tree and update-ref write; core.fsyncMethod=fsync asks for a full flush of each file even when the person's
+// own configuration chose a lighter one (writeout-only, or batch, which the documentation calls as safe as fsync only on some
+// file systems).
+const CHECKPOINT_DURABLE_WRITE=["-c","core.fsync=committed","-c","core.fsyncMethod=fsync"];
 // With no user.name or user.email and a host name git cannot make an email from, commit-tree refuses, and every turn lost its
 // file checkpoint (live tour, 2026-10-14). A checkpoint is Trebell's own ref, so that commit is made again under this identity;
 // an identity the person has set (git config or GIT_AUTHOR_* / GIT_COMMITTER_*) still names every checkpoint it can.
@@ -17,10 +22,70 @@ const isMissingIdentityError=error=>/identity unknown|unable to auto-detect emai
 // The restores that can still be taken back (undoRestore), and for how long: Edit from here takes one back within seconds.
 const RESTORE_UNDO_KEEP_COUNT=8,RESTORE_UNDO_KEEP_MS=30*60_000;
 
+// ---- Races: a checkpoint's Git command is run again only when it lost a race with another process, which passes by itself.
+// Any other failure would come back the same.
+// git 2.50.1 writes a failed system call on one line: what it was doing, then ": " and the C library's words for the error
+// (usage.c's fmt_with_err), after "fatal: " or "error: ", perhaps closed by a full stop. Two errors are races, each after its
+// own kind of step:
+// - "File exists" (EEXIST) on making a lock: "Unable to create '<path>.lock'" (lockfile.c), behind "cannot lock ref '<ref>': "
+//   for a ref (refs/files-backend.c). Someone else's git holds the lock: the person's own, an editor's or another checkpoint's.
+// - "No such file or directory" (ENOENT) on reading a file git had just listed: "unable to stat '<path>'" (read-cache.c), or a
+//   read call with the path in double quotes, open("<path>") and readlink("<path>") (object-file.c), and lstat or stat written
+//   the same way. An agent, a build or a formatter removed it in between.
+// A path may itself hold ": " (a repository in "/home/dev/my: project", a file "notes/q&a: today.md"), so the step can begin
+// at the start of the line or after any ": " in it; the line counts when the rest of it from one of those places is the step.
+const READING_CALLS=["open","readlink","lstat","stat"];
+const isBlank=char=>/\s/.test(char);
+// The text of what was thrown: an Error's message, or the value itself; "" for nothing.
+const thrownText=error=>error?String(error.message||error):"";
+// git's words are plain ASCII, so only A-Z are lowered: a Kelvin sign or a long s must not turn into a k or an s of them.
+const asciiLowered=text=>text.replace(/[A-Z]+/g,run=>run.toLowerCase());
+// The span from..to of line without the quotes around it, when it is a name in matching quotes (' or ") with something
+// inside; null otherwise.
+function insideQuotes(line,from,to){
+  const quote=line[from];
+  return to-from>=3&&(quote==="'"||quote==="\"")&&line[to-1]===quote?[from+1,to-1]:null;
+}
+// Making a lock: "unable to create " and the lock's name, quoted or bare, ending in ".lock" after at least one character.
+function makesLock(line,from,to){
+  const lead="unable to create ";
+  if(!line.startsWith(lead,from))return false;
+  const [start,stop]=insideQuotes(line,from+lead.length,to)||[from+lead.length,to];
+  return stop-start>".lock".length&&line.startsWith(".lock",stop-".lock".length);
+}
+// Reading a listed file: "unable to stat " and the name in quotes, or a reading call, "(", the name in quotes and ")".
+function readsListedFile(line,from,to){
+  const stat="unable to stat ";
+  if(line.startsWith(stat,from))return insideQuotes(line,from+stat.length,to)!==null;
+  const call=READING_CALLS.find(name=>line.startsWith(name+"(",from));
+  return Boolean(call)&&line[to-1]===")"&&insideQuotes(line,from+call.length+1,to-1)!==null;
+}
+// The step each race's error follows, by the words that end the line.
+const RACE_ENDINGS=[[": file exists",makesLock],[": no such file or directory",readsListedFile]];
+// Whether step matches line from one of the places a step can begin (the start, or after any ": ", blanks skipped) to stop.
+// Each place is judged against the fixed end, so a line of megabytes is read in one pass.
+function stepFrom(line,stop,step){
+  for(let at=0;;){
+    while(at<stop&&isBlank(line[at]))at++;
+    if(at<stop&&step(line,at,stop))return true;
+    const colon=line.indexOf(": ",at);
+    if(colon<0||colon+2>=stop)return false;
+    at=colon+2;
+  }
+}
+function lineIsRace(line){
+  // Full stops and blanks (a carriage return among them) at the end do not count; neither do blanks before the error's ": ".
+  let end=line.length;
+  while(end>0&&(line[end-1]==="."||isBlank(line[end-1])))end--;
+  const ending=RACE_ENDINGS.find(([words])=>end>=words.length&&line.startsWith(words,end-words.length));
+  if(!ending)return false;
+  let stop=end-ending[0].length;
+  while(stop>0&&isBlank(line[stop-1]))stop--;
+  return stepFrom(line,stop,ending[1]);
+}
+// A failure may hold several lines (warnings, the failed call, a summary): one race among them is enough.
 export function isTransientCheckpointGitError(error){
-  const message=String(error?.message||error||"");
-  return /unable to create [^\n]*\.lock['"]?: file exists/i.test(message)
-    || /(?:unable to stat|lstat\(|error: open\()[^\n]+: no such file or directory/i.test(message);
+  return asciiLowered(thrownText(error)).split("\n").some(lineIsRace);
 }
 
 // Whether a copy of the repository's own index can seed a checkpoint's index. read-tree --reset HEAD over the copy gives the same
@@ -83,6 +148,46 @@ async function putFileBack(root,file){
   if(info&&(!file.copy||info.isSymbolicLink()))await rm(path,{force:true});
   if(file.copy){await mkdir(dirname(path),{recursive:true});await copyFile(file.copy,path);await chmod(path,file.mode&0o777).catch(()=>{})}
   else if(file.link!=null){await mkdir(dirname(path),{recursive:true});await symlink(file.link,path)}
+}
+
+// Edit from here puts a checkpoint's files back only where nothing but the work of the thread that made it can be lost: a worktree
+// Trebell made and still keeps, which that thread still works in and no other thread works in, whether in the folder itself, in a
+// folder inside it or in one that holds it. Anything else is refused before a file is read or written, in words the window shows
+// after "Could not restore the files, so the conversation was not changed: ".
+const NOT_RESTORED={
+  threadMoved:"This thread no longer works in the folder its checkpoint was taken in.",
+  notOwnWorktree:"Files go back only in a worktree Trebell made for the thread, and this folder is not one. Go back in the conversation only, and leave the files as they are.",
+  folderShared:"Another thread also works in this folder, so putting the files back could undo its changes. Go back in the conversation only, and leave the files as they are.",
+};
+// Whether a way from one folder to another (path.relative's answer) stays in it: the same folder, or one below it.
+const staysInside=(way,{sep:mark,isAbsolute:absolute})=>way===""||(way!==".."&&!way.startsWith(".."+mark)&&!absolute(way));
+// How a restore tells folders apart. On this computer a folder is its real path (links and junctions followed), a folder that is gone
+// has none, and every thread and project counts. Over an environment a folder is its path written with forward slashes and
+// normalized, without a slash at its end unless it is the root, and only the threads and projects on that environment count.
+function folderRules(environmentId){
+  if(!environmentId)return {name:path=>path?realpath(path).catch(()=>null):null,paths:{relative,sep,isAbsolute},counts:()=>true};
+  return {
+    name:path=>{const plain=posix.normalize(String(path||"").replace(/\\/g,"/"));return plain.length>1&&plain.endsWith("/")?plain.slice(0,-1):plain},
+    paths:posix,
+    counts:item=>(item?.environmentId||null)===environmentId,
+  };
+}
+// The folder a checkpoint's files can go back to (environmentId: the environment its files are reached over, or none on this
+// computer). The checks run in this order, and the first that fails is the answer: the thread asking is the one that made the
+// checkpoint, its folder is still there, the thread still works in it, it is a worktree Trebell keeps, and no other thread is in it.
+async function restorableFolder(state,checkpoint,threadId,environmentId){
+  if(!threadId||checkpoint.threadId!==threadId)throw new Error("Checkpoint file restore is allowed only from the thread that created this checkpoint.");
+  const rules=folderRules(environmentId),folder=await rules.name(checkpoint.root);
+  if(!folder)throw new Error("Checkpoint repository is unavailable");
+  const thread=state.threadMeta?.(threadId)||{};
+  if(!rules.counts(thread)||await rules.name(thread.cwd)!==folder)throw new Error(NOT_RESTORED.threadMoved);
+  const kept=(state.projects?.()||[]).filter(project=>project?.managedWorktree&&!project.managedWorktree.cleanedAt&&rules.counts(project));
+  if(!(await Promise.all(kept.map(project=>rules.name(project.path)))).includes(folder))throw new Error(NOT_RESTORED.notOwnWorktree);
+  const others=Object.entries(state.listThreadMeta?.()||{}).filter(([id,other])=>id!==threadId&&other?.cwd&&!other.deletedAt&&rules.counts(other));
+  for(const place of await Promise.all(others.map(([,other])=>rules.name(other.cwd)))){
+    if(place&&(staysInside(rules.paths.relative(folder,place),rules.paths)||staysInside(rules.paths.relative(place,folder),rules.paths)))throw new Error(NOT_RESTORED.folderShared);
+  }
+  return folder;
 }
 
 export class CheckpointService{
@@ -280,47 +385,9 @@ export class CheckpointService{
       await rm(indexPath+".lock",{force:true}).catch(()=>{});
     }
   }
-  async #assertRestoreIsolation(cp,threadId){
-    if(!threadId||cp.threadId!==threadId)throw new Error("Checkpoint file restore is allowed only from the thread that created this checkpoint.");
-    const root=await realpath(cp.root).catch(()=>null);
-    if(!root)throw new Error("Checkpoint repository is unavailable");
-    const meta=this.state.threadMeta?.(threadId)||{};
-    const owner=meta.cwd?await realpath(meta.cwd).catch(()=>null):null;
-    if(!owner||owner!==root)throw new Error("File restore requires the thread to still own its original isolated worktree.");
-    let managed=false;
-    for(const project of this.state.projects?.()||[]){
-      if(!project?.managedWorktree||project.managedWorktree.cleanedAt)continue;
-      const projectPath=await realpath(project.path).catch(()=>null);
-      if(projectPath===root){managed=true;break}
-    }
-    if(!managed)throw new Error("File restore requires an isolated Trebell worktree. Rewind the conversation without restoring files instead.");
-    const isWithin=(parent,child)=>{
-      const rel=relative(parent,child);
-      return rel===""||(!isAbsolute(rel)&&rel!==".."&&!rel.startsWith(".."+sep));
-    };
-    for(const [otherId,other] of Object.entries(this.state.listThreadMeta?.()||{})){
-      if(otherId===threadId||other?.deletedAt||!other?.cwd)continue;
-      const otherPath=await realpath(other.cwd).catch(()=>null);if(!otherPath)continue;
-      if(isWithin(root,otherPath)||isWithin(otherPath,root)){
-        throw new Error("File restore requires an isolated Trebell worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.");
-      }
-    }
-    return root;
-  }
-  #remotePath(value){const normalized=posix.normalize(String(value||"").replace(/\\/g,"/"));return normalized.length>1?normalized.replace(/\/$/,""):normalized}
-  async #assertRemoteRestoreIsolation(cp,threadId){
-    if(!threadId||cp.threadId!==threadId)throw new Error("Checkpoint file restore is allowed only from the thread that created this checkpoint.");
-    const environmentId=cp.environmentId,meta=this.state.threadMeta?.(threadId)||{},root=this.#remotePath(cp.root),owner=this.#remotePath(meta.cwd);
-    if(!environmentId||meta.environmentId!==environmentId||!root||owner!==root)throw new Error("File restore requires the thread to still own its original isolated worktree.");
-    let managed=false;
-    for(const project of this.state.projects?.()||[]){if((project.environmentId||null)!==environmentId||!project?.managedWorktree||project.managedWorktree.cleanedAt)continue;if(this.#remotePath(project.path)===root){managed=true;break}}
-    if(!managed)throw new Error("File restore requires an isolated Trebell worktree. Rewind the conversation without restoring files instead.");
-    const isWithin=(parent,child)=>{const rel=posix.relative(parent,child);return rel===""||(!rel.startsWith("../")&&rel!==".."&& !posix.isAbsolute(rel))};
-    for(const [otherId,other] of Object.entries(this.state.listThreadMeta?.()||{})){if(otherId===threadId||other?.deletedAt||!other?.cwd||(other.environmentId||null)!==environmentId)continue;const otherPath=this.#remotePath(other.cwd);if(isWithin(root,otherPath)||isWithin(otherPath,root))throw new Error("File restore requires an isolated Trebell worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.")}
-    return root;
-  }
-  async #restoreRemote(cp,threadId){
-    const root=await this.#assertRemoteRestoreIsolation(cp,threadId),environmentId=cp.environmentId,info=await this.#remoteGitInfo(environmentId,root);if(!info.isGit)throw new Error("Checkpoint repository is unavailable");
+  // The files of a checkpoint reached over an environment go back in root, the folder restorableFolder answered.
+  async #restoreRemote(cp,root){
+    const environmentId=cp.environmentId,info=await this.#remoteGitInfo(environmentId,root);if(!info.isGit)throw new Error("Checkpoint repository is unavailable");
     await this.#remoteGit(environmentId,root,["restore","--source",cp.commit,"--staged","--worktree","--","."]);
     const trackedAtCheckpoint=new Set(String((await this.#remoteGit(environmentId,root,["ls-tree","-r","--name-only","-z",cp.commit])).stdout||"").split("\0").filter(Boolean));
     const untracked=String((await this.#remoteGit(environmentId,root,["ls-files","--others","--exclude-standard","-z"])).stdout||"").split("\0").filter(Boolean);
@@ -386,8 +453,8 @@ export class CheckpointService{
   async restore(id,{threadId=null}={}){
     const cp=this.state.checkpoints().find(item=>item.id===id);
     if(!cp) throw new Error("Checkpoint not found");
-    if(this.#usesRemoteIo(cp.environmentId))return this.#restoreRemote(cp,threadId);
-    await this.#assertRestoreIsolation(cp,threadId);
+    const remote=this.#usesRemoteIo(cp.environmentId),folder=await restorableFolder(this.state,cp,threadId,remote?cp.environmentId:null);
+    if(remote)return this.#restoreRemote(cp,folder);
     const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cp.root,{env:baseEnv});
     if(!info.isGit) throw new Error("Checkpoint repository is unavailable");
     const kept=await this.#keepLocal(cp.root,cp.commit,threadId,baseEnv);

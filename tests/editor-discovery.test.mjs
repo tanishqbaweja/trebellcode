@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EDITOR_SPECS, discoverEditors, listEditors, resolveEditorExecutable, startEditor } from "../desktop/editor-discovery.mjs";
+import { EDITOR_SPECS, discoverEditors, editorCommandNames, listEditors, resolveEditorExecutable, startEditor } from "../desktop/editor-discovery.mjs";
 
 const missingCommand=async()=>null;
 const dir=name=>({name,isDirectory:()=>true});
@@ -137,4 +137,77 @@ test("the editor list is kept for the app run, shared while it is found, and fou
   clock+=9*60_000;await listEditors(options);assert.equal(discoveries,1);
   clock+=60_000;await listEditors(options);assert.equal(discoveries,2);
   await listEditors({...options,refresh:true});assert.equal(discoveries,3);
+});
+
+// The order is the picker's: with no saved choice it opens the first editor found. The ids are what it saves, so an id that
+// shipped stays with its editor.
+test("the editor list runs from Visual Studio Code and its builds to Zed and Sublime Text to JetBrains' IDEs, each id and command once",()=>{
+  assert.deepEqual(EDITOR_SPECS.map(entry=>entry.id),["vscode","vscode-insiders","vscodium","antigravity","cursor","kiro","trae","windsurf","zed","sublime-text",
+    "aqua","clion","datagrip","dataspell","goland","idea","phpstorm","pycharm","rider","rubymine","rustrover","webstorm"]);
+  const commands=EDITOR_SPECS.flatMap(entry=>entry.commands);
+  assert.equal(new Set(commands).size,commands.length,"no command belongs to two editors");
+  assert.deepEqual(editorCommandNames(),commands);
+  assert.deepEqual(EDITOR_SPECS.find(entry=>entry.id==="zed").commands,["zed","zeditor","zedit"]);
+});
+
+const lookIn=(folders,files)=>({exists:path=>files.includes(path),readDirectory:path=>(folders[path]||[]).map(dir)});
+const found=editors=>Object.fromEntries(editors.map(editor=>[editor.id,editor.executable]));
+
+test("macOS discovery finds app bundles in either Applications folder when PATH has no command",async()=>{
+  const files=["/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code","/Users/dev/Applications/Zed.app/Contents/MacOS/cli",
+    "/Applications/Sublime Text.app/Contents/SharedSupport/bin/subl","/Users/dev/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea",
+    "/Applications/JetBrains Rider.app/Contents/MacOS/rider","/Users/dev/Library/Application Support/JetBrains/Toolbox/scripts/pycharm"];
+  const folders={"/Users/dev/Applications":["Zed.app","IntelliJ IDEA CE.app"],"/Applications":["Visual Studio Code.app","Sublime Text.app","JetBrains Rider.app","Riderless.app"]};
+  const editors=await discoverEditors({platform:"darwin",env:{HOME:"/Users/dev"},commandFinder:missingCommand,...lookIn(folders,files)});
+  assert.deepEqual(found(editors),{vscode:files[0],zed:files[1],"sublime-text":files[2],idea:files[3],pycharm:files[5],rider:files[4]});
+});
+
+test("Windows discovery finds Zed, Sublime Text and Toolbox 2 installs, and the newest of two JetBrains versions",async()=>{
+  const env={LOCALAPPDATA:"C:\\Users\\dev\\AppData\\Local",ProgramFiles:"C:\\Program Files",ProgramW6432:"C:\\Program Files"};
+  const programs="C:\\Users\\dev\\AppData\\Local\\Programs",jetbrains="C:\\Program Files\\JetBrains";
+  const files=[programs+"\\Zed\\Zed.exe","C:\\Program Files\\Sublime Text\\subl.exe",programs+"\\Rider\\bin\\rider64.exe",
+    jetbrains+"\\IntelliJ IDEA 2025.1\\bin\\idea64.exe",jetbrains+"\\IntelliJ IDEA 2026.2\\bin\\idea64.exe",jetbrains+"\\PyCharm Community Edition 2024.3\\bin\\pycharm64.exe"];
+  const folders={[programs]:["Zed","Rider"],[jetbrains]:["IntelliJ IDEA 2025.1","IntelliJ IDEA 2026.2","PyCharm Community Edition 2024.3"]};
+  const editors=await discoverEditors({platform:"win32",env,commandFinder:missingCommand,...lookIn(folders,files)});
+  assert.deepEqual(found(editors),{zed:files[0],"sublime-text":files[1],idea:files[4],pycharm:files[5],rider:files[2]});
+});
+
+test("Linux discovery skips ZFS's zed in sbin for a packaged zeditor, and finds Zed's own install and Toolbox scripts",async()=>{
+  const which=(stdout)=>(file,args,_options,callback)=>callback(null,stdout,"");
+  const packaged=await discoverEditors({platform:"linux",env:{HOME:"/home/dev"},exec:which("/usr/sbin/zed\n/usr/bin/zeditor\n"),exists:()=>false,readDirectory:()=>[]});
+  assert.deepEqual(found(packaged),{zed:"/usr/bin/zeditor"});
+  const own=["/home/dev/.local/zed.app/bin/zed","/data/JetBrains/Toolbox/scripts/idea","/home/dev/.local/share/JetBrains/Toolbox/scripts/goland"];
+  const installed=await discoverEditors({platform:"linux",env:{HOME:"/home/dev",XDG_DATA_HOME:"/data"},exec:which(""),exists:path=>own.includes(path),readDirectory:()=>[]});
+  assert.deepEqual(found(installed),{zed:own[0],idea:own[1]});
+  // A relative XDG_DATA_HOME is not a valid one, so the default folder is used.
+  const relative=await discoverEditors({platform:"linux",env:{HOME:"/home/dev",XDG_DATA_HOME:"data"},exec:which(""),exists:path=>own.includes(path),readDirectory:()=>[]});
+  assert.deepEqual(found(relative),{zed:own[0],goland:own[2]});
+});
+
+// Google's terminal agent installs as agy too; the editor's own antigravity launcher is taken when both are on PATH.
+test("Windows discovery takes the Antigravity editor's launcher over an agy that may be the terminal agent",async()=>{
+  const exec=(_file,_args,_options,callback)=>callback(null,"C:\\Ide\\bin\\antigravity.cmd\r\nC:\\Tools\\agy.exe\r\n","");
+  const editors=await discoverEditors({platform:"win32",env:{PATHEXT:".EXE;.CMD"},exec,exists:path=>path==="C:\\Ide\\Antigravity.exe",
+    readFile:path=>path==="C:\\Ide\\bin\\antigravity.cmd"?"@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n\"%~DP0..\\Antigravity.exe\" \"%~DP0..\\resources\\app\\out\\cli.js\" %*\r\n":"",
+    readDirectory:()=>[]});
+  assert.deepEqual(found(editors),{antigravity:"C:\\Ide\\Antigravity.exe"});
+});
+
+test("the older Toolbox tree is read a bounded number of folders deep and wide",async()=>{
+  // 1000 tools, each with a channel holding a build: every folder below apps answers one sub-folder, down to the builds.
+  const apps="C:\\Users\\dev\\AppData\\Local\\JetBrains\\Toolbox\\apps",depth=path=>path.slice(apps.length).split("\\").length-1;
+  let reads=0;
+  const readDirectory=path=>{if(!path.startsWith(apps))return [];reads++;return path===apps?Array.from({length:1000},(_,i)=>dir("tool-"+i)):depth(path)<3?[dir("x-"+depth(path))]:[]};
+  assert.equal(await resolveEditorExecutable(EDITOR_SPECS.find(entry=>entry.id==="idea"),{platform:"win32",env:{LOCALAPPDATA:"C:\\Users\\dev\\AppData\\Local"},commandFinder:missingCommand,exists:()=>false,readDirectory}),null);
+  assert.ok(reads>=100&&reads<=200,`${reads} folders read`);
+});
+
+test("a discovery that fails is not kept, so the next list looks for the editors again",async()=>{
+  let clock=9_000_000,discoveries=0;
+  const zed={id:"zed",label:"Zed",executable:"/opt/zed"};
+  const discover=async()=>{discoveries++;if(discoveries===1)throw new Error("where did not answer");return [zed]};
+  await assert.rejects(listEditors({refresh:true,now:()=>clock,discover}),{message:"where did not answer"});
+  clock+=1000;
+  assert.deepEqual(await listEditors({now:()=>clock,discover}),[zed]);
+  assert.equal(discoveries,2);
 });

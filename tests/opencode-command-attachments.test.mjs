@@ -31,9 +31,9 @@ test("an OpenCode 1.x command names after its arguments the attachments it gets 
   assert.equal(sent.command,"summarize");
   assert.equal(sent.arguments,[
     "the attached files",
-    `[Attached file "${link(broken).name}" is saved at: ${broken}]`,
-    `[Attached file "${link(report).name}" is saved at: ${report} (text extracted to: ${report}.txt)]`,
-    `[Attached audio "${link(memo).name}" is saved at: ${memo}]`,
+    `[File attachment "${link(broken).name}" at ${broken}]`,
+    `[File attachment "${link(report).name}" at ${report}, readable as text at ${report}.txt]`,
+    `[Audio attachment "${link(memo).name}" at ${memo}]`,
   ].join("\n\n"));
   assert.deepEqual(sent.parts,[
     {type:"file",mime:"text/plain",filename:link(report).name+".txt",url:fileUri(report+".txt")},
@@ -42,5 +42,5 @@ test("an OpenCode 1.x command names after its arguments the attachments it gets 
   // A command with no arguments of its own has the lines alone; one with no such attachment has its arguments alone.
   await session.prompt([{type:"text",text:"/summarize"},link(broken)]);
   await session.prompt([{type:"text",text:"/summarize the notes"},link(notes)]);
-  assert.deepEqual(fake.called("POST /session/ses_main/command").slice(1).map(call=>call.body.arguments),[`[Attached file "${link(broken).name}" is saved at: ${broken}]`,"the notes"]);
+  assert.deepEqual(fake.called("POST /session/ses_main/command").slice(1).map(call=>call.body.arguments),[`[File attachment "${link(broken).name}" at ${broken}]`,"the notes"]);
 });

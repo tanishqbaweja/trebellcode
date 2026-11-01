@@ -86,15 +86,20 @@ test("a thread saved with no title is titled by its first message at startup, an
     const named=first.create({runtime:"cursor",cwd:home,providerSessionId:"cursor-2",name:"Kept name"});
     first.finishTurn(named.id,first.addTurn(named.id,{inputText:"Other words"}).id);
     const empty=first.create({runtime:"grok",cwd:home,providerSessionId:""});
+    // A thread titled before, as 2.1.2 titled it (50 characters), keeps that title.
+    const titled=first.create({runtime:"cursor",cwd:home,providerSessionId:"cursor-3"});
+    first.finishTurn(titled.id,first.addTurn(titled.id,{inputText:"y".repeat(90)}).id);first.update(titled.id,{preview:"y".repeat(50)+"..."});
     const order=store=>Object.fromEntries(store.list().map(thread=>[thread.id,thread.updatedAt])),before=order(first);
     const reopened=new AgentThreadStore(env);
-    assert.equal(reopened.getMetadata(untitled.id).preview,"Run this shell command and tell me its output: nod...","its first message, on one line, at most 50 characters");
+    // Re-pinned note: a title holds Trebell's own 80 characters now (2.1.2 held 50).
+    assert.equal(reopened.getMetadata(untitled.id).preview,"Run this shell command and tell me its output: node -e \"console.log('trebell-tou...","its first message, on one line, at most 80 characters");
+    assert.equal(reopened.getMetadata(titled.id).preview,"y".repeat(50)+"...","a title given before keeps its length");
     assert.equal(reopened.getMetadata(short.id).preview,"Reply with exactly TREBELL_TOUR_OK");
     assert.equal(reopened.getMetadata(named.id).name,"Kept name");assert.equal(reopened.getMetadata(named.id).preview,null,"a named thread is left as it is");
     assert.equal(reopened.getMetadata(empty.id).preview,null,"a thread with no message stays untitled");
     assert.deepEqual(order(reopened),before,"no thread moves in the list (its updated time is kept)");
     assert.equal(reopened.get(untitled.id).turns.length,2,"the transcript is untouched");
-    assert.equal(new AgentThreadStore(env).getMetadata(untitled.id).preview,"Run this shell command and tell me its output: nod...","the title is saved");
+    assert.equal(new AgentThreadStore(env).getMetadata(untitled.id).preview,"Run this shell command and tell me its output: node -e \"console.log('trebell-tou...","the title is saved");
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 

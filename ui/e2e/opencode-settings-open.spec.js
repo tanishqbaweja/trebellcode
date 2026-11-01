@@ -59,7 +59,7 @@ test("going between Settings' Agents & models and Diagnostics keeps OpenCode's a
     // OpenCode lists no models for the provider now; Refresh asks OpenCode again, and the row says so.
     opencode.answer=catalog({models:[]});
     asked=listings;await page.locator(".agent-runtime-settings").getByRole("button",{name:"Refresh",exact:true}).click();await listed(asked);
-    await expect(said).toHaveText("1 upstream provider is connected through OpenCode, but it lists no models yet. Press Refresh to check again.");
+    await expect(said).toHaveText("OpenCode is connected to 1 provider but lists no models yet. Press Refresh to look again.");
     expect(opencode.reads,"Refresh reads OpenCode again").toBe(2);
   }finally{
     await request.post("/api/settings",{data:{agentRuntimeInstances:before.agentRuntimeInstances||[],appearanceMode:before.appearanceMode||"dark"}});

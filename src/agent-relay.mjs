@@ -13,6 +13,7 @@ import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
 import { remoteEnvironmentImage, unreadableAttachment, withPromptAudioPath, withPromptImagePath, withPromptTextPath } from "./prompt-attachments.mjs";
+import { attachmentLine } from "./attachment-line.mjs";
 import { extractedDocumentText } from "./document-text.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MUSE_COMPACTION_STOPPED, MuseAgentSession } from "./muse-agent-session.mjs";
@@ -207,10 +208,10 @@ async function acpPrompt(input=[],{remote=false,home=null}={}){
       const link={type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")};
       out.push(remote?link:withPromptTextPath(link,await extractedDocumentText(item.path,{home})));
     }else if(item?.type==="localAudio"){
-      // Audio is named by its saved path, and the harness opens it
-      // with its own tools. The line keeps the file for Antigravity's session, which adds the audio after it when Antigravity takes audio.
+      // Audio is named by its path in a line of its own (attachment-line.mjs), and the harness opens it with its own tools. The line
+      // keeps the file for Antigravity's session, which adds the audio after it when Antigravity takes audio.
       const path=String(item.path||"");
-      out.push(withPromptAudioPath({type:"text",text:`[Attached audio "${basename(path)}" is saved at: ${path}]`},path));
+      out.push(withPromptAudioPath({type:"text",text:attachmentLine("audio",basename(path),path)},path));
     }
   }
   return out;

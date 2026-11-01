@@ -19,10 +19,11 @@ test("Muse's model list keeps Meta's rows once each, named by their label or a t
   assert.deepEqual(catalog.models,["muse-wonder-1.0","muse-spark-1.3","muse-spark-1.2","muse-spark-1.3-contributor"],"the second muse-spark-1.3 row and the local provider's row are left out");
   const row=id=>catalog.metadata.find(item=>item.id===id);
   assert.deepEqual(row("muse-wonder-1.0"),{
-    id:"muse-wonder-1.0",name:"Muse Wonder 1.0",provider:"muse",agent:"Muse Code",description:"Meta's most capable model, in preview.",contextWindow:1048576,
+    id:"muse-wonder-1.0",name:"Wonder 1.0 Preview",provider:"muse",agent:"Muse Code",description:"Preview release of Muse Wonder.",contextWindow:1048576,
     reasoningEfforts:["minimal","low","medium","high","xhigh","max"],defaultReasoningEffort:"high",
-    reasoningEffortDescriptions:{minimal:"Fastest answers",high:"Deep reasoning for most coding work",max:"The longest reasoning Wonder offers"},
+    reasoningEffortDescriptions:{minimal:"Quick replies with little reasoning",high:"Careful reasoning for code changes",max:"Wonder's deepest reasoning"},
   });
+  assert.notEqual(row("muse-wonder-1.0").name,museModelName("muse-wonder-1.0",""),"a row's own label, not its id title-cased");
   assert.equal(row("muse-spark-1.3").name,"Muse Spark 1.3","a label that is the bare id reads as words");
   assert.deepEqual(row("muse-spark-1.3").reasoningEfforts,["minimal","low","medium","high","xhigh","max"],"None, which Meta's provider refuses, is never offered");
   assert.deepEqual([row("muse-spark-1.2").reasoningEfforts,row("muse-spark-1.2").defaultReasoningEffort],[["low","medium","high","xhigh","max"],"high"],"unknown levels: Low to Max, High by default");

@@ -8,7 +8,9 @@ import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { remoteCodexHomeSetup } from "../src/environment-app-server.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { AgentRuntimeManager, commandOnPath, openCodeCommandHolder, openCodeInstallOwner, openCodeStatusMessage, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility, runtimeExecutableCandidates } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, commandOnPath, openCodeCommandHolder, openCodeInstallOwner, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeExecutableCandidates } from "../src/agent-runtime-manager.mjs";
+import { harnessReleaseSupport } from "../src/harness-releases.mjs";
+import { openCodeReadiness } from "../src/harness-status-words.mjs";
 import { runtimeCapabilityKinds, sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
@@ -113,6 +115,19 @@ test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{
   assert.deepEqual(manager.acpArgs(grok,"full"),["agent","--always-approve","stdio"]);
 });
 
+test("Grok Build asks at every level but Auto and Full access, and only a switch to or from those relaunches it",()=>{
+  const manager=new AgentRuntimeManager(),grok={kind:"grok"},asking=["--permission-mode","default","agent","stdio"];
+  for(const level of ["read-only","plan","workspace-write","FULL","Auto","",null])assert.deepEqual(manager.acpArgs(grok,level),asking,`level ${level}`);
+  assert.deepEqual(manager.acpArgs(grok),asking,"no level is the supervised one");
+  // AcpAgentSession relaunches on a new level only when its arguments differ as JSON.
+  const launch=level=>JSON.stringify(manager.acpArgs(grok,level,"/work"));
+  assert.equal(launch("supervised"),launch("edits"));
+  assert.equal(new Set(["supervised","auto","full"].map(launch)).size,3);
+  const first=manager.acpArgs(grok,"full","/one"),second=manager.acpArgs(grok,"full","/two");
+  assert.deepEqual(first,second,"the working folder plays no part");
+  first.push("--extra");assert.deepEqual(manager.acpArgs(grok,"full"),["agent","--always-approve","stdio"],"each call gets its own array");
+});
+
 test("Windows runtime discovery includes current installer locations even when PATH is stale",()=>{
   const env={USERPROFILE:"C:\\Users\\me",LOCALAPPDATA:"C:\\Users\\me\\AppData\\Local",APPDATA:"C:\\Users\\me\\AppData\\Roaming"};
   assert.ok(runtimeExecutableCandidates("grok",{env,platform:"win32"}).some(path=>path.endsWith("xAI.GrokBuild_Microsoft.Winget.Source_8wekyb3d8bbwe\\grok.exe")));
@@ -142,8 +157,9 @@ else if(args.at(-1)==="acp"){
     let m;try{m=JSON.parse(line)}catch{return}
     if(m.method==="initialize"){picker=m.params?.clientCapabilities?._meta?.parameterizedModelPicker===true;send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"cursor-launcher-fixture"},agentCapabilities:{sessionCapabilities:{close:{}}}}})}
     // Cursor 2026.09 lists base model ids with per-model options only to a client with the parameterized model picker.
+    // A sample effort list: the CLI repeats a value as its name when Cursor's server gives that choice no display name.
     else if(m.method==="cursor/list_available_models")send(picker
-      ?{jsonrpc:"2.0",id:m.id,result:{models:[{value:"default",name:"Auto",configOptions:[]},{value:"gpt-5.6-sol",name:"GPT-5.6 Sol",configOptions:[{id:"reasoning",name:"Reasoning",category:"thought_level",type:"select",currentValue:"medium",options:[{value:"none",name:"None"},{value:"low",name:"Low"},{value:"medium",name:"Medium"},{value:"high",name:"High"},{value:"xhigh",name:"Extra High"}]}]}]}}
+      ?{jsonrpc:"2.0",id:m.id,result:{models:[{value:"default",name:"Auto",configOptions:[]},{value:"gpt-5.6-sol",name:"GPT-5.6 Sol",configOptions:[{id:"reasoning",name:"Reasoning",category:"thought_level",type:"select",currentValue:"medium",options:["none","low","medium","high"].map(value=>({value,name:value})).concat({value:"extra-high",name:"Extra high"})}]}]}}
       :{jsonrpc:"2.0",id:m.id,error:{code:-32601,message:"Method not found"}});
     else if(m.method==="session/new")send({jsonrpc:"2.0",id:m.id,result:{sessionId:"cursor-launcher-session",models:{currentModelId:"default",availableModels:[{modelId:"default",name:"Auto"}]},configOptions:[{id:"model",name:"Model",category:"model",type:"select",currentValue:"default",options:[{value:"default",name:"Auto"}]}]}});
     else if(m.id!=null)send({jsonrpc:"2.0",id:m.id,result:{}});
@@ -168,10 +184,11 @@ test("the official Cursor .cmd launcher wins over PATH and serves version, about
     const status=await manager.probe(instance);
     assert.equal(status.installed,true);assert.equal(status.available,true);assert.equal(status.binary,launcher);
     assert.equal(status.version,"2026.09.26-dd393fe");assert.equal(status.authenticated,true);assert.equal(status.account?.email,"dev@example.test");
-    // The model list is Cursor's own, with names and per-model effort; Auto is the default.
+    // The model list is Cursor's own, with names and per-model effort; Auto is the default. Every composer level Cursor lists is
+    // offered, None included (the earlier fixed list of Cursor levels left None out), and "extra-high" is xhigh by its letters.
     const listed=await manager.models(instance);
     assert.deepEqual(listed.models,["default","gpt-5.6-sol"]);assert.equal(listed.preferred,"default");assert.equal(listed.source,"live");
-    assert.equal(listed.metadata[1].name,"GPT-5.6 Sol");assert.deepEqual(listed.metadata[1].reasoningEfforts,["low","medium","high","xhigh"]);assert.equal(listed.metadata[1].defaultReasoningEffort,"medium");
+    assert.equal(listed.metadata[1].name,"GPT-5.6 Sol");assert.deepEqual(listed.metadata[1].reasoningEfforts,["none","low","medium","high","xhigh"]);assert.equal(listed.metadata[1].defaultReasoningEffort,"medium");
     const session=new AcpAgentSession({runtime:"cursor",command:manager.executable(instance),args:manager.acpArgs(instance,"supervised"),cwd:root,env:manager.childEnv(instance)});
     try{
       const started=await session.start();
@@ -287,7 +304,7 @@ test("Claude models and plan usage come from Claude Code's own capability probe"
     assert.deepEqual(models.inventory,{commands:[{name:"review",description:"Review"}],agents:[{name:"Plan"}]},"the probe's commands and agents fill a new chat's menus");
     assert.deepEqual(models.metadata[0],{id:"default",name:"Default (recommended)",provider:"claude",agent:"Claude Code",description:"Opus 5.5",supportedReasoningEfforts:["low","medium","high","xhigh","max"],supportsFastMode:true,supportedServiceTiers:["fast"]});
     assert.deepEqual(models.metadata[1].supportedReasoningEfforts,["low","high"]);
-    assert.equal(loads[0].input.cwd,null);assert.equal(loads[0].input.spawnProcess,null);assert.equal(loads[0].input.scope,"");assert.equal(loads[0].input.includeUsage,true);
+    assert.equal(loads[0].input.cwd,null);assert.equal(loads[0].input.spawnProcess,null);assert.equal(loads[0].input.scope,"");assert.equal(loads[0].input.withPlanUsage,true);
     const usage=await manager.usageLimits("claude");
     assert.deepEqual(usage.windows.map(window=>[window.id,window.label,window.usedPercent]),[["five_hour","Session",12]]);
     failure=new Error("Claude Code did not report its capabilities in time.");
@@ -341,7 +358,7 @@ test("runtime installer uses only official allowlisted packages in the selected 
     const installed=await manager.install("claude");
     assert.equal(installed.packageName,"@anthropic-ai/claude-code");
     assert.equal(installed.status.installed,true);assert.equal(installed.status.authenticated,false);
-    assert.equal(installed.status.message,"Claude Code is signed out. Sign in with `claude auth login` and try again.");
+    assert.equal(installed.status.message,"Claude Code has no account signed in. Run `claude auth login`, then try again.");
     // npm 12 runs no install script unless allowed, and Claude Code's puts its native binary in place.
     assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code"),true);
     await assert.rejects(()=>manager.install("cursor"),/not installable/i);
@@ -355,13 +372,13 @@ test("runtime installer uses only official allowlisted packages in the selected 
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
-test("OpenCode compatibility blocks known-broken managed updates and pins verified versions",async()=>{
-  assert.equal(runtimeCompatibility("opencode","opencode 1.14.18").status,"broken");
-  assert.equal(runtimeCompatibility("opencode","v1.14.19").status,"supported");
-  assert.equal(runtimeCompatibility("opencode","1.18.32").status,"supported");
-  assert.equal(runtimeCompatibility("opencode","dev-build").status,"unknown");
+test("OpenCode's release support blocks known-broken managed updates and pins releases that work",async()=>{
+  assert.equal(harnessReleaseSupport("opencode","opencode 1.14.18").status,"broken");
+  assert.equal(harnessReleaseSupport("opencode","v1.14.19").status,"supported");
+  assert.equal(harnessReleaseSupport("opencode","1.18.32").status,"supported");
+  assert.equal(harnessReleaseSupport("opencode","dev-build").status,"unknown");
   // OpenCode 2.x uses a different server protocol, but Trebell has a dedicated adapter for it.
-  const v2=runtimeCompatibility("opencode","opencode v2.0.18");
+  const v2=harnessReleaseSupport("opencode","opencode v2.0.18");
   assert.equal(v2.status,"supported");
   const home=await mkdtemp(join(tmpdir(),"trebell-opencode-compat-"));const env={...process.env,TREBELL_HOME:home};
   try{
@@ -381,7 +398,7 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
     state.updateSettings({activeEnvironmentId:"ssh-fixture"});
     const manager=new AgentRuntimeManager({state,env,environments});
     const installs=()=>calls.filter(call=>call.command==="npm"&&call.args[0]==="install").map(call=>call.args.join(" "));
-    await assert.rejects(()=>manager.install("opencode"),/known to be incompatible/i);
+    await assert.rejects(()=>manager.install("opencode"),{message:"OpenCode 1.14.18 has a known fault that keeps it from working with Trebell Code. Install OpenCode 1.14.19 or a later 1.x or 2.x release."});
     assert.deepEqual(installs(),[]);
     candidate="1.14.19";
     const installed=await manager.install("opencode");
@@ -540,9 +557,9 @@ test("Trebell updates an OpenCode only the way it was installed, judged from whe
   assert.equal(commandOnPath("/opt/opencode",{platform:"linux",env:{},exists:exists([])}),null);
   assert.equal(commandOnPath("C:\\oc\\opencode.exe",{platform:"win32",env:{},exists:exists(["C:\\oc\\opencode.exe"])}),"C:\\oc\\opencode.exe");
   // The status wording, from the providers OpenCode's server reports connected.
-  assert.equal(openCodeStatusMessage(4),"OpenCode runs with 4 upstream providers connected, and lists their models.");
-  assert.equal(openCodeStatusMessage(1,{external:true}),"The configured OpenCode server answers with 1 upstream provider connected, and lists its models.");
-  assert.equal(openCodeStatusMessage(0),"OpenCode runs, but no upstream provider is connected through it.");
+  assert.equal(openCodeReadiness({providers:4}),"OpenCode is ready, listing models from the 4 providers it is connected to.");
+  assert.equal(openCodeReadiness({providers:1,ownServer:true}),"The OpenCode server at this profile's URL is ready, listing models from the provider it is connected to.");
+  assert.equal(openCodeReadiness({providers:0}),"No provider is connected to OpenCode yet. Add one with opencode auth login, then press Refresh.");
 });
 
 // A stand-in OpenCode CLI (`--version`, `upgrade`, `serve`) and npm, run through Windows command launchers. They keep their state in
@@ -598,7 +615,7 @@ test("a local OpenCode's status counts the providers its own server connects, on
     manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:binary,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
     const serves=async()=>(await fixture.read()).calls.filter(call=>call[1]==="serve").length;
     const status=await manager.probe("opencode");
-    assert.deepEqual({available:status.available,authenticated:status.authenticated,account:status.account,message:status.message},{available:true,authenticated:true,account:{connectedProviders:2},message:"OpenCode runs with 2 upstream providers connected, and lists their models."});
+    assert.deepEqual({available:status.available,authenticated:status.authenticated,account:status.account,message:status.message},{available:true,authenticated:true,account:{connectedProviders:2},message:"OpenCode is ready, listing models from the 2 providers it is connected to."});
     // Thread starts check the status again; they reuse that read, and a model list right after it does too.
     await manager.probe("opencode");
     const listed=await manager.models("opencode");
@@ -607,7 +624,7 @@ test("a local OpenCode's status counts the providers its own server connects, on
     assert.deepEqual({commands:listed.inventory.commands.map(item=>item.name),agents:listed.inventory.agents.map(item=>item.name)},{commands:["init"],agents:["build"]});
     assert.equal((await fixture.read()).calls.some(call=>call[1]==="auth"),false,"the provider count comes from OpenCode's server, not its credential list");
     // This fixture implements the 1.x HTTP surface only. OpenCode 2.x protocol coverage is exercised by its dedicated adapter and live tour.
-    assert.equal(runtimeCompatibility("opencode","opencode v2.0.24").status,"supported");
+    assert.equal(harnessReleaseSupport("opencode","opencode v2.0.24").status,"supported");
     // A server that cannot start makes OpenCode unavailable, with its reason.
     await fixture.update({version:"1.18.31",serveFails:true});
     const broken=await manager.probe("opencode",{fresh:true});
@@ -625,7 +642,7 @@ test("updating npm's global opencode-ai installs into the prefix that holds the 
     const plan=await manager.openCodeInstallPlan();
     assert.deepEqual({method:plan.method,installedVersion:plan.installedVersion,targetVersion:plan.targetVersion,command:plan.command,args:plan.args},{method:"npm",installedVersion:"1.18.30",targetVersion:"1.18.35",command:"npm",args:["install","-g","--prefix",realpathSync(prefix),"--allow-scripts=opencode-ai","opencode-ai@1.18.35"]});
     const installed=await manager.install("opencode");
-    assert.equal(installed.status.version,"1.18.35");assert.equal(installed.status.message,"OpenCode runs with 2 upstream providers connected, and lists their models.");
+    assert.equal(installed.status.version,"1.18.35");assert.equal(installed.status.message,"OpenCode is ready, listing models from the 2 providers it is connected to.");
     // An OpenCode Trebell cannot tell who installed is left alone.
     const custom=join(root,"custom","opencode.cmd");await fixture.launcher(custom,"opencode.mjs");
     manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:custom,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
@@ -693,6 +710,27 @@ test("provider auth probes distinguish authenticated, unauthenticated and unknow
   assert.equal(parseGrokModelsAuth("- grok-4.6"),null);
   assert.deepEqual(parseOpenCodeAuthList("— 0 credentials\n— 2 environment variables\n"),{connected:2,authenticated:true});
   assert.deepEqual(parseOpenCodeAuthList("— 0 credentials\n— 0 environment variables\n"),{connected:0,authenticated:null});
+});
+
+test("Grok Build's sign-in reads its wording as written, through colours, with the signed-in line first",()=>{
+  for(const [said,signedIn] of [
+    ["\x1b[1;32mYou are logged in\x1b[0m with grok.com.\n",true],
+    ["You are \x1b[1mlogged\x1b[22m in.\n",true],
+    ["\x1b[31mYou are not authenticated.\x1b[0m\n",false],
+    ["\x1b[2KNot logged \x1b[33min\x1b[0m. Run grok login.\n",false],
+    ["YOU ARE LOGGED IN\n",true],
+    ["not logged in\nYou are logged in with grok.com.\n",true],
+    ["You are logged in\nNot authenticated for team models\n",true],
+    ["You are not logged in. Run grok login.\n",false],
+    ["You are logged out.\n",null],
+    ["you are  logged in\n",null],
+    ["not\nauthenticated\n",null],
+    ["You are logged \u0130n\n",null],
+    ["Not logged \u0130n\n",null],
+    ["",null],
+    [undefined,null],
+    [null,null],
+  ])assert.equal(parseGrokModelsAuth(said),signedIn,JSON.stringify(said));
 });
 
 test("a local harness's version check is kept until its binary changes, and a fresh probe checks it again",async()=>{
@@ -855,7 +893,7 @@ test("remote runtime probes use provider-native auth status without treating unk
     const claudeUnknown=await manager.probe("claude");
     assert.deepEqual([claudeUnknown.available,claudeUnknown.authenticated,claudeUnknown.message],[true,null,"Claude Code is installed, but Trebell could not verify its authentication status."]);
     claudeAuth={loggedIn:false};const claudeSignedOut=await manager.probe("claude");
-    assert.deepEqual([claudeSignedOut.available,claudeSignedOut.authenticated,claudeSignedOut.message],[false,false,"Claude Code is signed out. Sign in with `claude auth login` and try again."]);
+    assert.deepEqual([claudeSignedOut.available,claudeSignedOut.authenticated,claudeSignedOut.message],[false,false,"Claude Code has no account signed in. Run `claude auth login`, then try again."]);
     claudeAuth={loggedIn:true};assert.equal((await manager.probe("claude")).authenticated,true);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

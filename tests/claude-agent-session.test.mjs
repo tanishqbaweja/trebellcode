@@ -9,9 +9,9 @@ import {
   claudeQueryPolicy,
   claudeQuestionAnswers,
   claudeResultFailure,
-  claudeSessionPermissionUpdates,
+  claudeSessionGrant,
   claudeUserContent,
-  describeClaudeUsageLimit,
+  claudeUsagePauseNotice,
 } from "../src/claude-agent-session.mjs";
 import { createClaudeRepositoryMcp } from "../src/claude-repository-tools.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
@@ -158,7 +158,8 @@ test("Claude user content sends images as base64 blocks and keeps the user's tex
   assert.deepEqual(content,[
     {type:"image",source:{type:"base64",media_type:"image/png",data:"iVBORw0KGgo="}},
     {type:"text",text:"<trebell_context>ctx</trebell_context>"},
-    {type:"text",text:"Attached file: C:\\my repo\\a.js"},
+    // Re-pinned: the linked file's line is Trebell's attachment line (prompt-attachments.mjs linkedFileLine), not "Attached file: <path>".
+    {type:"text",text:"[File attachment \"a.js\" at C:\\my repo\\a.js]"},
     {type:"text",text:"/review what is in the picture?"},
   ]);
   assert.throws(()=>claudeUserContent([{type:"image",mimeType:"image/bmp",data:"Qk0="}]),/Claude Code takes PNG, JPEG, GIF and WebP images, not 'image\/bmp'\./);
@@ -209,7 +210,7 @@ test("Claude permission prompts follow Trebell's policy and read-only denials ca
   assert.equal((await canUse("Edit",{file_path:"a.js"},toolOptions)).behavior,"allow");
   assert.equal(approvals,0);
   const declined=await canUse("Bash",{command:"echo hi"},toolOptions);
-  assert.equal(declined.behavior,"deny");assert.equal(declined.message,"User declined tool execution.");assert.equal(approvals,1);
+  assert.equal(declined.behavior,"deny");assert.equal(declined.message,"The user denied this tool call in Trebell Code, so it did not run.");assert.equal(approvals,1);
   const readOnly=session(sdk,{permissionMode:"read-only",onPermission:async()=>{approvals++;return "accept"}});
   await readOnly.start();await readOnly.prompt([{type:"text",text:"look"}]);
   const readCanUse=calls.at(-1).options.canUseTool;
@@ -224,12 +225,12 @@ test("a Claude approval prompt says what is approved",async()=>{
   assert.equal(claudePermissionPrompt("Write",{file_path:"C:\\repo\\notes.txt",content:"hello"},{}),"Write: C:\\repo\\notes.txt");
   // The live tour: Claude Code's sentence for a PowerShell command was the model's description of it, so the card showed no command.
   assert.equal(claudePermissionPrompt("PowerShell",{command:"node -e \"console.log('trebell-tour')\"",description:"Run node one-liner printing trebell-tour"},{description:"Run node one-liner printing trebell-tour"}),
-    "PowerShell: node -e \"console.log('trebell-tour')\" — Run node one-liner printing trebell-tour");
+    "PowerShell: node -e \"console.log('trebell-tour')\" · Run node one-liner printing trebell-tour");
   assert.equal(claudePermissionPrompt("Write",{file_path:"C:\\repo\\notes.txt"},{title:"Claude wants to write C:\\repo\\notes.txt"}),"Claude wants to write C:\\repo\\notes.txt");
   assert.equal(claudePermissionPrompt("WebFetch",{url:"https://example.com"},{description:"Claude wants to fetch example.com"}),"Claude wants to fetch example.com");
   assert.equal(claudePermissionPrompt("WebFetch",{url:"https://example.com"},{decisionReason:"Network access needs approval"}),"Network access needs approval");
   assert.equal(claudePermissionPrompt("mcp__docs__search",{query:"x"},{}),'mcp__docs__search: {"query":"x"}');
-  assert.equal(claudePermissionPrompt("Tool",{text:"y".repeat(500)},{}).length,"Tool: ".length+400);
+  assert.equal(claudePermissionPrompt("Tool",{text:"y".repeat(500)},{}).length,"Tool: ".length+500);
   const {sdk,calls}=fakeClaude();const requests=[];
   const claude=session(sdk,{onPermission:async request=>{requests.push(request);return "accept"}});
   await claude.start();await claude.prompt([{type:"text",text:"run it"}]);
@@ -241,10 +242,10 @@ test("a Claude approval prompt says what is approved",async()=>{
 });
 
 test("Claude 'Allow for this session' stays in the session and holds for the thread's later processes",async()=>{
-  assert.deepEqual(claudeSessionPermissionUpdates("Bash",[{type:"addRules",rules:[{toolName:"Bash",ruleContent:"npm test"}],behavior:"allow",destination:"localSettings"}]),[
+  assert.deepEqual(claudeSessionGrant("Bash",[{type:"addRules",rules:[{toolName:"Bash",ruleContent:"npm test"}],behavior:"allow",destination:"localSettings"}]),[
     {type:"addRules",rules:[{toolName:"Bash",ruleContent:"npm test"}],behavior:"allow",destination:"session"},
   ]);
-  assert.deepEqual(claudeSessionPermissionUpdates("WebFetch",[]),[{type:"addRules",rules:[{toolName:"WebFetch"}],behavior:"allow",destination:"session"}]);
+  assert.deepEqual(claudeSessionGrant("WebFetch",[]),[{type:"addRules",rules:[{toolName:"WebFetch"}],behavior:"allow",destination:"session"}]);
   const {sdk,calls}=fakeClaude();
   const claude=session(sdk,{onPermission:async()=>"acceptForSession"});
   await claude.start();await claude.prompt([{type:"text",text:"run tests"}]);
@@ -269,7 +270,7 @@ test("Claude AskUserQuestion answers are keyed by question text with string valu
   const allowed=await canUse("AskUserQuestion",{questions},{toolUseID:"ask-1"});
   assert.deepEqual(allowed,{behavior:"allow",updatedInput:{questions,answers:{"Which color?":"Blue","Which sizes?":"M"}},toolUseID:"ask-1"});
   answer={};
-  assert.deepEqual(await canUse("AskUserQuestion",{questions},{toolUseID:"ask-2"}),{behavior:"deny",message:"User cancelled tool execution.",toolUseID:"ask-2"});
+  assert.deepEqual(await canUse("AskUserQuestion",{questions},{toolUseID:"ask-2"}),{behavior:"deny",message:"The user closed these questions in Trebell Code without answering them.",toolUseID:"ask-2"});
 });
 
 test("Claude Stop interrupts the turn, ends the process and records a cancelled turn with its ids",async()=>{
@@ -304,8 +305,8 @@ test("Claude aborted or interrupted results are cancellations, never errors",asy
 test("Claude errors read plainly: no SDK wrapper, no diagnostics, no API error streamed as the reply",async()=>{
   assert.equal(claudeResultFailure({subtype:"error_during_execution",errors:["[ede_diagnostic] result_type=user","Real failure"]}),"Real failure");
   assert.equal(claudeResultFailure({subtype:"success",is_error:false,result:"fine"}),null);
-  assert.equal(claudeResultFailure({subtype:"success",is_error:true,api_error_status:529,result:"overloaded"}),"The Claude API is overloaded (529). Send the message again in a moment.");
-  assert.equal(claudeResultFailure({subtype:"success",is_error:true,terminal_reason:"blocking_limit",result:""}),"Claude Code stopped: this thread no longer fits the model's context window. Run /compact, or start a new thread.");
+  assert.equal(claudeResultFailure({subtype:"success",is_error:true,api_error_status:529,result:"overloaded"}),"The Claude API is overloaded right now (HTTP 529). Wait a moment, then send the message again.");
+  assert.equal(claudeResultFailure({subtype:"success",is_error:true,terminal_reason:"blocking_limit",result:""}),"Claude Code ended the turn: this thread has grown past the model's context window. Compact it with /compact, or continue in a new thread.");
   const apiError="There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it.";
   const {sdk}=fakeClaude({turn:({message,emit})=>{
     emit({type:"assistant",uuid:"err-1",parent_tool_use_id:null,error:"model_not_found",message:{id:"m",content:[{type:"text",text:apiError}]}});
@@ -336,7 +337,7 @@ test("Claude sign-in failures and usage limits get Trebell's explanations",async
   const claude=session(sdk);await claude.start();
   await assert.rejects(()=>claude.prompt([{type:"text",text:"x"}]),/claude auth login/);
   const resetsAt=Math.floor(Date.now()/1000)+90*60;
-  assert.match(describeClaudeUsageLimit({rateLimitType:"five_hour",resetsAt},Date.now()),/^Claude usage limit reached\. This turn is paused until the 5-hour limit resets in 1h 3\dm\.$/);
+  assert.match(claudeUsagePauseNotice({rateLimitType:"five_hour",resetsAt},Date.now()),/^Claude Code has used up its five-hour allowance\. The turn waits until it resets, in 1 h 3\d min\.$/);
   const {sdk:limited}=fakeClaude({turn:({message,emit})=>{
     emit({type:"rate_limit_event",rate_limit_info:{status:"rejected",rateLimitType:"five_hour",resetsAt}});
     emit({type:"rate_limit_event",rate_limit_info:{status:"rejected",rateLimitType:"five_hour",resetsAt}});
@@ -344,10 +345,10 @@ test("Claude sign-in failures and usage limits get Trebell's explanations",async
     emit({type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:429,result:"limit",user_message_uuid:message.uuid});
   }});
   const capped=session(limited);await capped.start();
-  await assert.rejects(()=>capped.prompt([{type:"text",text:"x"}]),/Claude API rate limit was hit/);
+  await assert.rejects(()=>capped.prompt([{type:"text",text:"x"}]),/limiting how fast requests come in \(HTTP 429\)/);
   const notices=capped.updates.filter(update=>update.sessionUpdate==="tool_call"&&String(update.toolCallId).startsWith("usage-limit:"));
   assert.equal(notices.length,1,"one notice per window and reset");
-  assert.match(notices[0].title,/5-hour limit resets in/);
+  assert.match(notices[0].title,/five-hour allowance\. The turn waits until it resets, in /);
 });
 
 test("Claude streams text and summarized thinking as they arrive without repeating them from the final message",async()=>{
@@ -383,7 +384,7 @@ test("Claude offers slash commands and agents before the first message from the 
   await claude.start();
   const inventory=()=>claude.updates.filter(update=>update.sessionUpdate==="session_info_update").at(-1);
   assert.deepEqual(inventory().commands,["compact"],"the machine-wide probe shows at once");
-  assert.equal(loads[0].cwd,"/repo");assert.equal(loads[0].includeUsage,false);
+  assert.equal(loads[0].cwd,"/repo");assert.equal(loads[0].withPlanUsage,false);
   release();await tick();
   assert.deepEqual(inventory().commands,[{name:"deploy",description:"Project command"}],"this folder's probe replaces it");
 });

@@ -178,7 +178,7 @@ test("the integrity audit fails a lane that ran a benchmark switch and reviews s
 test("a later message that asks for background processes neither expands the thread's tools nor restarts its Native session",async t=>{
   const harness=await relayHarness(t,{model:"gpt-5",script:(request,count)=>({id:"answer-"+count,provider:"openai",model:request.model,text:"Done.",toolCalls:[],usage:{inputTokens:1,outputTokens:1,totalTokens:2}})});
   await harness.send("Explain src/a.mjs");
-  await harness.send("Start the dev server in the background and keep it running",{dynamicToolNamespaces:["trebell_process"]});
+  await harness.send("Launch the API with npm start as a background job and leave it running",{dynamicToolNamespaces:["trebell_process"]});
   assert.equal(harness.notifications.some(message=>message.method==="thread/tools/updated"),false,"nothing to add");
   assert.deepEqual((await harness.request("thread/read",{threadId:harness.thread.id})).thread.providerMeta.dynamicToolNamespaces,[]);
   for(const request of harness.requests)assert.ok(request.tools.some(namespace=>namespace.name==="trebell_process"));

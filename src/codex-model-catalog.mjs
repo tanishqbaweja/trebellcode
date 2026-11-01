@@ -1,29 +1,29 @@
 import { codexConfiguredServiceTier } from "./model-service-tier.mjs";
 
-// Codex model catalog helpers: the default model and each model's capabilities. The catalog itself always comes
-// from the user's installed Codex `model/list`.
+// What Trebell takes from the person's own Codex model list (`model/list`): the model a new Codex thread starts on, the tier each
+// model runs at by default, and how a reasoning level reads in the composer. The UI bundles this module, so it stays free of
+// Node built-ins.
 
-export const PREFERRED_DEFAULT_CODEX_MODELS = Object.freeze(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"]);
-
-export function codexModelFamily(slug) {
-  const id = String(slug || "");
-  return id.startsWith("openai.gpt-") ? id.slice("openai.".length) : id;
-}
-
-function rowId(row) {
-  return String(row?.id || row?.model || "").trim();
-}
-
-// Prefer a preferred family's model as the default when one is in the live catalog; otherwise keep the model
-// Codex itself flags as default.
-export function preferredCodexDefaultModel(rows = []) {
-  const list = (Array.isArray(rows) ? rows : []).filter(row => rowId(row));
-  for (const family of PREFERRED_DEFAULT_CODEX_MODELS) {
-    const hit = list.find(row => codexModelFamily(rowId(row)) === family);
-    if (hit) return rowId(hit);
+// The model a new Codex thread starts on, picked as Codex picks its own (codex-rs/models-manager/src/manager.rs at the tag
+// rust-v0.155.1, default_model_from_available): the first row model/list flags as its default (isDefault exactly true), else the
+// first row, else none. rows: model/list's rows in Codex's order, as the GUI server lists them. Codex flags one model, the first
+// its picker shows (codex-rs/protocol/src/openai_models.rs), so the flag decides whenever Codex gives one.
+export function codexStartingModel(rows) {
+  const listed = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const id = listedIdOf(row);
+    if (id === "") continue;
+    if (row.isDefault === true) return id;
+    listed.push(id);
   }
-  const flagged = list.find(row => row?.isDefault === true);
-  return flagged ? rowId(flagged) : null;
+  return listed[0] ?? null;
+}
+
+// The id a model/list row is listed under: its id, else its model, as text without the blanks around it. A row with neither
+// reads as "" and is no model; the GUI server reads a row's id by the same rule.
+function listedIdOf(row) {
+  const named = row?.id || row?.model;
+  return named ? String(named).trim() : "";
 }
 
 // The tier the person's Codex config runs new threads at (config/read's service_tier) is the
@@ -35,18 +35,23 @@ export function withConfiguredCodexServiceTier(rows = [], serviceTier = null) {
   });
 }
 
-const REASONING_EFFORT_LABELS = Object.freeze({
+// How a reasoning level id reads in the composer, for every harness: by the label Codex's own level picker gives it (OpenAI's
+// openai/codex, codex-rs/tui/src/chatwidget/model_popups.rs, reasoning_effort_label). Codex accepts any level a model advertises,
+// so any other id reads exactly as given (a harness's own level names stay its own), and no id reads as "".
+export function codexReasoningEffortLabel(effort) {
+  const id = effort ? String(effort) : "";
+  return Object.hasOwn(CODEX_PICKER_LEVEL_LABELS, id) ? CODEX_PICKER_LEVEL_LABELS[id] : id;
+}
+
+// The picker's label for each level id.
+const CODEX_PICKER_LEVEL_LABELS = Object.freeze({
   none: "None",
   minimal: "Minimal",
   low: "Low",
   medium: "Medium",
   high: "High",
-  xhigh: "Extra High",
+  xhigh: "Extra high",
   max: "Max",
   ultra: "Ultra",
+  persistent: "Persistent",
 });
-
-export function codexReasoningEffortLabel(effort) {
-  const value = String(effort || "");
-  return REASONING_EFFORT_LABELS[value] || value;
-}

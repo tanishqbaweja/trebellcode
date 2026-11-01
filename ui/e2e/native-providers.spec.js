@@ -400,7 +400,7 @@ for(const mode of MODES)test(`a model picked in the model menu with Enter or a c
 
 for(const mode of MODES)test(`a Thinking level the model does not offer reads and runs as the provider default, and a level it offers is sent (${mode})`,async({page})=>{
   test.setTimeout(60_000);
-  // Saved while the picker still offered Extra High for gpt-5. The picker went on showing it and every turn sent it, which the
+  // Saved while the picker still offered Extra high for gpt-5. The picker went on showing it and every turn sent it, which the
   // Responses API answers with HTTP 400 "Unsupported value: 'xhigh' is not supported with the 'gpt-5' model".
   const {server,relay,close}=await startNativeHarness(page,{provider:"openai",mode,hasKey:true,models:["gpt-5","gpt-6.1-sol"],defaultModel:"gpt-5",reasoningEfforts:{"native:openai:gpt-5":"xhigh"}});
   try{
@@ -467,7 +467,7 @@ for(const mode of MODES)test(`Native on a provider that names no default model a
     await menu.getByRole("button",{name:"muse-spark-1.3",exact:true}).click();
     await expect(menu).toHaveCount(0);await expect(picker).toHaveText("muse-spark-1.3");await expect(picker).not.toHaveClass(CHOOSE);
     await expect(alert).toHaveCount(0);
-    await expect(thinking.locator("option")).toHaveText(["Default","Minimal","Low","Medium","High","Extra High","Max"].map(level=>"Thinking · "+level));
+    await expect(thinking.locator("option")).toHaveText(["Default","Minimal","Low","Medium","High","Extra high","Max"].map(level=>"Thinking · "+level));
     await expect(composer).toHaveValue("Summarize the release notes");
     await send.click();
     await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(1);

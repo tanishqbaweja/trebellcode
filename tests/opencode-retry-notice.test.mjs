@@ -35,13 +35,17 @@ async function fakeOpenCode1(){
   };
 }
 
+// Re-pinned: the row used to end "OpenCode retries <model> in <n> s (retry <k>)."; it now reads as every harness's own retry row
+// does (src/retry-notice.mjs), with the same facts.
 test("an OpenCode retry Trebell waits for says so in Trebell's words: what failed, which model, in how long and which retry",async()=>{
   const {openCodeRetryNotice}=await import("../src/opencode-agent-session.mjs");
   assert.equal(typeof openCodeRetryNotice,"function");
-  assert.equal(openCodeRetryNotice({message:"429 Too Many Requests",model:"opencode/big-pickle",retry:1,waitMs:30_000}),"429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1).");
-  assert.equal(openCodeRetryNotice({message:{name:"APIError",data:{message:"Provider is overloaded."}},model:"nvidia/z-ai/glm-5.3-flash",retry:3,waitMs:1_400}),"Provider is overloaded. OpenCode retries nvidia/z-ai/glm-5.3-flash in 1 s (retry 3).");
-  assert.equal(openCodeRetryNotice({message:"Rate limited",retry:2,waitMs:8_000,subagent:true}),"A subagent's model request failed: Rate limited. OpenCode retries it in 8 s (retry 2).");
-  assert.equal(openCodeRetryNotice({retry:0,waitMs:-5}),"The model provider request failed. OpenCode retries the model in 1 s (retry 1).");
+  assert.equal(openCodeRetryNotice({message:"429 Too Many Requests",model:"opencode/big-pickle",retry:1,waitMs:30_000}),"429 Too Many Requests. OpenCode sends the request to opencode/big-pickle again in 30 s, as retry 1.");
+  assert.equal(openCodeRetryNotice({message:{name:"APIError",data:{message:"Provider is overloaded."}},model:"nvidia/z-ai/glm-5.3-flash",retry:3,waitMs:1_400}),"Provider is overloaded. OpenCode sends the request to nvidia/z-ai/glm-5.3-flash again in 1 s, as retry 3.");
+  assert.equal(openCodeRetryNotice({message:"Rate limited",retry:2,waitMs:8_000,subagent:true}),"A subagent's model request failed: Rate limited. OpenCode sends it again in 8 s, as retry 2.");
+  assert.equal(openCodeRetryNotice({retry:0,waitMs:-5}),"The model provider request failed. OpenCode sends the request to the model again in 1 s, as retry 1.");
+  // The reason's closing full stops and blanks go, so the row has one full stop there.
+  assert.equal(openCodeRetryNotice({message:"Provider is overloaded. .\n",model:"m",waitMs:2_000}),"Provider is overloaded. OpenCode sends the request to m again in 2 s, as retry 1.");
 });
 
 test("an OpenCode 1.x retry shows as the turn's retry row, and the turn ends as OpenCode answers it",async()=>{
@@ -57,7 +61,7 @@ test("an OpenCode 1.x retry shows as the turn's retry row, and the turn ends as 
     const notices=updates.filter(update=>update.sessionUpdate==="runtime_error");
     assert.equal(notices.length,1);assert.equal(notices[0].willRetry,true);
     // The wait is counted when the event arrives, so a busy machine that takes seconds to deliver it shows fewer of the 20 s.
-    const [,seconds]=notices[0].message.match(/^Rate limited\. OpenCode retries opencode\/big-pickle in (\d+) s \(retry 2\)\.$/)||[];
+    const [,seconds]=notices[0].message.match(/^Rate limited\. OpenCode sends the request to opencode\/big-pickle again in (\d+) s, as retry 2\.$/)||[];
     assert.ok(Number(seconds)>=10&&Number(seconds)<=20,notices[0].message);
     fixture.held[0]({info:{id:"msg_a1",parentID:"msg_u1",role:"assistant",tokens:{input:3,output:1}},parts:[{id:"prt_1",type:"text",text:"Fixed."}]});
     assert.equal((await turn).stopReason,"end_turn");

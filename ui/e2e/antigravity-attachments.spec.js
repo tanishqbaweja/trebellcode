@@ -8,12 +8,14 @@ import { fileURLToPath } from "node:url";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { select } from "../../tests/fixtures/scripted-acp.mjs";
+import { HIDDEN_IN_EXCERPT, SIGN_IN_LINE } from "../../tests/fixtures/agent-log-lines.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // What an Antigravity chat sends of the files a person attaches, as Antigravity 1.2.1 advertises itself (images, audio and embedded
 // context): an mp3 goes as audio after the line that names it, a PNG as an
-// image and a GIF by its saved path; a message whose image does not fit in the 50 MiB Antigravity takes in one message ends saying
-// which image and what to do. The real relay and Antigravity session run the scripted ACP agent (tests/fixtures/scripted-acp-agent.mjs)
+// image and a GIF by its saved path; a message whose image has no room after 36 MiB of audio (48 MiB as base64, all the room the
+// prompt's line has; acp-agent-session.mjs ANTIGRAVITY_LIMITS, which replaced a message's 50 MiB on 2026-11-01) ends saying which
+// image and what to do. The real relay and Antigravity session run the scripted ACP agent (tests/fixtures/scripted-acp-agent.mjs)
 // as Antigravity, and its log shows what it was sent. A chat whose Antigravity stops as it starts (the stand-in for Antigravity's own
 // server, tests/fixtures/antigravity-acp-agent.mjs) says so in plain words, never pointing to the sign-in link it hides.
 const auditDir=fileURLToPath(new URL("../../visual-audit/antigravity-attachments/",import.meta.url));mkdirSync(auditDir,{recursive:true});
@@ -94,7 +96,7 @@ async function shots(page,name,check=async()=>{}){
 }
 const prompts=entries=>entries.filter(entry=>entry.method==="session/prompt").map(entry=>entry.params.prompt);
 // The line that names a saved upload (<time>-<id>-<name>, as the GUI server saves it) by its path.
-const namedLine=(kind,name)=>new RegExp(`^\\[Attached ${kind} "\\d{10,}-[0-9a-f]{8}-${name.replace(".","\\.")}" is saved at: .+${name.replace(".","\\.")}\\]$`);
+const namedLine=(kind,name)=>new RegExp(`^\\[${kind[0].toUpperCase()+kind.slice(1)} attachment "\\d{10,}-[0-9a-f]{8}-${name.replace(".","\\.")}" at .+${name.replace(".","\\.")}\\]$`);
 
 test("an mp3 attached to an Antigravity chat reaches it as audio after the line that names it, a PNG as an image and a GIF by its saved path",async({page})=>{
   test.setTimeout(120_000);
@@ -116,38 +118,41 @@ test("an mp3 attached to an Antigravity chat reaches it as audio after the line 
 
 test("a message whose image does not fit in what Antigravity takes in one message ends saying which image and what to do, and the chat goes on",async({page})=>{
   test.setTimeout(120_000);
-  await antigravityApp(page,["The report has three sections."],async({root,log})=>{
-    // A 50 MiB PDF (a file of zeros, written without holding it in memory) stands for the upload of report.pdf, which the GUI server
-    // would have saved under its own name; the screenshot is uploaded as a person uploads it.
-    const report=join(root,"attachments","1761500000000-ab12cd34-report.pdf");mkdirSync(join(root,"attachments"),{recursive:true});
-    await writeFile(report,"");await truncate(report,50*MiB);
-    await page.route(/\/api\/attachments\/blob$/,route=>route.request().postDataJSON()?.name==="report.pdf"?json(route,{path:report,name:basename(report),size:50*MiB,mime:"application/pdf"}):route.fallback());
-    await attach(page,[{name:"report.pdf",mimeType:"application/pdf",buffer:Buffer.from("%PDF-1.7")},{name:"dot.png",mimeType:"image/png",buffer:PNG}]);
-    await send(page,"Does the screenshot match the report?");
-    const said=page.getByText('The attached image "dot.png" is too large for one Antigravity message, which takes images up to 10 MiB and 50 MiB of attachments in all. Send it in a message of its own.').first();
+  await antigravityApp(page,["The picture is a single red dot."],async({root,log})=>{
+    // 36 MiB of audio (a file of zeros, written without holding it in memory) stands for the upload of memo.mp3, which the GUI server
+    // would have saved under its own name. As base64 it is 48 MiB, all the room the prompt's line has, so the screenshot after it has
+    // none. The screenshot is uploaded as a person uploads it.
+    const memo=join(root,"attachments","1761500000000-ab12cd34-memo.mp3");mkdirSync(join(root,"attachments"),{recursive:true});
+    await writeFile(memo,"");await truncate(memo,36*MiB);
+    await page.route(/\/api\/attachments\/blob$/,route=>route.request().postDataJSON()?.name==="memo.mp3"?json(route,{path:memo,name:basename(memo),size:36*MiB,mime:"audio/mpeg"}):route.fallback());
+    await attach(page,[{name:"memo.mp3",mimeType:"audio/mpeg",buffer:MEMO},{name:"dot.png",mimeType:"image/png",buffer:PNG}]);
+    await send(page,"What is said, and does the screenshot match it?");
+    const said=page.getByText("The image \"dot.png\" does not fit in this message to Antigravity with the other attachments. Send it in a message of its own.").first();
     await expect(said).toBeVisible({timeout:20_000});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
     expect(prompts(await log()),"Antigravity was sent nothing").toEqual([]);
     await shots(page,"image-past-the-message-limit",()=>expect(said).toBeVisible());
-    // The person sends the report on its own, and the chat takes it.
-    await attach(page,[{name:"report.pdf",mimeType:"application/pdf",buffer:Buffer.from("%PDF-1.7")}]);
-    await send(page,"Then just the report: what is in it?");
-    await expect(page.locator(".assistant-message-text").filter({hasText:"The report has three sections."})).toBeVisible({timeout:20_000});
+    // The person sends the screenshot on its own, and the chat takes it as an image.
+    await attach(page,[{name:"dot.png",mimeType:"image/png",buffer:PNG}]);
+    await send(page,"Then just the screenshot: what is in it?");
+    await expect(page.locator(".assistant-message-text").filter({hasText:"The picture is a single red dot."})).toBeVisible({timeout:20_000});
     const [prompt]=prompts(await log());
-    expect(prompt.filter(part=>part.type==="resource_link").map(part=>[part.name,part.mimeType]),"the report goes as a document link").toEqual([[basename(report),"application/pdf"]]);
+    expect(prompt.filter(part=>part.type==="image"),"the screenshot goes as an image").toEqual([{type:"image",mimeType:"image/png",data:PNG.toString("base64")}]);
   });
 });
 
 test("an Antigravity that stops as it starts is named with its exit code, and one that asked for a Google sign-in is pointed to its key, not to the link it hides",async({page})=>{
   test.setTimeout(120_000);
-  const SIGN_IN="https://accounts.google.com/o/oauth2/v2/auth?state=x&redirect_uri=http://127.0.0.1:4567/",KEY="AIzaSyE2eFixtureKeyForTrebell0123456789";
+  const KEY="AIzaSyE2eFixtureKeyForTrebell0123456789";
   await antigravityApp(page,[],async({exitWith,saveKey})=>{
     const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert");
     // No key saved, sent with Enter: what Antigravity asked for, and where it signs in instead.
     await composer.click();await page.keyboard.type("Summarize the repository",{delay:5});await page.keyboard.press("Enter");
     await expect(alert).toHaveText("Not sent: Antigravity stopped as it started, with exit code 3, asking for a Google sign-in. Sign in to Antigravity in Settings, then try again. Your draft is kept.",{timeout:20_000});
     await expect(composer).toHaveValue("Summarize the repository");
-    expect(await page.locator("body").innerText(),"no runtime words, link or address on the page").not.toMatch(/ACP runtime|code=|signal=|sign-in-url|following link|accounts\.google\.com|127\.0\.0\.1:4567/);
+    const pageText=await page.locator("body").innerText();
+    expect(pageText,"no runtime words, and not the agent's own sign-in line").not.toMatch(/ACP runtime|code=|signal=|redacted sign-in link|Sign in with your Google account/);
+    expect(pageText,"no link or address on the page").not.toMatch(HIDDEN_IN_EXCERPT);
     await shots(page,"start-exit-sign-in",()=>expect(alert).toBeVisible());
     // With a key saved, sent with the Send button: the key to check.
     saveKey(KEY);
@@ -159,5 +164,5 @@ test("an Antigravity that stops as it starts is named with its exit code, and on
     await expect(alert).toHaveText("Not sent: Antigravity stopped as it started, with exit code 1: ValueError: Unexpected git description. Your draft is kept.",{timeout:20_000});
     await expect(composer).toHaveValue("Summarize the repository");
     await shots(page,"start-exit-printed",()=>expect(alert).toBeVisible());
-  },{exit:{exitAt:"initialize",exitCode:3,stderr:"Open the following link to authenticate the ACP server: "+SIGN_IN+"\n"}});
+  },{exit:{exitAt:"initialize",exitCode:3,stderr:SIGN_IN_LINE[0]+"\n"}});
 });

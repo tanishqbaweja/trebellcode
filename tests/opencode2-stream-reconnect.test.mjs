@@ -4,7 +4,7 @@ import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode2-client.mjs";
 
 // An OpenCode 2 event stream that is lost (it sends nothing, not even OpenCode's heartbeat, for 45 seconds while the session waits on it,
-// or it fails) is a lost stream, not a lost turn. The session subscribes again (five tries, two seconds apart) and asks OpenCode which
+// or it fails) is a lost stream, not a lost turn. The session subscribes again (four tries, three seconds apart) and asks OpenCode which
 // sessions it still runs: a turn whose run goes on goes on, one whose run ended meanwhile ends as its messages say, and a request asked
 // meanwhile is asked again; only a turn it cannot follow again fails. Trebell ended the turn and interrupted its run after the first 45
 // seconds of silence, even with OpenCode answering at once. On mocked timers.
@@ -83,15 +83,15 @@ test("an OpenCode 2 stream that fails is followed again, and a question and an a
     await eventually(()=>fake.called("permission.reply").length===1&&fake.called("session.form.reply").length===1);
     assert.deepEqual(asked.sort(),["permission","question"]);
     assert.deepEqual(fake.called("permission.reply"),[{sessionID:"ses_main",requestID:"per_gap",decision:"once"}]);
-    assert.deepEqual(fake.called("session.form.reply"),[{sessionID:"ses_main",formID:"frm_gap",answer:{q0:"Red"}}]);
     assert.equal(turn.value,"running");
+    assert.deepEqual(fake.called("session.form.reply"),[{sessionID:"ses_main",formID:"frm_gap",answer:{q0:"Red"}}]);
     assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error"),[],"a lost stream is no error of the turn's");
     fake.emit({type:"session.execution.succeeded",data:{sessionID:"ses_main"}});
     await eventually(()=>turn.value!=="running");assert.equal(turn.value,"end_turn");
   }finally{await session.close()}
 });
 
-test("an OpenCode 2 turn whose stream cannot be opened again ends saying so after five tries, its run is stopped, and the next turn listens again",{timeout:30_000},async t=>{
+test("an OpenCode 2 turn whose stream cannot be opened again ends saying so after four tries, its run is stopped, and the next turn listens again",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
   let refusing=true,runs=RUNNING;
   const failing={async*[Symbol.asyncIterator](){throw Object.assign(new Error("Transport: fetch failed"),{name:"ClientError",reason:"Transport"})}};
@@ -103,7 +103,7 @@ test("an OpenCode 2 turn whose stream cannot be opened again ends saying so afte
     t.mock.timers.tick(45_000);
     for(let step=0;step<60&&turn.value==="running";step++){t.mock.timers.tick(500);await settle()}
     assert.equal(turn.value,LOST);
-    assert.equal(fake.subscriptions(),6,"the lost stream and five tries");
+    assert.equal(fake.subscriptions(),5,"the lost stream and four tries");
     // Trebell no longer follows the run, so it stops it where OpenCode still takes requests.
     assert.equal(fake.called("session.interrupt").length,1);
     assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error"),[]);
@@ -115,4 +115,27 @@ test("an OpenCode 2 turn whose stream cannot be opened again ends saying so afte
     fake.emit({type:"session.execution.succeeded",data:{sessionID:"ses_main"}});
     await eventually(()=>next.value!=="running");assert.equal(next.value,"end_turn");
   }finally{await session.close()}
+});
+
+test("a lost OpenCode 2 stream is subscribed to again at once and then three seconds apart, four times in all",{timeout:30_000},async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  const failing={async*[Symbol.asyncIterator](){throw Object.assign(new Error("Transport: fetch failed"),{name:"ClientError",reason:"Transport"})}};
+  const fake=fakeOpenCode2Client({overrides:{"event.subscribe":(_options,count)=>count>0?failing:null}}),{session}=await startedSession(t,fake);
+  try{
+    assert.equal(fake.subscriptions(),1);
+    fake.breakStreams();
+    await eventually(()=>fake.subscriptions()===2);await settle();
+    assert.equal(fake.subscriptions(),2,"the first try comes at once");
+    for(const count of [3,4,5]){
+      t.mock.timers.tick(2_999);await settle();
+      assert.equal(fake.subscriptions(),count-1,"no try before three seconds have passed");
+      t.mock.timers.tick(1);await settle();
+      assert.equal(fake.subscriptions(),count);
+    }
+    t.mock.timers.tick(60_000);await settle();
+    assert.equal(fake.subscriptions(),5,"the lost stream and four tries, and no more");
+  }finally{
+    // Real timers again first, so a session whose tries are still waiting closes at once instead of the test running out of time.
+    t.mock.timers.reset();await session.close();
+  }
 });

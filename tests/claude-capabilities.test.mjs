@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { claudeModelCatalog, createClaudeCapabilitiesCache, probeClaudeCapabilities } from "../src/claude-capabilities.mjs";
+import { claudeModelCatalog, createClaudeCapabilitiesCache, readClaudeCodeCapabilities } from "../src/claude-capabilities.mjs";
 
 function fakeQuery({init={models:[{value:"default",displayName:"Default"}],commands:[{name:"review"}],agents:[{name:"Plan"}],account:{email:"user@example.test"}},usage={rate_limits_available:false},usageError=null,hangInit=false}={}){
   const calls=[];
@@ -17,10 +17,10 @@ function fakeQuery({init={models:[{value:"default",displayName:"Default"}],comma
   return {query,calls};
 }
 
-test("Claude capability probe reads the initialize answer and plan usage without sending a prompt",async()=>{
+test("a Claude Code capability read takes its models, commands, agents, account and plan usage from the SDK, sends Claude Code no message and stops it afterwards",async()=>{
   const usage={rate_limits_available:true,rate_limits:{five_hour:{utilization:12,resets_at:"2026-10-09T22:59:59Z"}}};
   const {query,calls}=fakeQuery({usage});
-  const probe=await probeClaudeCapabilities({command:"claude",cwd:"/repo",env:{CLAUDE_CONFIG_DIR:"/home/u/.claude",FORCE_CODE_TERMINAL:"1"},query,managedMcpExists:()=>false});
+  const probe=await readClaudeCodeCapabilities({command:"claude",cwd:"/repo",env:{CLAUDE_CONFIG_DIR:"/home/u/.claude",FORCE_CODE_TERMINAL:"1"},query,managedMcpExists:()=>false});
   assert.deepEqual(probe.models,[{value:"default",displayName:"Default"}]);
   assert.deepEqual(probe.commands,[{name:"review"}]);assert.deepEqual(probe.agents,[{name:"Plan"}]);
   assert.deepEqual(probe.account,{email:"user@example.test"});
@@ -37,19 +37,19 @@ test("Claude capability probe reads the initialize answer and plan usage without
   await calls[0].consumed;assert.equal(calls[0].yielded,false);
 });
 
-test("Claude capability probe keeps the initialize answer when only usage fails, and skips usage when not asked",async()=>{
+test("a failed plan usage request leaves the rest of a Claude Code capability read standing, a read without usage never asks for it, and one with no reply in time fails",async()=>{
   const {query}=fakeQuery({usageError:new Error("usage unavailable")});
-  const probe=await probeClaudeCapabilities({command:"claude",query});
+  const probe=await readClaudeCodeCapabilities({command:"claude",query});
   assert.deepEqual(probe.models,[{value:"default",displayName:"Default"}]);
   assert.equal(probe.usage,null);assert.equal(probe.usageError,"usage unavailable");
   const {query:noUsage,calls}=fakeQuery();
-  const inventory=await probeClaudeCapabilities({command:"claude",cwd:"/repo",includeUsage:false,query:noUsage});
+  const inventory=await readClaudeCodeCapabilities({command:"claude",cwd:"/repo",withPlanUsage:false,query:noUsage});
   assert.equal(calls[0].usageArgs,null);assert.equal(inventory.usage,null);
   const {query:machine,calls:machineCalls}=fakeQuery();
-  await probeClaudeCapabilities({command:"claude",query:machine});
+  await readClaudeCodeCapabilities({command:"claude",query:machine});
   assert.equal(Object.prototype.hasOwnProperty.call(machineCalls[0].options,"cwd"),false,"the machine-wide probe sets no folder");
   const {query:hanging,calls:hangingCalls}=fakeQuery({hangInit:true});
-  await assert.rejects(()=>probeClaudeCapabilities({command:"claude",query:hanging,timeoutMs:20}),/did not report its capabilities in time/);
+  await assert.rejects(()=>readClaudeCodeCapabilities({command:"claude",query:hanging,timeoutMs:20}),/did not report its capabilities in time/);
   assert.equal(hangingCalls[0].closed,true);
 });
 

@@ -14,6 +14,22 @@ const url=process.env.FAKE_OPENCODE2_URL;
 fetch(url+"/fake/password",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:process.env.OPENCODE_PASSWORD||""})})
   .then(()=>{process.stdout.write("server listening on "+url+" \n");setInterval(()=>{},1<<30)},error=>{process.stderr.write(String(error));process.exit(1)});
 `;
+// The session a path under /api/session/<id> is about, and the path's segments after the id (none for the session itself); null for
+// any other path.
+function sessionRoute(pathname){
+  const [scope,group,id,...after]=pathname.split("/").slice(1);
+  return scope==="api"&&group==="session"&&id?{sessionID:decodeURIComponent(id),after}:null;
+}
+// Whether a call, by its key ("POST /api/session/<id>/prompt"), sent a session a prompt.
+function sentPrompt(key){
+  const space=key.indexOf(" "),route=sessionRoute(key.slice(space+1));
+  return key.slice(0,space)==="POST"&&route!==null&&route.after.length===1&&route.after[0]==="prompt";
+}
+// A form's routes under a session: form/<id> (DELETE cancels it) and form/<id>/reply (POST answers it); null for anything else.
+function formRoute(after){
+  if(after[0]!=="form"||!after[1]||after.length>3||(after.length===3&&after[2]!=="reply"))return null;
+  return {formID:decodeURIComponent(after[1]),replying:after.length===3};
+}
 // Writes the `serve` stand-in into a folder (the thread's working folder, where `node serve --port=...` finds it).
 export async function writeFakeOpenCode2Serve(folder){await writeFile(join(folder,"serve"),SERVE_SCRIPT,"utf8")}
 
@@ -54,19 +70,21 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
     if(["GET /api/command","GET /api/skill","GET /api/agent","GET /api/provider"].includes(key))return send(200,{data:[]});
     if(key==="POST /api/session")return send(200,{data:known.get("ses_main")});
     if(key==="GET /api/session/active")return send(200,{data:Object.fromEntries([...active].map(id=>[id,{type:"running"}]))});
-    if(/^PUT \/api\/experimental\/session\/[^/]+\/instructions\/entries\//.test(key))return send(204);
-    const match=/^\/api\/session\/([^/]+)(\/.*)?$/.exec(url.pathname);
-    if(match){
-      const sessionID=decodeURIComponent(match[1]),rest=match[2]||"",session=known.get(sessionID);
+    // A session's instruction entries: PUT /api/experimental/session/<id>/instructions/entries/<key>.
+    const segments=url.pathname.split("/").slice(1);
+    if(req.method==="PUT"&&segments.length>=7&&segments[3]&&segments.slice(0,3).join("/")==="api/experimental/session"&&segments.slice(4,6).join("/")==="instructions/entries")return send(204);
+    const route=sessionRoute(url.pathname);
+    if(route){
+      const {sessionID,after}=route,session=known.get(sessionID),what=after.join("/");
       if(!session)return send(404,{_tag:"SessionNotFoundError",message:`Session not found: ${sessionID}`});
-      if(req.method==="GET"&&!rest)return send(200,{data:session});
-      if(req.method==="PATCH"&&!rest)return send(204);
-      if(req.method==="POST"&&(rest==="/model"||rest==="/agent"))return send(204);
-      if(req.method==="GET"&&rest==="/message")return send(200,{data:[...messages].reverse()});
-      if(req.method==="GET"&&(rest==="/permission"||rest==="/form"))return send(200,{data:[]});
+      if(req.method==="GET"&&!after.length)return send(200,{data:session});
+      if(req.method==="PATCH"&&!after.length)return send(204);
+      if(req.method==="POST"&&(what==="model"||what==="agent"))return send(204);
+      if(req.method==="GET"&&what==="message")return send(200,{data:[...messages].reverse()});
+      if(req.method==="GET"&&(what==="permission"||what==="form"))return send(200,{data:[]});
       // As OpenCode answers it: a session that runs nothing has nothing to stop.
-      if(req.method==="POST"&&rest==="/interrupt"){const running=active.has(sessionID);if(running)emit({type:"session.execution.interrupted",data:{sessionID,reason:"interrupt"}});return send(200,{data:{interrupted:running}})}
-      if(req.method==="POST"&&rest==="/prompt"){
+      if(req.method==="POST"&&what==="interrupt"){const running=active.has(sessionID);if(running)emit({type:"session.execution.interrupted",data:{sessionID,reason:"interrupt"}});return send(200,{data:{interrupted:running}})}
+      if(req.method==="POST"&&what==="prompt"){
         const files=Array.isArray(body?.files)?body.files:[];
         const missing=files.findIndex(file=>!file||typeof file!=="object"||typeof file.uri!=="string");
         if(missing>=0)return send(400,{_tag:"InvalidRequestError",message:`Missing key\n  at ["files"][${missing}]["uri"]`});
@@ -81,14 +99,14 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
         if(typeof onPrompt==="function")void Promise.resolve().then(()=>onPrompt({body,sessionID,id,emit,reply})).catch(()=>{});
         return;
       }
-      const form=/^\/form\/([^/]+)(\/reply)?$/.exec(rest);
+      const form=formRoute(after);
       if(form){
-        const formID=decodeURIComponent(form[1]),entry=forms.get(formID);
+        const {formID,replying}=form,entry=forms.get(formID);
         if(!entry)return send(404,{_tag:"FormNotFoundError",message:`Form not found: ${formID}`});
         if(entry.settled)return send(409,{_tag:"FormAlreadySettledError",message:`Form already settled: ${formID}`});
         entry.settled=true;
-        if(req.method==="POST"&&form[2]){emit({type:"form.replied",data:{id:formID,sessionID,answer:body?.answer||{}}});return send(204)}
-        if(req.method==="DELETE"&&!form[2]){emit({type:"form.cancelled",data:{id:formID,sessionID}});return send(204)}
+        if(req.method==="POST"&&replying){emit({type:"form.replied",data:{id:formID,sessionID,answer:body?.answer||{}}});return send(204)}
+        if(req.method==="DELETE"&&!replying){emit({type:"form.cancelled",data:{id:formID,sessionID}});return send(204)}
       }
     }
     send(404,{_tag:"NotFoundError",message:`No fake route for ${key}`});
@@ -99,7 +117,7 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
     url,calls,emit,forms,active,messages,
     dropStreams:()=>{for(const res of streams)res.end();streams.clear()},
     called:key=>calls.filter(call=>call.key===key),
-    prompts:()=>calls.filter(call=>/^POST \/api\/session\/[^/]+\/prompt$/.test(call.key)).map(call=>call.body),
+    prompts:()=>calls.filter(call=>sentPrompt(call.key)).map(call=>call.body),
     close:()=>{clearInterval(heartbeat);for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))},
   };
 }

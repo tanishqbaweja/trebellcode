@@ -104,14 +104,14 @@ test("Settings says why an Antigravity install was refused: a download that is n
     for(const mode of ["dark","light"]){await switchMode(page,mode);await expect(refusal).toBeInViewport();await page.screenshot({animations:"disabled",path:shots+`sha256-refused-${mode}-1280.png`})}
     // A drive with 120 MB free: refused before the download is read, naming what it needs.
     await confirmInstall();
-    await expect(refusal).toHaveText(`Could not install Antigravity: Google Antigravity 1.4.3 needs 508 MB free on the drive that holds ${runtimes} to install (its 126 MB download and at least as much again once unpacked, and 256 MB to spare), and 120 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+    await expect(refusal).toHaveText(`Could not install Antigravity: Google Antigravity 1.4.3 needs 764 MB free on the drive that holds ${runtimes} to install (its 126 MB download and at least as much again once unpacked, and 512 MB to spare), and 120 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
     expect(reads.download,"the second download was not read").toBe(1);nothingInstalled();
     for(const mode of ["dark","light"]){await switchMode(page,mode);await expect(refusal).toBeInViewport();await page.screenshot({animations:"disabled",path:shots+`no-room-${mode}-1280.png`})}
     // The archive the registry lists, which unpacks to more than the drive has room for once it is in: refused before any file is
     // written, naming all the install needs and what the drive will show free.
     await switchMode(page,"dark");
     await confirmInstall();
-    await expect(refusal).toHaveText(`Could not install Antigravity: Google Antigravity 1.4.3 needs 262 MB free on the drive that holds ${runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 256 MB to spare), and 200 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+    await expect(refusal).toHaveText(`Could not install Antigravity: Google Antigravity 1.4.3 needs 518 MB free on the drive that holds ${runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 512 MB to spare), and 200 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
     expect(reads.download,"the archive was read").toBe(2);nothingInstalled();
     expect(installs).toEqual(["antigravity","antigravity","antigravity"]);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await expect(refusal).toBeInViewport();await page.screenshot({animations:"disabled",path:shots+`no-room-to-unpack-${mode}-1280.png`})}

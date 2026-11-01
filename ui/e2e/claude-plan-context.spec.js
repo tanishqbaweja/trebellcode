@@ -13,7 +13,9 @@ import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
 // failed says why instead of reading compacted.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const TODOS=[{content:"Read the release checklist",status:"in_progress",activeForm:"Reading the release checklist"},{content:"Update the changelog",status:"pending",activeForm:"Updating the changelog"},{content:"Tag the release",status:"pending",activeForm:"Tagging the release"}];
-const REASON="Prompt dropped by a hook: Deploys are frozen until Monday.";
+const REASON="Blocked by the freeze-guard hook: no releases while the audit runs.";
+const RELEASE_PROMPT="Cut the 2.4 release",INFO_LINE="Background bash task b7 is still running";
+const TOO_SHORT="Nothing to compact yet: the conversation is too short.";
 const WINDOW={rawMaxTokens:200_000,maxTokens:200_000,totalTokens:20_000,percentage:10,isAutoCompactEnabled:true};
 
 async function openThread(page,title){
@@ -24,12 +26,19 @@ async function send(page,text){await page.getByTestId("composer").click();await 
 const started=(id,usage)=>({type:"stream_event",parent_tool_use_id:null,event:{type:"message_start",message:{id,usage}}});
 const toolCall=(id,name,input,text=null)=>({type:"assistant",uuid:randomUUID(),parent_tool_use_id:null,message:{id:"msg-"+id,content:[...(text?[{type:"text",text}]:[]),{type:"tool_use",id,name,input}]}});
 const toolAnswer=(id,content,structured)=>({type:"user",parent_tool_use_id:null,message:{role:"user",content:[{type:"tool_result",tool_use_id:id,content}]},tool_use_result:structured});
-const reply=(message,text,usage,cost)=>[
-  {type:"assistant",uuid:randomUUID(),parent_tool_use_id:null,message:{id:"msg-"+randomUUID(),content:[{type:"text",text}]}},
-  {type:"result",subtype:"success",is_error:false,result:text,user_message_uuid:message.uuid,total_cost_usd:cost,usage},
-];
+// Claude's last reply of the turn, then the result that ends it with the turn's usage and cost.
+function answerAndEnd(emit,message,text,{usage={input_tokens:3,output_tokens:1},cost=0}={}){
+  emit({type:"assistant",uuid:randomUUID(),parent_tool_use_id:null,message:{id:"msg-"+randomUUID(),content:[{type:"text",text}]}});
+  emit({type:"result",subtype:"success",is_error:false,result:text,user_message_uuid:message.uuid,total_cost_usd:cost,usage});
+}
+// A TaskUpdate's structured result for a change of status.
+const statusUpdated=(taskId,from,to)=>({success:true,taskId,updatedFields:["status"],statusChange:{from,to}});
 // A gate a scripted turn waits on until the test has seen what the turn showed so far.
-function gate(){let open;const shut=new Promise(resolve=>{open=resolve});return {shut,open}}
+function gate(){const latch={};latch.shut=new Promise(resolve=>{latch.open=resolve});return latch}
+// One task as Claude Code keeps it in its home's tasks folder, a <id>.json file a task.
+function saveClaudeTask(folder,id,subject,status,blockedBy=[]){
+  writeFileSync(join(folder,`${id}.json`),JSON.stringify({id,subject,description:"",status,blocks:[],blockedBy}));
+}
 
 test("Claude's to-do list and task list show as the turn's plan and update as Claude works through them",async({page})=>{
   test.setTimeout(90_000);
@@ -44,7 +53,7 @@ test("Claude's to-do list and task list show as the turn's plan and update as Cl
       emit(toolCall("toolu_todo_2","TodoWrite",{todos:next}));
       emit(toolAnswer("toolu_todo_2","Todos have been modified successfully.",{oldTodos:TODOS,newTodos:next}));
       await updateSeen.shut;
-      for(const frame of reply(message,"The checklist is read; the changelog is next.",{input_tokens:3,output_tokens:1},0))emit(frame);
+      answerAndEnd(emit,message,"The checklist is read; the changelog is next.");
       return;
     }
     // Claude's Task tools keep the session's task list: two tasks, the first done and the second started.
@@ -53,11 +62,11 @@ test("Claude's to-do list and task list show as the turn's plan and update as Cl
     emit(toolCall("toolu_task_b","TaskCreate",{subject:"Run the migration tests",description:"Run the migration's tests."}));
     emit(toolAnswer("toolu_task_b","Task #2 created successfully: Run the migration tests",{task:{id:"2",subject:"Run the migration tests"}}));
     emit(toolCall("toolu_task_c","TaskUpdate",{taskId:"1",status:"completed"}));
-    emit(toolAnswer("toolu_task_c","Updated task #1 status",{success:true,taskId:"1",updatedFields:["status"],statusChange:{from:"pending",to:"completed"}}));
+    emit(toolAnswer("toolu_task_c","Updated task #1 status",statusUpdated("1","pending","completed")));
     emit(toolCall("toolu_task_d","TaskUpdate",{taskId:"2",status:"in_progress"}));
-    emit(toolAnswer("toolu_task_d","Updated task #2 status",{success:true,taskId:"2",updatedFields:["status"],statusChange:{from:"pending",to:"in_progress"}}));
+    emit(toolAnswer("toolu_task_d","Updated task #2 status",statusUpdated("2","pending","in_progress")));
     await tasksSeen.shut;
-    for(const frame of reply(message,"The migration is written; its tests run next.",{input_tokens:3,output_tokens:1},0))emit(frame);
+    answerAndEnd(emit,message,"The migration is written; its tests run next.");
   }});
   try{
     harness.seedThread("Release prep");
@@ -122,7 +131,7 @@ test("Claude's to-do lists update the plan only, with no step saying files were 
     emit(toolAnswer("toolu_todo_2","Todos have been modified successfully.",{oldTodos:TODOS,newTodos:next}));
     await listSeen.shut;
     emit(toolAnswer("agent-1","The release notes name every change."));
-    for(const frame of reply(message,"The checklist is read; the changelog is next.",{input_tokens:3,output_tokens:1},0))emit(frame);
+    answerAndEnd(emit,message,"The checklist is read; the changelog is next.");
   }});
   try{
     harness.seedThread("Release prep");harness.seedThread("Hotfix");
@@ -244,16 +253,18 @@ test("after Trebell restarts, Claude's next change to its task list keeps the ta
   const planSeen=gate();
   const harness=await startClaudeRelay({claudeHome:true,turn:async({message,emit})=>{
     // Claude Code writes the change to its own list before the result comes, as its task tools do.
-    writeFileSync(join(tasks,"2.json"),JSON.stringify({id:"2",subject:"Run the migration tests",description:"",status:"in_progress",blocks:[],blockedBy:["1"]}));
+    saveClaudeTask(tasks,"2","Run the migration tests","in_progress",["1"]);
     emit(toolCall("toolu_task_go","TaskUpdate",{taskId:"2",status:"in_progress"},"Running the migration tests next."));
-    emit(toolAnswer("toolu_task_go","Updated task #2 status",{success:true,taskId:"2",updatedFields:["status"],statusChange:{from:"pending",to:"in_progress"}}));
+    emit(toolAnswer("toolu_task_go","Updated task #2 status",statusUpdated("2","pending","in_progress")));
     await planSeen.shut;
-    for(const frame of reply(message,"The migration tests are running.",{input_tokens:3,output_tokens:1},0))emit(frame);
+    answerAndEnd(emit,message,"The migration tests are running.");
   }});
   // The thread's Claude session made its list before the restart: Claude Code keeps it in its home, one file a task.
   const thread=harness.seedThread("Orders migration"),tasks=join(harness.claudeHome,"tasks",thread.providerSessionId);
   mkdirSync(tasks,{recursive:true});
-  for(const task of [{id:"1",subject:"Write the migration",status:"completed"},{id:"2",subject:"Run the migration tests",status:"pending"},{id:"3",subject:"Tag the release",status:"pending"}])writeFileSync(join(tasks,task.id+".json"),JSON.stringify({description:"",blocks:[],blockedBy:[],...task}));
+  saveClaudeTask(tasks,"1","Write the migration","completed");
+  saveClaudeTask(tasks,"2","Run the migration tests","pending");
+  saveClaudeTask(tasks,"3","Tag the release","pending");
   try{
     await routeClaudeApp(page,harness,{permissionMode:"supervised"});
     await page.goto("/");await openThread(page,"Orders migration");
@@ -286,7 +297,7 @@ test("the composer's meter says how full Claude's context window is: its latest 
         await firstSeen.shut;
         emit(started("msg-ctx-2",{input_tokens:400,cache_creation_input_tokens:0,cache_read_input_tokens:149_600,output_tokens:1}));
         await secondSeen.shut;
-        for(const frame of reply(message,"The repository has three packages.",{input_tokens:1600,cache_creation_input_tokens:2800,cache_read_input_tokens:269_600,output_tokens:420},0.42))emit(frame);
+        answerAndEnd(emit,message,"The repository has three packages.",{usage:{input_tokens:1600,cache_creation_input_tokens:2800,cache_read_input_tokens:269_600,output_tokens:420},cost:0.42});
         return;
       }
       // Claude compacts the conversation on its own in the next turn: the meter shows what the compaction kept.
@@ -295,7 +306,7 @@ test("the composer's meter says how full Claude's context window is: its latest 
       emit({type:"system",subtype:"compact_boundary",compact_metadata:{trigger:"auto",pre_tokens:150_000,post_tokens:30_000},session_id:"s",uuid:randomUUID()});
       await compactedSeen.shut;
       emit(started("msg-ctx-3",{input_tokens:500,cache_creation_input_tokens:31_500,cache_read_input_tokens:0,output_tokens:1}));
-      for(const frame of reply(message,"Summarized the parser.",{input_tokens:500,cache_creation_input_tokens:31_500,cache_read_input_tokens:0,output_tokens:60},0.5))emit(frame);
+      answerAndEnd(emit,message,"Summarized the parser.",{usage:{input_tokens:500,cache_creation_input_tokens:31_500,cache_read_input_tokens:0,output_tokens:60},cost:0.5});
     },
   });
   try{
@@ -340,13 +351,13 @@ test("a hook's reason for dropping a Claude prompt shows once in its turn, and a
     const said=message.message.content.map(part=>part.text||"").join("");
     if(said==="/compact"){
       emit({type:"system",subtype:"status",status:"compacting",session_id:"s",uuid:randomUUID()});
-      emit({type:"system",subtype:"status",status:null,compact_result:"failed",compact_error:"Not enough messages to compact.",session_id:"s",uuid:randomUUID()});
+      emit({type:"system",subtype:"status",status:null,compact_result:"failed",compact_error:TOO_SHORT,session_id:"s",uuid:randomUUID()});
       emit({type:"result",subtype:"success",is_error:false,result:"",local_command:"compact",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
       return;
     }
-    if(said.includes("Deploy to production")){
+    if(said.includes(RELEASE_PROMPT)){
       // A UserPromptSubmit hook blocked the prompt: Claude Code warns with its reason and repeats it as the result's text.
-      emit({type:"system",subtype:"informational",content:"Started in the background: agent-1",level:"info",session_id:"s",uuid:randomUUID()});
+      emit({type:"system",subtype:"informational",content:INFO_LINE,level:"info",session_id:"s",uuid:randomUUID()});
       emit({type:"system",subtype:"informational",content:REASON,level:"warning",prevent_continuation:true,session_id:"s",uuid:randomUUID()});
       emit({type:"result",subtype:"success",is_error:false,result:REASON,num_turns:0,user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
     }
@@ -359,11 +370,11 @@ test("a hook's reason for dropping a Claude prompt shows once in its turn, and a
     socket.on("framereceived",({payload})=>{const message=read(payload);if(compactRequest!=null&&message?.id===compactRequest&&!message.method)compactAnswered(message)});
   });
   try{
-    harness.seedThread("Deploy",{permissionProfile:"supervised"});
+    harness.seedThread("Release freeze",{permissionProfile:"supervised"});
     await routeClaudeApp(page,harness,{permissionMode:"supervised"});
-    await page.goto("/");await openThread(page,"Deploy");
+    await page.goto("/");await openThread(page,"Release freeze");
 
-    await send(page,"Deploy to production");
+    await send(page,RELEASE_PROMPT);
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
     const card=page.getByTestId("activity-card").last();
     await expect(card).toBeVisible({timeout:15_000});
@@ -373,11 +384,11 @@ test("a hook's reason for dropping a Claude prompt shows once in its turn, and a
     await expect.soft(notice,"the hook's reason, as a finished row of the turn").toBeVisible();
     await expect.soft(notice.locator("em")).toHaveText("done");
     await expect.soft(page.locator(".history-assistant").filter({hasText:REASON}),"not as Claude's answer too").toHaveCount(0);
-    await expect.soft(page.getByText("Started in the background: agent-1"),"an info line stays out").toHaveCount(0);
+    await expect.soft(page.getByText(INFO_LINE),"an info line stays out").toHaveCount(0);
     await page.screenshot({animations:"disabled",path:`${auditDir}claude-hook-dropped-prompt-notice-dark-1280x800.png`});
 
     await page.locator(".composer-context .context-compact-btn").click();
-    const failed=page.getByText("Context compaction failed: Not enough messages to compact.",{exact:true});
+    const failed=page.getByText(`Context compaction failed: ${TOO_SHORT}`,{exact:true});
     await expect.soft(failed,"the failure says why").toBeVisible({timeout:15_000});
     for(const mode of ["dark","light"]){
       if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
@@ -385,7 +396,7 @@ test("a hook's reason for dropping a Claude prompt shows once in its turn, and a
     }
     // The relay refuses the compaction instead of reporting the thread compacted, which the window would have said.
     const answer=await compactAnswer;
-    expect.soft(answer.error?.message,"the relay's answer is the failure").toBe("Not enough messages to compact.");
+    expect.soft(answer.error?.message,"the relay's answer is the failure").toBe(TOO_SHORT);
     await expect(page.getByText("Context compacted",{exact:true}),"never reported compacted").toHaveCount(0);
     await expect(failed).toBeVisible();
   }finally{await harness.close()}

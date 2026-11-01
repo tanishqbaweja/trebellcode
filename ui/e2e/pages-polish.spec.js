@@ -246,7 +246,7 @@ test("a refused field keeps its red line in both modes, with focus, without it a
   // A shortcut.
   await nav(page,"Settings").click();
   await page.getByRole("navigation",{name:"Settings categories"}).getByRole("button",{name:/^Shortcuts/}).click();
-  const key=page.getByRole("textbox",{name:"Toggle main sidebar shortcut",exact:true});
+  const key=page.getByRole("textbox",{name:"Toggle sidebar shortcut",exact:true});
   await key.click();await key.press("ControlOrMeta+A");await key.pressSequentially("Ctrl+",{delay:15});await key.press("Tab");
   await expect(key).toHaveAttribute("aria-invalid","true");
   await invalidLines(page,key,"shortcut");

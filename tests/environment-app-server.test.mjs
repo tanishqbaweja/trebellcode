@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { CODEX_FOLDERS_SHARED_FROM_START } from "../src/codex-home-layout.mjs";
 import { remoteCodexArgs, remoteCodexHomeSetup, remoteCodexProfileSetup, sshRemotePorts, startRemoteAppServer } from "../src/environment-app-server.mjs";
 import { EnvironmentManager, remoteToolPathPrelude } from "../src/environment-manager.mjs";
 
@@ -20,15 +21,14 @@ function finished(child){
   });
 }
 
-test("remote harness PATH bootstrap covers Linuxbrew and common Node version managers",()=>{
+// The lines a remote app-server starts with name Homebrew's folders and each Node version manager's documented variable, and export
+// PATH; tests/remote-tool-path.test.mjs runs them in a POSIX shell against a made-up home. (This test once matched each folder as the
+// earlier lines spelled it, such as ".asdf/shims", which lines that follow the tools' variables do not spell out.)
+test("remote harness PATH bootstrap covers Homebrew and the Node version managers' documented folders",()=>{
   const script=remoteToolPathPrelude();
-  assert.match(script,/\/home\/linuxbrew\/\.linuxbrew\/bin/);
-  assert.match(script,/VOLTA_HOME/);
-  assert.match(script,/\.asdf\/shims/);
-  assert.match(script,/\.local\/share\/mise\/shims/);
-  assert.match(script,/\.nodenv\/shims/);
-  assert.match(script,/\.nvm\/versions\/node/);
-  assert.match(script,/export PATH/);
+  for(const piece of ["/home/linuxbrew/.linuxbrew/bin","/opt/homebrew/bin","VOLTA_HOME","MISE_DATA_DIR","ASDF_DATA_DIR","NODENV_ROOT","NVM_DIR","/versions/node/","/fnm",'"$HOME/.local/bin"'])
+    assert.ok(script.includes(piece),piece);
+  assert.match(script,/^export PATH$/m);
 });
 
 test("remote Codex app-server always preserves Codex-native inference",()=>{
@@ -268,7 +268,7 @@ test("a WSL or SSH Codex profile with its own or a shadow Codex home signs in, c
 // The account check runs a shadow home's setup each time it asks the host (about once a minute while Settings is open), and the
 // sign-in runs it too, while the profile's app-server may be writing through its links: a link that already points at its shared
 // entry is left as it is, and only one that is missing or points elsewhere is made again, as a local shadow home's are
-// (codex-home-layout ensureLink). Making every link again each time left a gap in which a folder the running app-server made (a new
+// (codex-home-layout linkIntoShadow). Making every link again each time left a gap in which a folder the running app-server made (a new
 // session's) became a real folder in the shadow home, which stopped every later setup (exit 74) and kept that session out of the
 // shared home. An entry that is not a link still stops the setup before Codex runs.
 test("a remote Codex shadow home's setup leaves the links that point at its shared home alone and makes only a missing or wrong one again",{skip:!posixShell&&"no POSIX shell on this machine"},async()=>{
@@ -282,20 +282,27 @@ test("a remote Codex shadow home's setup leaves the links that point at its shar
   const shared=join(home,".codex-shared"),work=join(home,".codex-work"),long=new Date("2001-01-01T00:00:00Z");
   try{
     const first=await run(setup);assert.equal(first.code,0,first.stderr);
-    const entries=(await readdir(work)).sort();assert.equal(entries.length,10);
-    // Each link is dated long ago, so one made again shows by its date. Then sessions points elsewhere and logs is gone, as a home
+    const entries=(await readdir(work)).sort();assert.deepEqual(entries,[...CODEX_FOLDERS_SHARED_FROM_START].sort());
+    // Each link is dated long ago, so one made again shows by its date. Then sessions points elsewhere and worktrees is gone, as a home
     // changed in Settings or a link removed by hand leaves them.
     for(const entry of entries)await lutimes(join(work,entry),long,long);
-    const changed=await run('rm -f "$HOME/.codex-work/sessions" "$HOME/.codex-work/logs" && mkdir -p "$HOME/elsewhere" && ln -s "$HOME/elsewhere" "$HOME/.codex-work/sessions"');
+    const changed=await run('rm -f "$HOME/.codex-work/sessions" "$HOME/.codex-work/worktrees" && mkdir -p "$HOME/elsewhere" && ln -s "$HOME/elsewhere" "$HOME/.codex-work/sessions"');
     assert.equal(changed.code,0,changed.stderr);await lutimes(join(work,"sessions"),long,long);
     const again=await run(setup);assert.equal(again.code,0,again.stderr);
     const links={},wanted={};
     for(const entry of entries){
       const stat=await lstat(join(work,entry));
       links[entry]={link:stat.isSymbolicLink(),shared:await realpath(join(work,entry))===await realpath(join(shared,entry)),madeAgain:stat.mtimeMs!==long.getTime()};
-      wanted[entry]={link:true,shared:true,madeAgain:entry==="sessions"||entry==="logs"};
+      wanted[entry]={link:true,shared:true,madeAgain:entry==="sessions"||entry==="worktrees"};
     }
     assert.deepEqual(links,wanted);
+    // Re-pinned note: no release linked a name each home keeps into a WSL or SSH shadow home, so a link there is the person's and
+    // stays, also one that points at the shared home's entry of the same name.
+    const own=await run('mkdir -p "$HOME/.codex-shared/memories_v2" "$HOME/elsewhere-memories" && ln -s "$HOME/.codex-shared/memories_v2" "$HOME/.codex-work/memories_v2" && ln -s "$HOME/elsewhere-memories" "$HOME/.codex-work/memories"');
+    assert.equal(own.code,0,own.stderr);
+    const kept=await run(setup);assert.equal(kept.code,0,kept.stderr);
+    for(const name of ["memories_v2","memories"])assert.equal((await lstat(join(work,name))).isSymbolicLink(),true,name);
+    assert.equal((await lstat(join(shared,"memories_v2"))).isDirectory(),true);
     const folder=await run('rm -f "$HOME/.codex-work/skills" && mkdir "$HOME/.codex-work/skills"');assert.equal(folder.code,0,folder.stderr);
     const stopped=await run(setup);
     assert.equal(stopped.code,74);assert.match(stopped.stderr,/^Trebell cannot prepare remote Codex shadow entry skills because a non-link entry already exists\.\r?\n?$/);

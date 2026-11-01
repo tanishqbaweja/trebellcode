@@ -1821,7 +1821,7 @@ test("the files a message went with show again under it when its thread is opene
   }finally{await harness.close()}
 });
 
-// Codex keeps the files a message went with as lines after its text ([Attached image "…" is saved at: …]): its thread opened again
+// Codex keeps the files a message went with as lines after its text ([Image attachment "…" at …]): its thread opened again
 // shows the text alone, with the files named under it, as the bubble did when it was sent. It showed those lines, full paths and all.
 test("on Codex, the files a message went with show again under it when its thread is opened again, without the lines Codex keeps them by",async({page})=>{
   test.setTimeout(90_000);
@@ -1844,13 +1844,13 @@ test("on Codex, the files a message went with show again under it when its threa
     await page.keyboard.press("Enter");
     await expect(page.getByText("I see the screenshot and the log.",{exact:true})).toBeVisible({timeout:15_000});
     await expect(files).toHaveText(sent);
-    expect(harness.turns.at(-1).items[0].content[0].text,"Codex keeps the files as lines after the text").toContain('[Attached image "screenshot.png" is saved at: ');
+    expect(harness.turns.at(-1).items[0].content[0].text,"Codex keeps the files as lines after the text").toContain('[Image attachment "screenshot.png" at ');
     // Another view, then the thread again: the text alone, with the files under it.
     await page.getByRole("button",{name:"New task",exact:true}).click();await expect(bubble).toHaveCount(0);
     await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
     await expect(bubble.locator("p"),"the message's text, the thread opened again").toHaveText("Here is what I see",{timeout:15_000});
     await expect(files,"the files, the thread opened again").toHaveText(sent);
-    await expect(page.getByText(/\[Attached (image|file) /)).toHaveCount(0);
+    await expect(page.getByText(/\[(Image|File) attachment /)).toHaveCount(0);
     await shootBoth(page,"codex-sent-message-files-reopened",()=>expect(files.first()).toBeInViewport());
   }finally{await harness.close()}
 });
@@ -3305,26 +3305,27 @@ for(const away of [false,true])test(`Escape on the menu of a second @ word typed
   }finally{await harness.close()}
 });
 
-test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
+// Re-pinned note: the limit is Trebell's own 200,000 characters now (it was 120,000).
+test("Enter on a draft over the 200,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);
   try{
     const composer=page.getByTestId("composer"),send=page.getByTestId("send"),status=page.locator(".composer-status"),users=page.locator(".user-bubble");
-    const over="Draft is 120,002 characters · maximum 120,000",chunk="The quick brown fox jumps over the lazy dog. ".repeat(700).slice(0,30_000);
+    const over="Draft is 200,002 characters · maximum 200,000",chunk="The quick brown fox jumps over the lazy dog. ".repeat(700).slice(0,30_000);
     const length=()=>composer.evaluate(node=>node.value.length);
-    // Four pastes reach the limit (a longer one would become an attachment), and two characters typed pass it.
-    await composer.click();for(let part=0;part<4;part++)await pasteText(page,chunk);
-    await expect.poll(length).toBe(120_000);
+    // Six pastes and a shorter seventh reach the limit (a longer one would become an attachment), and two characters typed pass it.
+    await composer.click();for(let part=0;part<6;part++)await pasteText(page,chunk);await pasteText(page,chunk.slice(0,20_000));
+    await expect.poll(length).toBe(200_000);
     await page.keyboard.type("!!",{delay:20});
     await expect(status).toContainText(over);await expect(send).toBeDisabled();
     await page.keyboard.press("Enter");await frames(page);
-    await expect(page.getByText("Message exceeds the 120,000 character limit")).toHaveCount(0);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
-    await expect.poll(length).toBe(120_002);await expect(users).toHaveCount(1);
+    await expect(page.getByText("Message exceeds the 200,000 character limit")).toHaveCount(0);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
+    await expect.poll(length).toBe(200_002);await expect(users).toHaveCount(1);
     await expect(send).toHaveAttribute("title",over);
     await shootBoth(page,"over-limit-enter",()=>expect(status).toContainText(over));
     // Two characters fewer, the draft is at the limit and Send is back.
     await composer.click();await page.keyboard.press("Control+End");await page.keyboard.press("Backspace");await page.keyboard.press("Backspace");
-    await expect(send).toBeEnabled();await expect(send).toHaveAttribute("title","Send message");await expect(status).toContainText("120,000 / 120,000 chars");
+    await expect(send).toBeEnabled();await expect(send).toHaveAttribute("title","Send message");await expect(status).toContainText("200,000 / 200,000 chars");
     expect(harness.turns(harness.threads[0])).toHaveLength(1);
   }finally{await harness.close()}
 });
@@ -4610,5 +4611,27 @@ test("Tab and Shift+Tab from Cite go on beside the reply it cites in a thread ta
     await expect.soft.poll(keyboardOn,{message:"where Tab from the last question's Edit from here puts the keyboard"}).not.toMatch(/^(assistant-selection-cite|nothing|Edit from here of .*)$/);
     await expect(page.locator(".user-bubble > p")).toHaveText(QUESTIONS);
     expect(sentTexts(harness),"the messages the thread has").toEqual(QUESTIONS);
+  }finally{await harness.close()}
+});
+
+// Re-pinned: Cite now takes up to 6,000 characters (ReplyCiteButton.jsx CITE_SELECTION_LIMIT; it took 8,000). The long paragraph
+// here has 9,114.
+// Text longer than Cite takes (6,000 characters) keeps the button above it, turned off, saying it is too long and how much Cite
+// takes; a shorter selection in the same reply gets Cite back.
+test("a selection longer than Cite takes shows Cite off, saying it is too long and how much it takes",async({page})=>{
+  test.setTimeout(90_000);
+  const LONG="Long paragraph "+"about the build cache and its keys ".repeat(260).trim(),SHORT="A short closing line.";
+  const harness=await openComposerApp(page,{turns:[{user:"Explain the cache",items:[replyItem("cite-long-reply",LONG+"\n\n"+SHORT)]}]});
+  try{
+    const cite=page.getByTestId("assistant-selection-cite"),paragraphs=page.locator(".assistant-message-text").first().locator("p");
+    await expect(paragraphs).toHaveCount(2);
+    await paragraphs.nth(0).click({clickCount:3});
+    await expect(cite).toBeVisible();await expect(cite).toBeDisabled();
+    await expect(cite).toHaveText("Too long");
+    await expect(cite).toHaveAttribute("title","Cite takes up to 6,000 characters");
+    await expect(cite).toHaveAttribute("aria-label","Too much selected to cite");
+    await paragraphs.nth(1).click({clickCount:3});
+    await expect(cite).toBeEnabled();await expect(cite).toHaveText("Cite");
+    await expect(cite).toHaveAttribute("title","Cite selected assistant text");
   }finally{await harness.close()}
 });

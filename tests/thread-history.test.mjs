@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {countUnloadedTurns,detachHistoryTurn,historyFromItemEntries,historyFromTurns,historyGapBeforeId,historyGapLabel,historyGapPage,mergeHistoryGapMessages,mergeHistoryMessages,messageText,resumedActiveTurnId,sessionHandoffMessage,withSessionHandoff} from "../ui/src/thread-history.js";
+import { codexTurnInput } from "../ui/src/codex-turn-options.js";
 
 test("paginated Codex turns become chronological visible conversation messages",()=>{
   const turns=[
@@ -147,7 +148,7 @@ test("a turn's session handoff item is a row of its own in turn and item pages, 
 // text (and an image again as an item), the agent relay as items after the text. The text shows without those lines.
 test("a sent message's files come back with it from history, off its text, from turn and item pages",()=>{
   const shot="C:\\Users\\me\\AppData\\Roaming\\Trebell\\attachments\\screenshot.png",log="C:\\Users\\me\\AppData\\Roaming\\Trebell\\attachments\\pasted-context.txt";
-  const codex={id:"u1",type:"userMessage",content:[{type:"text",text:`Here is what I see\n\n[Attached image "screenshot.png" is saved at: ${shot}]\n\n[Attached file "pasted-context.txt" is saved at: ${log}]`,text_elements:[]},{type:"localImage",path:shot}]};
+  const codex={id:"u1",type:"userMessage",content:[{type:"text",text:`Here is what I see\n\n[Older image "screenshot.png" kept here: ${shot}]\n\n[Older file "pasted-context.txt" kept here: ${log}]`,text_elements:[]},{type:"localImage",path:shot}]};
   const relay={id:"u2",type:"userMessage",content:[{type:"text",text:"And now?"},{type:"localImage",path:shot},{type:"mention",name:"pasted-context.txt",path:log},{type:"skill",name:"review",path:"C:\\skills\\review"},{type:"mention",name:"Linear",path:"app://linear"}]};
   const plain={id:"u3",type:"userMessage",content:[{type:"text",text:"No files here"}]};
   const turns=[{id:"t1",items:[codex,{id:"a1",type:"agentMessage",text:"I see it."}]},{id:"t2",items:[relay]},{id:"t3",items:[plain]}];
@@ -160,5 +161,16 @@ test("a sent message's files come back with it from history, off its text, from 
   assert.deepEqual(historyFromTurns(turns),expected);
   assert.deepEqual(historyFromItemEntries(turns.flatMap(turn=>turn.items.map(item=>({turnId:turn.id,item})))),expected);
   // A message of files alone still shows, by its files.
-  assert.deepEqual(historyFromTurns([{id:"t4",items:[{id:"u4",type:"userMessage",content:[{type:"text",text:`[Attached file "pasted-context.txt" is saved at: ${log}]`}]}]}]),[{id:"u4",role:"user",text:"",turnId:"t4",checkpointId:null,attachments:[log]}]);
+  assert.deepEqual(historyFromTurns([{id:"t4",items:[{id:"u4",type:"userMessage",content:[{type:"text",text:`[Older file "pasted-context.txt" kept here: ${log}]`}]}]}]),[{id:"u4",role:"user",text:"",turnId:"t4",checkpointId:null,attachments:[log]}]);
+});
+
+// The message above has the shape of the line Codex threads from before the present attachment line hold (in Trebell's own made-up
+// words, as attachment-line.mjs reads it by its shape); one sent now (codexTurnInput) comes back the same way, a document's text
+// file left out of its files.
+test("a Codex message sent with the present attachment lines comes back with its files, off its text",()=>{
+  const shot="C:\\Users\\me\\AppData\\Roaming\\Trebell\\attachments\\screenshot.png",plan="C:\\Users\\me\\Documents\\plan (final).docx";
+  const [input,image]=codexTurnInput("Here is what I see\n\nand the plan",[shot,plan],{displayName:path=>path.split("\\").pop(),textPath:path=>path===plan?plan+".txt":null});
+  assert.equal(input.text,`Here is what I see\n\nand the plan\n\n[Image attachment "screenshot.png" at ${shot}]\n[File attachment "plan (final).docx" at ${plan}, readable as text at ${plan}.txt]`);
+  const turns=[{id:"t5",items:[{id:"u5",type:"userMessage",content:[{type:"text",text:input.text,text_elements:[]},image]}]}];
+  assert.deepEqual(historyFromTurns(turns),[{id:"u5",role:"user",text:"Here is what I see\n\nand the plan",turnId:"t5",checkpointId:null,attachments:[shot,plan]}]);
 });

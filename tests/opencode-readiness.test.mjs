@@ -23,25 +23,28 @@ const catalog=({connected=["anthropic"],models:ids=["anthropic/claude-x"],pendin
   inventory:{commands:[{name:"init"}],skills:[],agents:[{name:"build"}]},...(pending?{pending}:{}),source:"live-connected",
 });
 
-test("OpenCode with a connected provider that lists no models is not ready and says so, and its answer is read again at once by Settings' listing and after five minutes by the window's",async t=>{
+test("OpenCode with a connected provider that lists no models is not ready and says so, and its answer is read again at once by Settings' listing and after two minutes by the window's",async t=>{
   const {manager,reads,fake,advance}=await openCodeManager(t);
   fake.answer=catalog({models:[]});
   const first=await manager.probe("opencode");
-  assert.deepEqual([first.available,first.authenticated,first.account,first.message],[true,null,{connectedProviders:1},"1 upstream provider is connected through OpenCode, but it lists no models yet. Press Refresh to check again."]);
+  assert.deepEqual([first.available,first.authenticated,first.account,first.message],[true,null,{connectedProviders:1},"OpenCode is connected to 1 provider but lists no models yet. Press Refresh to look again."]);
   assert.equal(reads.length,1);
   // The window's checks reuse it for a while; each read starts an `opencode serve`.
   await manager.probe("opencode");advance(60_000);await manager.probe("opencode");
   assert.equal(reads.length,1);
   // A model list reads it again once it is ten seconds old, as it reads every answer.
   await manager.models("opencode");assert.equal(reads.length,2);
-  advance(5*60_000+1);await manager.probe("opencode");assert.equal(reads.length,3);
+  // Re-pinned note: OPENCODE_INCOMPLETE_REUSE_MS is two minutes now (it was five), so the window's checks read it again at two minutes
+  // from that read, and not a moment before.
+  advance(2*60_000-1);await manager.probe("opencode");assert.equal(reads.length,2,"no read just before two minutes");
+  advance(1);await manager.probe("opencode");assert.equal(reads.length,3,"a read at two minutes");
   // Settings' listing and Refresh check with refresh (snapshot), which reads OpenCode again; other fresh checks keep a recent read.
   await manager.probe("opencode",{fresh:true});assert.equal(reads.length,3);
   await manager.probe("opencode",{fresh:true,refresh:true});assert.equal(reads.length,4);
   // OpenCode lists the provider's models now: Settings' Refresh shows it ready.
   fake.answer=catalog();
   const ready=await manager.probe("opencode",{fresh:true,refresh:true});
-  assert.deepEqual([ready.available,ready.authenticated,ready.message],[true,true,"OpenCode runs with 1 upstream provider connected, and lists its models."]);
+  assert.deepEqual([ready.available,ready.authenticated,ready.message],[true,true,"OpenCode is ready, listing models from the provider it is connected to."]);
   assert.equal(reads.length,5);
 });
 
@@ -50,11 +53,11 @@ test("a provider connected after OpenCode's last read shows on Settings' Refresh
   fake.answer=catalog({connected:[],models:["anthropic/claude-x","openai/gpt"]});
   // Settings' listing checks with refresh (snapshot).
   const before=await manager.probe("opencode",{fresh:true,refresh:true});
-  assert.deepEqual([before.authenticated,before.message],[null,"OpenCode runs, but no upstream provider is connected through it."]);
+  assert.deepEqual([before.authenticated,before.message],[null,"No provider is connected to OpenCode yet. Add one with opencode auth login, then press Refresh."]);
   // The person signs in to a provider with OpenCode's own `opencode auth login`, then presses Refresh.
   fake.answer=catalog();
   const after=await manager.probe("opencode",{fresh:true,refresh:true});
-  assert.deepEqual([after.authenticated,after.message],[true,"OpenCode runs with 1 upstream provider connected, and lists its models."]);
+  assert.deepEqual([after.authenticated,after.message],[true,"OpenCode is ready, listing models from the provider it is connected to."]);
   assert.equal(reads.length,2);
   advance(10*60_000);await manager.probe("opencode");await manager.probe("opencode");
   assert.equal(reads.length,2,"a ready answer is not read again by the window's checks");
@@ -83,10 +86,33 @@ test("a profile's own OpenCode server that refuses the password is not signed in
   const {manager,fake}=await openCodeManager(t,{version:"2.0.24",serverUrl:"http://127.0.0.1:4010"});
   fake.answer=new Error("Unauthorized");
   const refused=await manager.probe("opencode");
-  assert.deepEqual([refused.available,refused.authenticated,refused.message],[false,false,"The configured OpenCode server rejected the password. Check this profile's server URL and the OPENCODE_SERVER_PASSWORD in its environment."]);
+  assert.deepEqual([refused.available,refused.authenticated,refused.message],[false,false,"The OpenCode server at this profile's URL refused Trebell Code's password. Check the URL, and the OPENCODE_SERVER_PASSWORD in the profile's environment."]);
   fake.answer=new Error("connect ECONNREFUSED http://127.0.0.1:4010");
   const unreachable=await manager.probe("opencode");
   assert.deepEqual([unreachable.available,unreachable.authenticated,unreachable.message],[false,null,"OpenCode could not list its providers: connect ECONNREFUSED http://127.0.0.1:4010"]);
   for(const text of ["Unauthorized","Forbidden","UnexpectedStatus: 403","HTTP 401","HTTP/1.1 403 Forbidden","provider list failed with status code: 401"])assert.equal(runtimeManager.openCodeServerRefused(new Error(text)),true,text);
   for(const text of ["fetch failed http://127.0.0.1:4010","port 4010 is in use","401","GET /api/info/4031 failed"])assert.equal(runtimeManager.openCodeServerRefused(new Error(text)),false,text);
+});
+
+// Where each client keeps a refusal (the installed @opencode-ai/sdk and @opencode/client, and Node's fetch), and the text rules for an
+// error that keeps none of it: a number counts only when a word names it a status, so one in an address, a port or a path never does.
+test("a refused OpenCode password is read from the status or tag a client keeps, and from the text only where a word names it",()=>{
+  const refused=value=>runtimeManager.openCodeServerRefused(value);
+  // OpenCode 1.x's bodiless 401, its status kept on the error; OpenCode 2's declared refusal; its ClientError for another status.
+  assert.equal(refused(Object.assign(new Error("provider list failed"),{status:401})),true);
+  assert.equal(refused(Object.assign(new Error("The password did not match"),{name:"UnauthorizedError",_tag:"UnauthorizedError"})),true);
+  assert.equal(refused({_tag:"ForbiddenError",message:"Not allowed"}),true);
+  assert.equal(refused(Object.assign(new Error("request failed"),{name:"ClientError",cause:{status:403}})),true);
+  // A status further down the cause chain counts too; a chain that loops back on itself ends without an answer.
+  assert.equal(refused(Object.assign(new Error("Transport: fetch failed"),{cause:Object.assign(new Error("relay failed"),{cause:{status:403}})})),true);
+  const circular=new Error("went round");circular.cause=circular;assert.equal(refused(circular),false);
+  // A server that never answered, as Node's fetch reports it, with a port that happens to read 401.
+  assert.equal(refused(Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:401"),{code:"ECONNREFUSED"})})),false);
+  assert.equal(refused(Object.assign(new Error("server error"),{status:500})),false);
+  for(const value of [null,undefined,{},401,""])assert.equal(refused(value),false,String(value));
+  assert.equal(refused("Forbidden"),true);
+  for(const text of ["UnauthorizedError: the password did not match","statusCode: 401","status_code=403","Request failed with status code 403.","HTTP/2 401","Status: 401"])
+    assert.equal(refused(new Error(text)),true,text);
+  for(const text of ["getaddrinfo ENOTFOUND unauthorized.example.com","GET /v1/status/401 failed","status (401)","exited with code 401","status-code: 401","HTTP 4010","UnsupportedContentType: text/plain"])
+    assert.equal(refused(new Error(text)),false,text);
 });

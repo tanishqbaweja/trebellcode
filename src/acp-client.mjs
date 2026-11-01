@@ -1,23 +1,12 @@
 import { EventEmitter } from "node:events";
 import spawn from "cross-spawn";
-import { redactSecretText, redactSignInUrls } from "./secret-redactor.mjs";
+import { agentLogExcerpt, extendAgentLog } from "./agent-log.mjs";
 import { createRunTemp } from "./acp-runtime-temp.mjs";
 import { readNdjsonLines } from "./ndjson-lines.mjs";
 
 const DEFAULT_TIMEOUT_MS=180_000;
-export const ACP_STDERR_TAIL_MAX_CHARS=4096;
 // The kinds of dropped message a connection warns about, at most, and the length of the reason each warning gives.
 const DROPPED_KINDS_LIMIT=64,DROPPED_REASON_MAX_CHARS=300;
-
-export function appendAcpStderrTail(current,chunk){
-  const next=String(current||"")+String(chunk||"");
-  return next.length<=ACP_STDERR_TAIL_MAX_CHARS?next:next.slice(-ACP_STDERR_TAIL_MAX_CHARS);
-}
-
-// An agent's log excerpt as an error or warning shows it: no secret, home folder or Google sign-in page address in it.
-export function sanitizeAcpStderrExcerpt(text,environment=process.env){
-  return redactSignInUrls(redactSecretText(text,{environment,redactHomes:true,trim:true}));
-}
 
 function processError(command,error){
   const detail=error instanceof Error?error.message:String(error);
@@ -26,7 +15,7 @@ function processError(command,error){
 // processExit: how the process ended and its log excerpt, for what started it to say in plain words (acp-start-exit.mjs).
 function processExitError(code,signal,stderr,environment){
   const base=`ACP runtime exited code=${code} signal=${signal}`;
-  const detail=sanitizeAcpStderrExcerpt(stderr,environment);
+  const detail=agentLogExcerpt(stderr,environment);
   return Object.assign(new Error(detail?base+"\n"+detail:base),{processExit:{code,signal,excerpt:detail}});
 }
 
@@ -103,7 +92,7 @@ export class AcpClient extends EventEmitter{
     this.stdoutReader=readNdjsonLines(child.stdout,line=>{this.#handleLine(line).catch(error=>this.#dropped(null,error))});
     child.stderr?.on("data",chunk=>{
       const text=String(chunk);
-      this.stderrTail=appendAcpStderrTail(this.stderrTail,text);
+      this.stderrTail=extendAgentLog(this.stderrTail,text);
       this.emit("stderr",text);
       try{this.onStderr?.(text)}catch{}
     });
@@ -252,7 +241,7 @@ export class AcpClient extends EventEmitter{
   // dropped marks the warning as one about a message Trebell let go, which the relay keeps in the thread's trace.
   #dropped(method,error){
     const name=String(method??"").replace(/\s+/g," ").trim().slice(0,100)||null;
-    const detail=sanitizeAcpStderrExcerpt(String(error instanceof Error?error.message:error).replace(/\s+/g," "),this.env);
+    const detail=agentLogExcerpt(String(error instanceof Error?error.message:error).replace(/\s+/g," "),this.env);
     const reason=detail.length>DROPPED_REASON_MAX_CHARS?detail.slice(0,DROPPED_REASON_MAX_CHARS-3)+"...":detail||"unknown error";
     const key=(name||"")+"\n"+reason;
     if(this.droppedKinds.has(key)||this.droppedKinds.size>=DROPPED_KINDS_LIMIT)return;

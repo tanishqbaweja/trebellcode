@@ -138,6 +138,30 @@ test("per-turn tool allowlists reject tools outside the active recipe before exe
   assert.equal(denied.success,false);assert.equal(denied.decision,POLICY_REJECT);assert.equal(executed,false);
 });
 
+// A tool's result reaches the model as Trebell 2.1.2, the release Native was benchmarked with, showed it. Re-pinned note: it no
+// longer hides a credential after the token scheme, which 2.1.2 showed, and a line that ends in bearer takes the next line's first
+// word as its token, as 2.1.2 did; the wider shapes are for text only a person reads.
+test("a tool result reads as 2.1.2 showed it to the model",async()=>{
+  const code=[
+    'headers={"Authorization": "invalid"}',
+    'headers={"Authorization": "Basic notabase64token"}',
+    '{"x-api-key": "wrong"}',
+    "  Authorization: base64Auth,",
+    "{ authorization: requestContext.headers.authorization }",
+    "res.set({ Accept: 'text/plain', 'X-API-Key': 'tobi' })",
+    'request({headers:{Authorization:"token fixture-token"}})',
+    "// sent as a bearer",
+    "// <token> in the handshake",
+    "      scheme: bearer",
+    "      bearerFormat: JWT",
+  ].join("\n");
+  const gateway=createSharedToolGateway({environment:{},execute:async()=>({success:true,content:code+"\nAuthorization: token gto_fixture42"})});
+  const result=await gateway.invoke({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true});
+  assert.equal(result.success,true);
+  const shown=code.replace("bearer\n// <token>","Bearer [redacted] <token>").replace("bearer\n      bearerFormat","Bearer [redacted]");
+  assert.equal(result.result.content,shown+"\nAuthorization: token gto_fixture42");
+});
+
 test("tool execution failures are normalized and secret-redacted",async()=>{
   const secret="tool-executor-secret";
   const gateway=createSharedToolGateway({environment:{API_TOKEN:secret},execute:async()=>{throw new Error("failed with "+secret)}});

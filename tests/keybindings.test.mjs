@@ -303,7 +303,7 @@ test("a rule is flagged only when later rules on its key take every context it r
   assert.deepEqual(shadowedKeybindings(palette,false).get("newChat"),{key:"Ctrl+N",by:["commandPalette","terminalNew"]});
   assert.equal(shadowedKeybindings(palette,false).size,1);
   assert.equal(shadowedKeybindings(palette,true).size,0);
-  // Later rules can share the contexts between them: Toggle main sidebar on Ctrl+` in an open project never runs, since Focus
+  // Later rules can share the contexts between them: Toggle sidebar on Ctrl+` in an open project never runs, since Focus
   // terminal takes the key outside the terminal and Focus composer inside it. Outside a project it still runs, so that is not flagged.
   const grave=String.fromCharCode(96);
   assert.deepEqual(shadowedKeybindings(withRules({command:"sidebarToggle",key:"Ctrl+"+grave,when:"projectOpen && !modalOpen"}),false).get("sidebarToggle"),{key:"Ctrl+"+grave,by:["terminalFocus","composerFocus"]});
@@ -314,4 +314,18 @@ test("a rule is flagged only when later rules on its key take every context it r
   // Unfinished shortcuts and conditions answer to nothing, so they neither shadow nor are shadowed.
   assert.equal(shadowedKeybindings(withRules({command:"newChat",key:"Ctrl+K",when:"!modalOpen &&"}),false).size,0);
   assert.equal(shadowedKeybindings(withRules({command:"commandPalette",key:"Ctrl+",when:""},{command:"newChat",key:"Ctrl+",when:""}),false).size,0);
+});
+
+// Settings, Shortcuts and the palette show each command's name: a command named anew keeps its id, its default key and when it
+// applies, and no two commands share a name.
+test("the copy, search and sidebar commands are named for what they do, with their ids, keys and conditions kept",async()=>{
+  const {KEYBINDING_COMMANDS}=await import("../ui/src/keybindings.js");
+  const byId=Object.fromEntries(KEYBINDING_COMMANDS.map(command=>[command.id,command]));
+  assert.deepEqual(["sidebarToggle","threadFind","copyReference","copyPullRequestNumber"].map(id=>[byId[id].label,byId[id].defaultKey,byId[id].defaultWhen]),[
+    ["Toggle sidebar","Ctrl+B","!modalOpen"],
+    ["Search this thread","Mod+F","threadOpen && chatFocus && threadSearch && !terminalFocus && !modalOpen"],
+    ["Copy pull request link or thread ID","Mod+Shift+C","(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen"],
+    ["Copy pull request number","Mod+Shift+K","pullRequestOpen && !terminalFocus && !modalOpen"],
+  ]);
+  assert.equal(new Set(KEYBINDING_COMMANDS.map(command=>command.label)).size,KEYBINDING_COMMANDS.length,"each command has a name of its own");
 });

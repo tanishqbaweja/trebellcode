@@ -8,7 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
-import { CLAUDE_CAPABILITIES_TTL_MS, createClaudeCapabilitiesCache, probeClaudeCapabilities } from "../src/claude-capabilities.mjs";
+import { CLAUDE_CAPABILITIES_TTL_MS, createClaudeCapabilitiesCache, readClaudeCodeCapabilities } from "../src/claude-capabilities.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const SIGNED_IN={email:"person@example.test",subscriptionType:"max",tokenSource:"claude.ai"};
@@ -31,7 +31,7 @@ async function claudeManager(t,answers){
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-models-usage-"));t.after(()=>rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
   let clock=1_000_000;
   const claude=scriptedClaude(index=>answers[Math.min(index,answers.length-1)]);
-  const cache=createClaudeCapabilitiesCache({now:()=>clock,probe:input=>probeClaudeCapabilities({...input,query:claude.query,managedMcpExists:()=>false})});
+  const cache=createClaudeCapabilitiesCache({now:()=>clock,probe:input=>readClaudeCodeCapabilities({...input,query:claude.query,managedMcpExists:()=>false})});
   const env={...process.env,TREBELL_HOME:home},manager=new AgentRuntimeManager({state:new TrebellStateStore(env),env,claudeCapabilitiesCache:cache});
   manager.probe=async()=>({available:true,installed:true,authenticated:true});
   return {manager,cache,claude,advance:ms=>{clock+=ms}};

@@ -168,7 +168,7 @@ test("a long run of output keeps the page responsive and the screen at its last 
     expect(lines,"the screen keeps a bounded scrollback").toBeLessThanOrEqual(5_002);
     await expect(screen).toContainText(/^line 30000$/m);
     await expect(screen).not.toContainText(/^line 1$/m);
-    await expect(pane.getByText("Earlier output was dropped",{exact:false})).toBeVisible();
+    await expect(pane.getByText("Older output is gone",{exact:false})).toBeVisible();
     // Scrolled back to the top, the screen says where its first lines went.
     await screen.hover();
     for(let turn=0;turn<60&&await screen.evaluate(node=>node.scrollTop>0);turn++)await page.mouse.wheel(0,-20_000);
@@ -346,7 +346,7 @@ test("one very long line of output (a minified file printed) keeps the page resp
     expect(worst,"the longest wait while output streams").toBeLessThan(3_000);
     expect(size,"the screen keeps the line's end, near its character cap").toBeLessThan(TERMINAL_SCROLLBACK_CHARS*1.1+1000);
     expect(await screen.evaluate(node=>/x{1000}\n+long-line-done\n/.test(node.textContent)),"the line's end is kept").toBe(true);
-    await expect(pane.getByText("Earlier output was dropped",{exact:false})).toBeVisible();
+    await expect(pane.getByText("Older output is gone",{exact:false})).toBeVisible();
     // Typing goes in at once after it.
     await page.keyboard.type("echo next",{delay:10});await expect(input).toHaveValue("echo next");
     await screen.hover();

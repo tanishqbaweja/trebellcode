@@ -10,7 +10,10 @@ import { assistantRowDecorations, mergeTurnOutcomes, turnEndRows } from "../ui/s
 import { acpRelay, acpSession, scriptedAcp, select } from "./fixtures/scripted-acp.mjs";
 
 const CURSOR={initialize:{protocolVersion:1,agentCapabilities:{loadSession:true}},sessionNew:{sessionId:"cursor-session",configOptions:[select("mode","mode","agent",["agent","plan","ask"]),select("model","model","default",[["default","Auto"]])]}};
-const DUMP="Error: ConnectError: [unavailable] upstream connect error or disconnect/reset before headers",STACK="\n    at Http2Stream.<anonymous> (index.js:1:1)\n";
+// A lost backend as the Cursor Agent CLI words it ("Error: " and the error as a string: a Connect error with its "[code] detail"),
+// here a name its API host could not be found under, with a frame of Node's stack under it; and Cursor's own sentence for it.
+const DUMP="Error: ConnectError: [unavailable] getaddrinfo ENOTFOUND api2.cursor.sh",STACK="\n    at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:120:26)\n";
+const CURSOR_SENTENCE="Something went wrong communicating with the server. Please try again.";
 const chunk=text=>({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text}}});
 const toolCall=[
   {update:{sessionUpdate:"tool_call",toolCallId:"read-1",title:"Read src/app.js",kind:"read",status:"pending"}},
@@ -23,25 +26,25 @@ test("a Cursor turn whose last message is only a lost-connection dump fails, aft
   const fx=await scriptedAcp(t,{...CURSOR,prompts:[
     {steps:[chunk("Checking the file."),...toolCall,chunk(DUMP+STACK)]},
     // A message's text can come in several chunks; they are one message.
-    {steps:[chunk("Looking at the build."),...toolCall,chunk("Error: ConnectError: "),chunk("[unavailable] backend gone")]},
-    {steps:[chunk("Let me think about it."),{update:{sessionUpdate:"agent_thought_chunk",content:{type:"text",text:"The server may be down."}}},chunk("Something went wrong communicating with the server. Please try again.")]},
-    {steps:[chunk("Here is the plan."),{update:{sessionUpdate:"plan",entries:[{content:"Fix the build",status:"pending",priority:"medium"}]}},chunk(DUMP)]},
+    {steps:[chunk("Looking at the build."),...toolCall,chunk("Error: RetriableError: "),chunk("[unavailable] read ECONNRESET")]},
+    {steps:[chunk("Let me think about it."),{update:{sessionUpdate:"agent_thought_chunk",content:{type:"text",text:"The server may be down."}}},chunk(CURSOR_SENTENCE)]},
+    {steps:[chunk("Here is the plan."),{update:{sessionUpdate:"plan",entries:[{content:"Rebuild the search index",status:"pending",priority:"medium"}]}},chunk(DUMP)]},
     {steps:[chunk(DUMP+STACK)]},
   ]});
   const {session}=acpSession(t,fx,{runtime:"cursor"});
   await session.start();
   await assert.rejects(session.prompt([{type:"text",text:"one"}]),isTransportFailure(DUMP,DUMP+STACK));
-  await assert.rejects(session.prompt([{type:"text",text:"two"}]),isTransportFailure("Error: ConnectError: [unavailable] backend gone"));
-  await assert.rejects(session.prompt([{type:"text",text:"three"}]),isTransportFailure("Something went wrong communicating with the server. Please try again."));
+  await assert.rejects(session.prompt([{type:"text",text:"two"}]),isTransportFailure("Error: RetriableError: [unavailable] read ECONNRESET"));
+  await assert.rejects(session.prompt([{type:"text",text:"three"}]),isTransportFailure(CURSOR_SENTENCE));
   await assert.rejects(session.prompt([{type:"text",text:"four"}]),isTransportFailure(DUMP));
   await assert.rejects(session.prompt([{type:"text",text:"five"}]),isTransportFailure(DUMP,DUMP+STACK));
 });
 
 test("a Cursor message that quotes the dump in prose, or a dump that Cursor went on from, ends the turn normally",async t=>{
   const fx=await scriptedAcp(t,{...CURSOR,prompts:[
-    {steps:[chunk("Checking the file."),...toolCall,chunk("The server log shows:\n"+DUMP+"\nso the deploy failed before the tests ran.")]},
+    {steps:[chunk("Checking the file."),...toolCall,chunk("The CLI printed:\n"+DUMP+"\nso the upload never reached the server.")]},
     // Session metadata between two chunks is no new message: the reply stays the commentary that quotes the dump.
-    {steps:[chunk("The log said:\n"),{update:{sessionUpdate:"available_commands_update",availableCommands:[{name:"review",description:"Review"}]}},chunk(DUMP+"\n")]},
+    {steps:[chunk("Here is what it said:\n"),{update:{sessionUpdate:"available_commands_update",availableCommands:[{name:"review",description:"Review"}]}},chunk(DUMP+"\n")]},
     {steps:[chunk(DUMP),...toolCall,chunk("The connection is back; the file has two functions.")]},
   ]});
   const {session}=acpSession(t,fx,{runtime:"cursor"});

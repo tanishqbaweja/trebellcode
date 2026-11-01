@@ -368,7 +368,7 @@ test("Usage failures name the action before the reason, and only once",async({pa
     await codexCard.getByRole("button",{name:"Use reset credit"}).click();
     await expect(question.locator("p")).toHaveText("Use one earned Codex reset credit now? This can reset an eligible rate-limit window.");
     await question.getByRole("button",{name:"Use reset credit",exact:true}).click();
-    await expect(codexCard.getByRole("alert")).toHaveText("Could not use the reset credit: Deliberate reset credit failure");
+    await expect(codexCard.getByRole("alert")).toHaveText("Could not spend the reset credit: Deliberate reset credit failure");
     expect(nativeDialogs).toEqual([]);
     await expect(codexCard.getByRole("button",{name:"Use reset credit"})).toBeEnabled();
     await codexCard.getByRole("alert").scrollIntoViewIfNeeded();
@@ -393,7 +393,7 @@ test("a reset credit whose harness dropped on the way says it could not be used 
     await question.getByRole("button",{name:"Use reset credit",exact:true}).click();
     await expect.poll(()=>control.consumes).toBe(1);
     // Codex is connected again and the card has read the account again: the credit is still there, and the card says it was not used.
-    await expect(failure).toHaveText("Could not use the reset credit: Codex disconnected",{timeout:15_000});
+    await expect(failure).toHaveText("Could not spend the reset credit: Codex disconnected",{timeout:15_000});
     await expect(codexCard).toContainText("1 reset credit available");await expect(codexCard).toContainText("70% left");
     await expect(use).toBeEnabled();
     await failure.scrollIntoViewIfNeeded();
@@ -429,7 +429,7 @@ test("a reset credit used by a harness that dropped before answering is said to 
     await expect(codexCard,"the card back, with the limits read again").toContainText("100% left",{timeout:15_000});
     await expect(codexCard.getByRole("alert"),"a claim beside 100% left that the credit could not be used").toHaveCount(0);
     await expect(codexCard).not.toContainText("reset credit available");
-    await expect(codexCard,"the card says the credit was used").toContainText("The reset credit was used.");
+    await expect(codexCard,"the card says the credit was used").toContainText("The reset credit is spent.");
     await codexCard.scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:auditDir+"usage-reset-credit-used-then-dropped-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});

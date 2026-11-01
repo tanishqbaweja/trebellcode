@@ -82,9 +82,9 @@ test("an OpenCode 2 prompt and a steered message send a pasted image as a file O
     const [prompted,steer]=fake.called("session.prompt");
     // @opencode/client 2.0.24 posts files as PromptInput.FileAttachment {uri, name}; OpenCode stores the file it reads. A linked image
     // file goes the same way; any other file is named only.
-    assert.deepEqual(prompted,{sessionID:"ses_main",text:`What does the screenshot show?\n[Attached image "1793083630000-ab12cd34-shot.png" is saved at: ${folder.shot}]\n[Attached file "notes.md" is saved at: ${folder.notes}]\n[Attached image "photo.jpg" is saved at: ${folder.photo}]`,files:[{uri:fileUri(folder.shot),name:"1793083630000-ab12cd34-shot.png"},{uri:fileUri(folder.photo),name:"photo.jpg"}]});
+    assert.deepEqual(prompted,{sessionID:"ses_main",text:`What does the screenshot show?\n[Image attachment "1793083630000-ab12cd34-shot.png" at ${folder.shot}]\n[File attachment "notes.md" at ${folder.notes}]\n[Image attachment "photo.jpg" at ${folder.photo}]`,files:[{uri:fileUri(folder.shot),name:"1793083630000-ab12cd34-shot.png"},{uri:fileUri(folder.photo),name:"photo.jpg"}]});
     assert.match(prompted.files[0].uri,/^file:\/\/\//);
-    assert.deepEqual(steer,{sessionID:"ses_main",text:`And this one?\n[Attached image "1793083630000-ab12cd34-shot.png" is saved at: ${folder.shot}]`,files:[{uri:fileUri(folder.shot),name:"1793083630000-ab12cd34-shot.png"}],delivery:"steer"});
+    assert.deepEqual(steer,{sessionID:"ses_main",text:`And this one?\n[Image attachment "1793083630000-ab12cd34-shot.png" at ${folder.shot}]`,files:[{uri:fileUri(folder.shot),name:"1793083630000-ab12cd34-shot.png"}],delivery:"steer"});
   }finally{await session.close()}
 });
 
@@ -94,14 +94,14 @@ test("an OpenCode 2 attachment whose file is gone, or one for a server of the pr
   try{
     const turn=session.prompt([{type:"text",text:"Look"},image(folder.missing),image(folder.shot)]);
     await eventually(()=>managed.called("session.prompt").length===1);ended(managed);await turn;
-    assert.deepEqual(managed.called("session.prompt")[0],{sessionID:"ses_main",text:`Look\n[Attached image "gone.png" is saved at: ${folder.missing}]\n[Attached image "1793083630000-ab12cd34-shot.png" is saved at: ${folder.shot}]`,files:[{uri:fileUri(folder.shot),name:"1793083630000-ab12cd34-shot.png"}]});
+    assert.deepEqual(managed.called("session.prompt")[0],{sessionID:"ses_main",text:`Look\n[Image attachment "gone.png" at ${folder.missing}]\n[Image attachment "1793083630000-ab12cd34-shot.png" at ${folder.shot}]`,files:[{uri:fileUri(folder.shot),name:"1793083630000-ab12cd34-shot.png"}]});
   }finally{await session.close()}
   // A server of the profile's own (its server URL) may not see this machine's files: every attachment goes by its path only.
   const external=fakeOpenCode2(),remote=await startedSession(external);
   try{
     const turn=remote.session.prompt([{type:"text",text:"Look"},image(folder.shot),link(folder.notes,"notes.md")]);
     await eventually(()=>external.called("session.prompt").length===1);ended(external);await turn;
-    assert.deepEqual(external.called("session.prompt")[0],{sessionID:"ses_main",text:`Look\n[Attached image "1793083630000-ab12cd34-shot.png" is saved at: ${folder.shot}]\n[Attached file "notes.md" is saved at: ${folder.notes}]`});
+    assert.deepEqual(external.called("session.prompt")[0],{sessionID:"ses_main",text:`Look\n[Image attachment "1793083630000-ab12cd34-shot.png" at ${folder.shot}]\n[File attachment "notes.md" at ${folder.notes}]`});
     // Text alone goes as before.
     const plain=remote.session.prompt([{type:"text",text:"Only words"}]);
     await eventually(()=>external.called("session.prompt").length===2);ended(external);await plain;
@@ -118,7 +118,7 @@ test("an OpenCode 2 retry shows as the turn's retry row, with the model, the ret
     const created=Date.now()-5_000;
     fake.emit({type:"session.retry.scheduled",created,data:{sessionID:"ses_main",assistantMessageID:"msg_a1",attempt:2,at:created+30_000,error:{type:"provider.rate-limit",message:"429 Too Many Requests"}}});
     await eventually(()=>notices(updates).length===1);
-    assert.deepEqual(notices(updates),[{sessionUpdate:"runtime_error",willRetry:true,message:"429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1)."}]);
+    assert.deepEqual(notices(updates),[{sessionUpdate:"runtime_error",willRetry:true,message:"429 Too Many Requests. OpenCode sends the request to opencode/big-pickle again in 30 s, as retry 1."}]);
     fake.emit({type:"session.text.started",data:{sessionID:"ses_main",assistantMessageID:"msg_a1",ordinal:0}});
     fake.emit({type:"session.text.delta",data:{sessionID:"ses_main",assistantMessageID:"msg_a1",delta:"Hello there."}});
     ended(fake);
@@ -146,7 +146,7 @@ test("an OpenCode 2 retry hours away, or a subagent's, ends the turn with the pr
     const soon=Date.now();
     fake.emit({type:"session.retry.scheduled",created:soon,data:{sessionID:"ses_child",assistantMessageID:"msg_c1",attempt:3,at:soon+8_000,error:{type:"provider.overloaded",message:"Provider is overloaded"}}});
     await eventually(()=>notices(updates).length===1);
-    assert.equal(notices(updates)[0].message,"A subagent's model request failed: Provider is overloaded. OpenCode retries it in 8 s (retry 2).");
+    assert.equal(notices(updates)[0].message,"A subagent's model request failed: Provider is overloaded. OpenCode sends it again in 8 s, as retry 2.");
     fake.emit({type:"session.retry.scheduled",created:soon,data:{sessionID:"ses_child",assistantMessageID:"msg_c1",attempt:7,at:soon+8_000,error:{type:"provider.overloaded",message:"Provider is overloaded"}}});
     await assert.rejects(second,{message:"A subagent's model request failed: Provider is overloaded. OpenCode kept retrying (attempt 6), so Trebell stopped the turn. Try again later or choose another model."});
     await eventually(()=>fake.called("session.interrupt").length===3);
@@ -205,8 +205,9 @@ test("an OpenCode 2 question the dialog cannot show (a yes or no field) is decli
     assert.equal(asked.length,0);
     // Without a message the cancel stops the run, as OpenCode's own Stop does.
     assert.deepEqual(fake.called("session.form.cancel"),[{sessionID:"ses_main",formID:"frm_4"}]);
-    // A link to open, a hidden field and one that depends on another are declined the same way.
-    for(const [field,what] of [[{key:"x",type:"external",url:"https://example.com"},"a link to open"],[{key:"x",type:"string",hidden:true},"a hidden field"],[{key:"x",type:"string",when:[{key:"y",equals:"z"}]},"a field that depends on another"],[{key:"x",type:"number"},"a number"]]){
+    // A web page to visit, a field OpenCode keeps hidden and one shown only on another field's answer are declined the same way. (Their
+    // names were reworded on 2026-10-31 in Trebell's own words; the sentence around them is unchanged.)
+    for(const [field,what] of [[{key:"x",type:"external",url:"https://example.com"},"a visit to a web page"],[{key:"x",type:"string",hidden:true},"a field it keeps hidden"],[{key:"x",type:"string",when:[{key:"y",op:"eq",value:"z"}]},"a conditional field"],[{key:"x",type:"number"},"a number"]]){
       const next=session.prompt([{type:"text",text:"Again"}]);
       await eventually(()=>session.activePrompt);
       fake.emit({type:"form.created",data:{form:{id:`frm_${what}`,sessionID:"ses_main",title:"Form",fields:[field]}}});

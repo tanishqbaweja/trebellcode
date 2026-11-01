@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
-import { createClaudeCapabilitiesCache,probeClaudeCapabilities } from "../../src/claude-capabilities.mjs";
+import { createClaudeCapabilitiesCache,readClaudeCodeCapabilities } from "../../src/claude-capabilities.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
 
@@ -47,7 +47,7 @@ async function openClaudeUsage(page){
       close(){},
     };
   };
-  const cache=createClaudeCapabilitiesCache({probe:input=>probeClaudeCapabilities({...input,query,managedMcpExists:()=>false})});
+  const cache=createClaudeCapabilitiesCache({probe:input=>readClaudeCodeCapabilities({...input,query,managedMcpExists:()=>false})});
   // `claude --version` and `claude auth status`, as the recheck after a failed turn runs them: no Claude Code is started.
   const runFn=async(_command,args)=>args[0]==="--version"?{ok:true,code:0,error:null,stdout:"2.1.311 (Claude Code)\n",stderr:""}
     :{ok:claude.loggedIn,code:claude.loggedIn?0:1,error:null,stdout:JSON.stringify({loggedIn:claude.loggedIn,authMethod:claude.loggedIn?"claude.ai":"none",apiProvider:"firstParty"}),stderr:""};
@@ -125,7 +125,7 @@ test("a Claude Code signed out while its plan shows says so, and how to sign in,
     await expect(rows.filter({hasText:"Session"})).toContainText("12% used",{timeout:15_000});
     // The person signs out in a terminal (claude auth logout); a turn fails, and Trebell's recheck finds `claude auth status` signed out.
     usage.claude.loggedIn=false;usage.claude.next={account:SIGNED_OUT,usage:NO_PLAN};
-    expect((await usage.manager.recheck("claude")).message).toBe("Claude Code is signed out. Sign in with `claude auth login` and try again.");
+    expect((await usage.manager.recheck("claude")).message).toBe("Claude Code has no account signed in. Run `claude auth login`, then try again.");
     // Refresh from the keyboard.
     const refresh=page.locator(".usage-toolbar .usage-refresh");
     await refresh.focus();

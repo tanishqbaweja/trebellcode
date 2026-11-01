@@ -30,8 +30,8 @@ test("retries that ran out on another status, or on none, stay a provider error,
   }
   assert.equal(codexErrorNotice({error:{message:"exceeded retry limit",codexErrorInfo:"responseTooManyFailedAttempts"}}).kind,"provider","a bare code says no status");
   // Codex still retrying the request: the turn goes on, so the notice reads as the retry it is, with no hint.
-  const retrying=codexErrorNotice({willRetry:true,error:{...exhausted(429),message:"Reconnecting... 2/5"}});
-  assert.equal(retrying.title,"Retrying (2/5): Reconnecting... 2/5");
+  const retrying=codexErrorNotice({willRetry:true,error:{...exhausted(429),message:"Reconnecting... 4/5"}});
+  assert.equal(retrying.title,"Retrying (4/5): Reconnecting... 4/5");
   // Usage and rate limits and transport failures read as before.
   assert.equal(codexErrorNotice({error:{message:"You've hit your usage limit.",codexErrorInfo:"usageLimitExceeded"}}).kind,"usage_limit");
   assert.equal(codexErrorNotice({error:{message:"stream error",codexErrorInfo:{responseStreamDisconnected:{httpStatusCode:429}}}}).kind,"transport");

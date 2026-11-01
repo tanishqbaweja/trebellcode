@@ -240,19 +240,19 @@ test("the composer lists Muse Code's models and the Thinking levels each offers,
     await expect(picker).toContainText("Muse Spark 1.2","a new chat starts on Muse's own default model");
     await picker.click();
     const menu=page.locator(".model-picker-menu");
-    // Muse's own list, by the names it gives (a bare muse-* id title-cased), each row naming Muse Code; the local provider's row
-    // and the second muse-spark-1.3 row are left out.
-    await expect(menu.locator("button strong")).toHaveText(["Muse Wonder 1.0","Muse Spark 1.3","Muse Spark 1.2","Muse Spark 1.3 Contributor"]);
+    // Muse's own list, by the names it gives (its label, else a bare muse-* id title-cased), each row naming Muse Code; the local
+    // provider's row and the second muse-spark-1.3 row are left out.
+    await expect(menu.locator("button strong")).toHaveText(["Wonder 1.0 Preview","Muse Spark 1.3","Muse Spark 1.2","Muse Spark 1.3 Contributor"]);
     await expect(menu.locator("button").first()).toContainText("Muse Code");
     await expect(menu).not.toContainText("Local coder");
     for(const mode of ["dark","light"]){await switchMode(page,mode);if(!await menu.isVisible())await picker.click();await page.screenshot({animations:"disabled",path:auditDir+`composer-muse-models-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
     if(!await menu.isVisible())await picker.click();
-    await menu.getByRole("button",{name:/Muse Wonder 1\.0/}).click();
-    await expect(picker).toContainText("Muse Wonder 1.0");
+    await menu.getByRole("button",{name:/Wonder 1\.0 Preview/}).click();
+    await expect(picker).toContainText("Wonder 1.0 Preview");
     // Wonder's own levels, Minimal to Max; None, which Meta's provider refuses, is not one.
-    await expect(thinking.locator("option")).toHaveText(["Thinking · Default","Thinking · Minimal","Thinking · Low","Thinking · Medium","Thinking · High","Thinking · Extra High","Thinking · Max"]);
-    await thinking.selectOption({label:"Thinking · Extra High"});
+    await expect(thinking.locator("option")).toHaveText(["Thinking · Default","Thinking · Minimal","Thinking · Low","Thinking · Medium","Thinking · High","Thinking · Extra high","Thinking · Max"]);
+    await thinking.selectOption({label:"Thinking · Extra high"});
     await expect(thinking).toHaveValue("xhigh");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`composer-muse-thinking-${mode}-1280x800.png`})}
     await switchMode(page,"dark");

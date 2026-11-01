@@ -589,7 +589,7 @@
 :root:root .context-panel .worktree-row>button{height:26px;min-height:26px}
 :root:root .context-panel .sc-card>h4+.worktree-row{border-top:0!important}
 :root:root .context-panel .sc-card>button{margin-top:10px}
-/* Linked pull requests */
+/* A thread's pull requests */
 :root:root .context-panel .linked-pr-panel{display:grid;gap:10px}
 :root:root .context-panel .linked-pr-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
 :root:root .context-panel .linked-pr-panel-head h3{margin:0}

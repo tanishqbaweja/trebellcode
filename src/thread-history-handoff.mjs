@@ -2,14 +2,12 @@
 // conversation, or that a fork starts. Pure: the relay fences the text
 // into the prompt's working context, where fencedContextValue escapes it.
 
-// The default handoff cap of 16k tokens, counted as UTF-8 bytes: one byte per token errs on the safe side.
-export const THREAD_HISTORY_BUDGET=16_000;
+// How much earlier conversation a handoff may carry: 20,000 bytes of UTF-8 as the prompt carries it, Trebell's own choice of about
+// five pages (some 4,000 bytes a page), enough for the last several exchanges a fresh session needs to carry on. A byte stands in
+// for a token, since no token is shorter than a byte, so the handoff stays within 20,000 tokens with no tokenizer to count them.
+export const THREAD_HISTORY_BUDGET=20_000;
 // A command's output keeps its end, where a failure shows.
 export const HISTORY_COMMAND_OUTPUT_LIMIT=2_000;
-
-const encoder=new TextEncoder();
-// fencedContextValue escapes each of Trebell's own tags in the value, three bytes more each, so a cost holds after escaping.
-function fencedBytes(text){return encoder.encode(text).length+3*(text.match(/<\/?trebell_context/gi)||[]).length}
 
 function tail(text,limit){
   if(text.length<=limit)return text;
@@ -69,28 +67,52 @@ export function threadHistoryHeader({harness="The harness",included=0,total=0,fo
   ].join("\n");
 }
 
-// Picks what fits the budget whole, in this order: the latest user message, the latest reply, the first user message, then the
-// rest from newest to oldest. An entry too large for what is left is omitted whole and counted. The picked entries keep their order.
-export function selectThreadHistory(entries=[],{budget=THREAD_HISTORY_BUDGET}={}){
-  const list=Array.isArray(entries)?entries:[],chosen=new Set();let remaining=budget;
-  const add=index=>{
-    if(index<0||index>=list.length||chosen.has(index))return;
-    const cost=fencedBytes(renderHistoryEntry(list[index]))+2;if(cost>remaining)return;
-    chosen.add(index);remaining-=cost;
-  };
-  add(list.findLastIndex(entry=>entry.role==="user"));
-  add(list.findLastIndex(entry=>entry.role==="assistant"));
-  add(list.findIndex(entry=>entry.role==="user"));
-  for(let index=list.length-1;index>=0;index--)add(index);
-  return {entries:list.filter((_,index)=>chosen.has(index)),included:chosen.size,omitted:list.length-chosen.size};
+// The budget. A handoff is pieces, its header and then one per entry it keeps, with a blank line between each two. A piece takes
+// from the budget its size in the prompt, where the working-context fence writes the "<" of each of Trebell's own tags as "&lt;"
+// (fencedContextValue), and the blank line that parts it from the next piece.
+const PIECE_SEPARATOR="\n\n";
+const TAG_START=/<(?=\/?trebell_context)/gi;
+const utf8=new TextEncoder();
+function pieceCost(text){return utf8.encode(text.replace(TAG_START,"&lt;")).length+PIECE_SEPARATOR.length}
+
+// The places in the thread that claim room, each once and in this order: the person's newest message (what is being asked), the
+// newest reply (where the conversation stands), the person's first message (what the thread set out to do), then every entry
+// from the newest back to the oldest.
+function claimOrder(entries){
+  const roles=entries.map(entry=>entry.role),newestFirst=entries.map((_,at)=>at).reverse();
+  const anchors=[roles.lastIndexOf("user"),roles.lastIndexOf("assistant"),roles.indexOf("user")];
+  return new Set([...anchors,...newestFirst].filter(at=>at>=0));
 }
 
-// The handoff for a thread's turns, or null when there is nothing earlier to hand over. The budget covers the header too,
-// reserved at its widest so the counts can never push the text past it.
+// The budget as a count of bytes. One that reads as no number sets no limit, as it always has here; no caller passes one.
+function roomFor(budget){const bytes=Number(budget);return Number.isNaN(bytes)?Infinity:bytes}
+
+// The entries that fill the budget, whole. In claim order, an entry is kept when it fits the room left and skipped when it does
+// not, so a smaller, older one can still come in after a larger one stayed out. The kept entries come back as they were given, in
+// the thread's order, with how many were kept and how many were left out.
+export function selectThreadHistory(entries=[],{budget=THREAD_HISTORY_BUDGET}={}){
+  const thread=Array.isArray(entries)?entries:[],kept=new Array(thread.length).fill(false);
+  let room=roomFor(budget);
+  for(const at of claimOrder(thread)){
+    const cost=pieceCost(renderHistoryEntry(thread[at]));
+    if(cost<=room){kept[at]=true;room-=cost}
+  }
+  const picked=thread.filter((_,at)=>kept[at]);
+  return {entries:picked,included:picked.length,omitted:thread.length-picked.length};
+}
+
+// The header's room, kept back before any entry is weighed. The header carries the real counts, known only after the choice, so
+// the room is for the longest it could be: every entry counted in and twice as many in all, which brings in the left-out clause
+// and leaves no count with fewer digits than the real one.
+function headerRoom(count,{harness,fork}){return pieceCost(threadHistoryHeader({harness,fork,included:count,total:count*2}))}
+
+// The handoff for a thread's turns, or null when there is nothing earlier to hand over: the header, then the kept entries. Once
+// fenced, it stays within any budget that has the header's room.
 export function threadHistoryHandoff(turns=[],{harness="The harness",excludeTurnId=null,budget=THREAD_HISTORY_BUDGET,fork=false}={}){
-  const entries=threadHistoryEntries(turns,{excludeTurnId});if(!entries.length)return null;
-  const reserve=fencedBytes(threadHistoryHeader({harness,included:entries.length,total:entries.length*2,fork}))+2;
-  const picked=selectThreadHistory(entries,{budget:Math.max(0,budget-reserve)});
-  const text=[threadHistoryHeader({harness,included:picked.included,total:entries.length,fork}),...picked.entries.map(renderHistoryEntry)].join("\n\n");
-  return {text,included:picked.included,omitted:picked.omitted};
+  const history=threadHistoryEntries(turns,{excludeTurnId});
+  if(!history.length)return null;
+  const forEntries=Math.max(0,budget-headerRoom(history.length,{harness,fork}));
+  const {entries:kept,included,omitted}=selectThreadHistory(history,{budget:forEntries});
+  const header=threadHistoryHeader({harness,fork,included,total:history.length});
+  return {text:[header,...kept.map(renderHistoryEntry)].join(PIECE_SEPARATOR),included,omitted};
 }

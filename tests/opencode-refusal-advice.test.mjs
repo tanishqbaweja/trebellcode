@@ -12,7 +12,7 @@ import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 // machine. The advice now leaves the password alone: check the server URL, or leave it empty so Trebell Code starts OpenCode itself.
 // The server answers as OpenCode 1.18.32 refuses a wrong or missing password (an empty 401); the status check reads it through the
 // real discovery, and only the profile's --version is answered here.
-const ADVICE="The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or leave it empty so Trebell Code starts OpenCode itself.";
+const ADVICE="The OpenCode server at this profile's URL wants a password, and Trebell Code gives one only to an OpenCode 1.x server it starts itself. Check the URL, or leave it empty so Trebell Code starts OpenCode for you.";
 
 test("an OpenCode 1.x server of the profile's own that asks for a password is not advised to run without it",async t=>{
   const server=createServer((_req,res)=>{res.writeHead(401);res.end()});

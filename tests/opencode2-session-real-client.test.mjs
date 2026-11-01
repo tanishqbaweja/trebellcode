@@ -51,7 +51,7 @@ test("an OpenCode 2 retry the real client delivers is told as the turn's retry, 
   assert.equal((await session.prompt([{type:"text",text:"Hello"}])).stopReason,"end_turn");
   const notices=updates.filter(update=>update.sessionUpdate==="runtime_error");
   assert.equal(notices.length,1,"one retry notice");assert.equal(notices[0].willRetry,true);
-  assert.match(notices[0].message,/^429 Too Many Requests\. OpenCode retries opencode\/big-pickle in \d+ s \(retry 1\)\.$/);
+  assert.match(notices[0].message,/^429 Too Many Requests\. OpenCode sends the request to opencode\/big-pickle again in \d+ s, as retry 1\.$/);
 });
 
 test("an OpenCode 2 question the real client delivers is asked, and its answer goes back to OpenCode",{timeout:30_000},async t=>{

@@ -17,8 +17,8 @@ import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 
-const CLAUDE_ADVICE="Claude Code is signed out. Sign in with `claude auth login` and try again.";
-const GROK_ADVICE="Grok CLI is installed but not logged in. Run grok login.";
+const CLAUDE_ADVICE="Claude Code has no account signed in. Run `claude auth login`, then try again.";
+const GROK_ADVICE="Grok Build has no account signed in. Run grok login, then try again.";
 const CLAUDE_EXIT="Claude Code process exited with code 1";
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // A request the relay refuses, with exactly this message.

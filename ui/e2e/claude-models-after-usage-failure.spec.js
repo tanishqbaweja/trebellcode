@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
-import { createClaudeCapabilitiesCache,probeClaudeCapabilities } from "../../src/claude-capabilities.mjs";
+import { createClaudeCapabilitiesCache,readClaudeCodeCapabilities } from "../../src/claude-capabilities.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
 
@@ -39,7 +39,7 @@ async function claudeProbeWindow(page,{answers,commands=[{name:"review",descript
       close(){},
     };
   };
-  const manager=new AgentRuntimeManager({state,env,claudeCapabilitiesCache:createClaudeCapabilitiesCache({probe:input=>probeClaudeCapabilities({...input,query,managedMcpExists:()=>false})})});
+  const manager=new AgentRuntimeManager({state,env,claudeCapabilitiesCache:createClaudeCapabilitiesCache({probe:input=>readClaudeCodeCapabilities({...input,query,managedMcpExists:()=>false})})});
   manager.probe=async()=>({available:true,installed:true,authenticated:true});
   const harness=await startClaudeRelay({turn:async()=>{}});
   const close=async()=>{await harness.close();await rm(home,{recursive:true,force:true,maxRetries:8,retryDelay:100})};

@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
 import spawn from "cross-spawn";
 import { codexBin, codexHome, trebellHome } from "./paths.mjs";
-import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
+import { planCodexHomes, prepareCodexHome } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
 import { redactSecretText, withoutSecretEnvironment } from "./secret-redactor.mjs";
@@ -28,7 +28,9 @@ import { acpCommandsFromAvailable } from "./acp-agent-session.mjs";
 import { readMuseModelCatalog } from "./muse-model-catalog.mjs";
 import { museUsageLimits } from "./muse-subscription-usage.mjs";
 import { latestMuseSubscriptionUsage } from "./muse-agent-session.mjs";
-import { compareMuseVersions, isMuseLauncher, latestMuseRelease, MUSE_CHANNELS, museChannel, museChannelUrl, museUpdateEnvironment, museUpdateRefusal, museUpdateText } from "./muse-maintenance.mjs";
+import { isMuseLauncher, latestMuseRelease, museChannel, museChannelUrl, museUpdateEnvironment, museUpdateRefusal, museUpdateText, museVersionIn, museVersionOrder, PUBLISHED_MUSE_CHANNELS } from "./muse-maintenance.mjs";
+import { harnessReleaseSupport, supportedLineRange } from "./harness-releases.mjs";
+import { CLAUDE_OWN_ENDPOINT, museNotFound, openCodeReadiness, openCodeServerPassword, signInNeeded } from "./harness-status-words.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
@@ -71,8 +73,9 @@ export function withProbeAdvice(message,status){
   if(!advice||said.includes(advice))return message;
   return said?`${/[.!?…]$/.test(said)?said:said+"."} ${advice}`:advice;
 }
-// An ACP harness's model list is kept this long once it has models.
-const ACP_MODEL_LIST_REUSE_MS=30*60_000;
+// An ACP harness's model list is kept this long once it has models: Trebell's own hour. The list changes with the account's plan or
+// the harness's release, rarely within a session, and reading it can start a session of the harness of its own.
+const ACP_MODEL_LIST_REUSE_MS=60*60_000;
 const INSTALLABLE_PACKAGES=Object.freeze({
   codex:"@openai/codex",
   claude:"@anthropic-ai/claude-code",
@@ -101,7 +104,7 @@ const unfinishedInstall=(kind,result)=>{
 // whose latest is what `grok update` installs.
 const npmPackageFor=(kind,version)=>kind==="opencode"&&parsedSemver(version)?.major===2?"@opencode/cli":kind==="grok"?"@xai-official/grok":INSTALLABLE_PACKAGES[kind]||null;
 // Two releases of a harness in order: Muse Code's by its own versions (X.Y.Z-R<revision>), every other's by X.Y.Z.
-const releaseOrder=(kind,a,b)=>kind==="muse"?compareMuseVersions(a,b):compareSemver(parsedSemver(a),parsedSemver(b));
+const releaseOrder=(kind,a,b)=>kind==="muse"?museVersionOrder(a,b):compareSemver(parsedSemver(a),parsedSemver(b));
 // Muse Code runs where Trebell runs; a WSL or SSH environment has no Muse Code of Trebell's.
 const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start and the
@@ -113,30 +116,13 @@ const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Swit
 // at most one `opencode serve` in that time. A failed turn's recheck keeps a complete read: OpenCode's catalog is not read
 // again when a turn fails.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
-const OPENCODE_INCOMPLETE_REUSE_MS=5*60_000;
+// Trebell's own two minutes for a read that was not complete: soon enough that the models a cold server left out appear while the
+// person is still in Settings, and at most one `opencode serve` every two minutes for it.
+const OPENCODE_INCOMPLETE_REUSE_MS=2*60_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
 // How long after it began Settings' harness list waits for a newest-release read still on its way: a registry or an npm that
 // does not answer never holds the list back for longer.
 const RELEASE_WAIT_MS=1500;
-
-const RUNTIME_COMPATIBILITY=Object.freeze({
-  opencode:Object.freeze({
-    recommendedRange:">=1.14.19 <3.0.0",
-    ranges:Object.freeze([
-      Object.freeze({range:"<1.14.19",status:"broken"}),
-      Object.freeze({range:">=3.0.0",status:"unsupported"}),
-      Object.freeze({range:">=1.14.19 <3.0.0",status:"supported"}),
-    ]),
-  }),
-  // Muse Code 1.4.2 and later, compared without its -R<revision> (runtimeCompatibility).
-  muse:Object.freeze({
-    recommendedRange:">=1.4.2",
-    ranges:Object.freeze([
-      Object.freeze({range:">=1.4.2",status:"supported"}),
-      Object.freeze({range:"<1.4.2",status:"unknown"}),
-    ]),
-  }),
-});
 
 function parsedSemver(value){
   const match=String(value||"").match(/(?:^|[^0-9])v?(\d+)\.(\d+)\.(\d+)(?![0-9.-])/i);
@@ -155,15 +141,6 @@ function compareSemver(a,b){
   for(const key of ["major","minor","patch"]){if(a[key]!==b[key])return a[key]<b[key]?-1:1}
   return 0;
 }
-function satisfiesSimpleRange(version,range){
-  const parsed=parsedSemver(version);if(!parsed)return false;
-  const clauses=String(range||"").trim().split(/\s+/).filter(Boolean);if(!clauses.length)return false;
-  return clauses.every(clause=>{
-    const match=clause.match(/^(<=|>=|<|>|=)?v?(\d+)\.(\d+)\.(\d+)$/);if(!match)return false;
-    const target={major:Number(match[2]),minor:Number(match[3]),patch:Number(match[4])};const compared=compareSemver(parsed,target);
-    return match[1]==="<"?compared<0:match[1]==="<="?compared<=0:match[1]===">"?compared>0:match[1]===">="?compared>=0:compared===0;
-  });
-}
 function stripAnsi(value){return String(value||"").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g,"")}
 function runtimeProbeFailure(def,result={}){
   const raw=stripAnsi(String(result.stderr||result.error||"")).trim();
@@ -173,9 +150,10 @@ function runtimeProbeFailure(def,result={}){
   return (first||`${def?.name||"Runtime"} executable was not found`).slice(0,500);
 }
 // How long a harness's --version may take: Claude Code's native CLI can take longer to start on a cold Windows start
-// or while Defender scans it, and an OpenCode behind its npm shim several seconds. Codex keeps 6 s: one that runs out of time leaves
-// the answer to its account read, which has 20 s of its own, so a longer --version would only add waiting.
-const VERSION_CHECK_TIMEOUT_MS=Object.freeze({claude:20_000,opencode:10_000});
+// or while Defender scans it, so Trebell gives it 30 s, and an OpenCode behind its npm shim several seconds. Codex keeps 6 s: one
+// that runs out of time leaves the answer to its account read, which has a bound of its own (CODEX_ACCOUNT_PROBE_TIMEOUT_MS), so a
+// longer --version would only add waiting.
+const VERSION_CHECK_TIMEOUT_MS=Object.freeze({claude:30_000,opencode:10_000});
 const versionCheckTimeoutMs=kind=>VERSION_CHECK_TIMEOUT_MS[kind]||6000;
 // Why a --version did not answer: "missing" only when its command is not there (the spawn's own ENOENT, cmd.exe's "is not
 // recognized" line, or the 127 a shell or env exits with then), never for an ENOENT or "command not found" that a CLI which ran
@@ -203,45 +181,86 @@ function versionCheckMessage(def,kind,command,result){
 // probe keeps it, an OpenCode's too, which cannot start without its version. (A Codex one that found no sign-in is asked again: its
 // account read answered it.)
 const versionCheckOnly=value=>Boolean(value?.versionCheckFailed)&&value.authenticated==null;
-// A Claude Code profile that runs through a router or gateway: an http(s) ANTHROPIC_BASE_URL whose host is not api.anthropic.com.
-function claudeCustomEndpoint(env={}){
-  let url=null;try{url=new URL(String(env?.ANTHROPIC_BASE_URL||"").trim())}catch{}
-  return Boolean(url&&/^https?:$/.test(url.protocol)&&url.hostname&&url.hostname!=="api.anthropic.com");
+// Anthropic's own API host. A Claude Code profile whose ANTHROPIC_BASE_URL names any other http or https host sends its requests to
+// an endpoint of its own, a router or gateway.
+const ANTHROPIC_API_HOST="api.anthropic.com";
+function claudeOwnEndpoint(env={}){
+  let target;
+  try{target=new URL(String(env?.ANTHROPIC_BASE_URL??"").trim())}catch{return false}
+  return (target.protocol==="https:"||target.protocol==="http:")&&target.hostname!==""&&target.hostname!==ANTHROPIC_API_HOST;
 }
+// Cursor's sign-in from the email field of `cursor-agent about`. The CLI (2026.09.26, 3386.index.js) fills it with the address of
+// the account its GetMe call returns; with no account it leaves null in JSON and puts its own words in that place in text (Not
+// logged in). So the field names the account when one of its words is an address, and that address is the email shown; any other
+// words say nobody is signed in, however a CLI version words it. An empty field says nothing.
+function cursorAccountFromField(field){
+  if(!field)return {authenticated:null,email:null};
+  const address=field.split(/\s+/).find(isEmailAddress);
+  return address?{authenticated:true,email:address}:{authenticated:false,email:null};
+}
+// A word with one "@" that has text on both sides of it.
+function isEmailAddress(word){
+  const at=word.indexOf("@");
+  return at>0&&at<word.length-1&&!word.includes("@",at+1);
+}
+const LINE_BREAK=/[\n\r\u2028\u2029]/,LINE_BREAKS=new RegExp(LINE_BREAK.source,"g");
+// The text form's "User Email" value: the label at the start of a line (after spaces), then at least one space, then the first
+// text after it (on a later line when the rest of its line is blank), up to the end of the line it starts on; "" when there is none.
+function cursorAboutTextEmail(output){
+  for(let lineStart=0;;){
+    let at=lineStart;
+    while(at<output.length&&!LINE_BREAK.test(output[at])&&output[at].trim()==="")at++;
+    const next=output[at+10];
+    if(output.slice(at,at+10).toLowerCase()==="user email"&&next!==undefined&&next.trim()===""){
+      const rest=output.slice(at+10).trimStart(),end=rest.search(LINE_BREAK);
+      return (end<0?rest:rest.slice(0,end)).trim();
+    }
+    LINE_BREAKS.lastIndex=lineStart;
+    const lineEnd=LINE_BREAKS.exec(output);
+    if(!lineEnd)return "";
+    lineStart=lineEnd.index+1;
+  }
+}
+// `cursor-agent about --format json` decides alone when its JSON parses (userEmail null is signed out); otherwise the text of
+// `about` (stdout, then stderr) is read for its User Email line.
 export function parseCursorAboutResult(result={}){
   const stdout=String(result.stdout||"").trim();
-  const combined=stripAnsi(stdout+"\n"+String(result.stderr||""));
   if(stdout.startsWith("{")){
-    try{
-      const parsed=JSON.parse(stdout);
-      const hasEmail=Object.prototype.hasOwnProperty.call(parsed,"userEmail");
-      const email=typeof parsed.userEmail==="string"?parsed.userEmail.trim():"";
-      const lower=email.toLowerCase();
-      if(hasEmail&&parsed.userEmail==null)return {authenticated:false,email:null};
-      if(email&&(lower==="not logged in"||lower.includes("login required")||lower.includes("authentication required")))return {authenticated:false,email:null};
-      if(email)return {authenticated:true,email};
-      return {authenticated:null,email:null};
-    }catch{}
+    let about=null;
+    try{about=JSON.parse(stdout)}catch{}
+    if(about){
+      const field=about.userEmail;
+      if(field===null&&Object.hasOwn(about,"userEmail"))return {authenticated:false,email:null};
+      return cursorAccountFromField(typeof field==="string"?field.trim():"");
+    }
   }
-  const emailMatch=combined.match(/^\s*User Email\s+(.+?)\s*$/im);
-  const email=emailMatch?.[1]?.trim()||"";
-  if(!email)return {authenticated:null,email:null};
-  const lower=email.toLowerCase();
-  if(lower==="not logged in"||lower.includes("login required")||lower.includes("authentication required"))return {authenticated:false,email:null};
-  return {authenticated:true,email};
+  return cursorAccountFromField(cursorAboutTextEmail(stripAnsi(stdout+"\n"+String(result.stderr||""))));
 }
+// Grok Build's sign-in, as `grok models` words it before its model list: the first of these phrases found decides, so the signed-in
+// one wins when both kinds are there. A phrase counts only as written (one space between its words, letters in either ASCII case);
+// output with none of them leaves the sign-in unknown (null).
+const GROK_SIGN_IN_PHRASES=[["you are logged in",true],["not authenticated",false],["not logged in",false]];
+// How long one `grok models` may take: it starts Grok's CLI, which can refresh an expired access token over the network before it
+// answers. Trebell's own 12 s, 2.1.2's 10 s and a fifth more, so a sign-in check that answered then still does.
+const GROK_MODELS_TIMEOUT_MS=12_000;
 export function parseGrokModelsAuth(output){
-  const value=stripAnsi(output);
-  if(/you are logged in/i.test(value))return true;
-  if(/not authenticated|not logged in/i.test(value))return false;
-  return null;
+  const said=stripAnsi(output).toLowerCase();
+  const found=GROK_SIGN_IN_PHRASES.find(([phrase])=>said.includes(phrase));
+  return found?found[1]:null;
 }
-// Muse Code's version as it names its builds, X.Y.Z-R<revision> ("Muse Code 1.4.13 (1.4.13-R6996.1)" is 1.4.13-R6996.1), else a
-// plain X.Y.Z; the shared reading stops at the -R.
-export function parseMuseVersion(output){
-  const value=stripAnsi(output);
-  return value.match(/\b\d+\.\d+\.\d+-R\d+(?:\.\d+)?\b/)?.[0]||value.match(/\b\d+\.\d+\.\d+\b/)?.[0]||null;
+// Grok Build's ACP agent runs as `grok agent stdio`, and an access level goes in one of two places: Full access is the agent's own
+// --always-approve, an option of `agent` that follows it; every other level is grok's --permission-mode, which comes before the
+// subcommand: auto for Auto, and default, where Grok asks, for the rest. The agent has no accept-edits mode (it treats acceptEdits
+// as asking), so in the edits level Grok asks and Trebell answers its edit requests itself; the levels that ask launch alike, so a
+// switch between them needs no relaunch.
+function grokAgentLaunchArgs(level){
+  const grokOptions=level==="full"?[]:["--permission-mode",level==="auto"?"auto":"default"];
+  const agentOptions=level==="full"?["--always-approve"]:[];
+  return [...grokOptions,"agent",...agentOptions,"stdio"];
 }
+// The version Muse Code's --version names, read from the output without its terminal colours: its build, X.Y.Z-R<revision>, when
+// it names one, else a plain X.Y.Z (museVersionIn).
+export function parseMuseVersion(output){return museVersionIn(stripAnsi(output))}
 // Meta's own installers for Muse Code (https://dev.meta.ai/docs/muse-code): Trebell does not install it.
 export function museInstallCommand(platform=process.platform){
   return platform==="win32"?"irm https://dev.meta.ai/install.ps1 | iex":"curl -fsSL https://dev.meta.ai/install.sh | sh";
@@ -254,34 +273,58 @@ export function parseOpenCodeAuthList(output){
   const connected=(Number.isFinite(credentials)?credentials:0)+(Number.isFinite(environment)?environment:0);
   return {connected,authenticated:known&&connected>0?true:null};
 }
-// OpenCode's status message, from the connected providers its server lists and the models it lists for them.
-export function openCodeStatusMessage(connected,{external=false,models=null}={}){
-  const count=Math.max(0,Number(connected)||0),where=external?"the configured OpenCode server":"OpenCode";
-  if(count>0&&models===0)return `${count} upstream provider${count===1?" is":"s are"} connected through ${where}, but it lists no models yet. Press Refresh to check again.`;
-  if(count>0)return `${external?"The configured OpenCode server answers":"OpenCode runs"} with ${count} upstream provider${count===1?"":"s"} connected, and lists ${count===1?"its":"their"} models.`;
-  return external?"The configured OpenCode server answers, but no upstream provider is connected through it.":"OpenCode runs, but no upstream provider is connected through it.";
-}
 // OpenCode is ready once upstream providers are connected and it lists models for them. Its answer is complete, and kept, when
 // nothing in it is pending either: a command, skill or agent list that timed out or failed, or an OpenCode 2 model list still changing.
 const openCodeCatalogReady=catalog=>Boolean(catalog?.connectedProviders?.length&&catalog?.models?.length);
 const openCodeCatalogComplete=catalog=>openCodeCatalogReady(catalog)&&!catalog?.pending?.length;
-// A profile's own OpenCode server that refused the password: an HTTP 401 or 403 (OpenCode 1.x answers an empty one, whose status the
-// error keeps), OpenCode 2's UnauthorizedError or ForbiddenError, or a 401 or 403 said as a status, or Unauthorized or Forbidden, in its
-// text. The digits alone are not one, as a port or a path can hold them (http://127.0.0.1:4010).
-const OPENCODE_REFUSED_STATUS=new Set([401,403]),OPENCODE_REFUSED_TAG=new Set(["UnauthorizedError","ForbiddenError"]);
-export function openCodeServerRefused(error){
-  if(OPENCODE_REFUSED_STATUS.has(Number(error?.status))||OPENCODE_REFUSED_STATUS.has(Number(error?.cause?.status))||OPENCODE_REFUSED_TAG.has(String(error?._tag||error?.name||"")))return true;
-  const text=String(error?.message||error||"");
-  return /\b(?:unauthorized|forbidden)\b/i.test(text)||/\b(?:unexpected)?status(?:\s+code)?(?:\s*[:=]\s*|\s+)(?:401|403)\b/i.test(text)||/\bhttp(?:\/\d(?:\.\d)?)?\s+(?:401|403)\b/i.test(text);
+// ---- Did a profile's own OpenCode server turn Trebell's password down?
+// The status check asks this of whatever its catalog read threw, and each client leaves the answer somewhere else:
+// - OpenCode 1.x turns a password down with a 401 that has no body. Its SDK returns the response with an empty error object, and
+//   unwrap copies the response's status onto the Error it throws.
+// - OpenCode 2's client throws the server's own JSON error for a status the route declares, named by its _tag (UnauthorizedError or
+//   ForbiddenError), and for any other status a ClientError whose cause holds the status, its text being "UnexpectedStatus: 403".
+// - Node's fetch throws only when no answer came at all ("fetch failed", with the address and port in its cause), never for a status.
+// So the status or the tag decides, on the error or on a cause under it (the 2.x client nests a failed fetch three deep). The text
+// is read only when neither is there, as with a message handed on as text: a 401's or 403's reason phrase (RFC 9110) or one of those
+// tags as a word of its own, or a 401 or 403 right after a word that calls it a status ("status code: 401", "HTTP/1.1 403",
+// "UnexpectedStatus: 403"). A number with nothing naming it never counts, so the 4010 of 127.0.0.1:4010 or the 4031 of
+// /api/info/4031 is no refusal.
+const PASSWORD_REFUSAL_STATUSES=new Set([401,403]);
+const OPENCODE2_REFUSAL_TAGS=new Set(["UnauthorizedError","ForbiddenError"]);
+const REFUSAL_WORDS=new Set(["unauthorized","forbidden",...[...OPENCODE2_REFUSAL_TAGS].map(tag=>tag.toLowerCase())]);
+// Words after which a number is a status: a client's own words for one, OpenCode 2's ClientError reason, and HTTP with the versions
+// that print a status line (HTTP/1.0, HTTP/1.1; HTTP/2 and HTTP/3, also written with ".0").
+const STATUS_NAMES=new Set(["status","statuscode","status_code","unexpectedstatus","http","http/1.0","http/1.1","http/2","http/2.0","http/3","http/3.0"]);
+const CAUSE_LINKS_READ=5;
+// The error and the causes under it, outermost first, ending early at a link it has already passed.
+function causeLinks(error){
+  const links=[];
+  for(let link=error;link!==null&&typeof link==="object"&&!links.includes(link)&&links.length<CAUSE_LINKS_READ;link=link.cause)links.push(link);
+  return links;
 }
-// What a refusal by a profile's own server says. Trebell sends an OpenCode 2 server the profile's OPENCODE_SERVER_PASSWORD (or
-// OPENCODE_PASSWORD), and an OpenCode 1.x server only when Trebell starts it, so for a 1.x server of the profile's own the password
-// in its environment cannot help. The advice leaves that server's password alone, all that guards a server that runs tools and shell
-// commands for whoever reaches its port: Trebell can start OpenCode itself instead.
-function openCodeServerRefusal(version){
-  return String(version||"").startsWith("2.")
-    ?"The configured OpenCode server rejected the password. Check this profile's server URL and the OPENCODE_SERVER_PASSWORD in its environment."
-    :"The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or leave it empty so Trebell Code starts OpenCode itself.";
+const linkRefuses=link=>PASSWORD_REFUSAL_STATUSES.has(Number(link.status))||OPENCODE2_REFUSAL_TAGS.has(link._tag)||OPENCODE2_REFUSAL_TAGS.has(link.name);
+// The words of a text in lower case, each with what stands between it and the word before (gap). A word runs over letters, digits,
+// "_", "." and "/", so an address, a host, a path or an HTTP version is one word; the dots that end a sentence are left off.
+function wordsWithGaps(text){
+  const words=[];let end=0;
+  for(const found of text.matchAll(/[\w./]+/g)){
+    words.push({word:found[0].replace(/\.+$/,"").toLowerCase(),gap:text.slice(end,found.index)});
+    end=found.index+found[0].length;
+  }
+  return words;
+}
+// words[at] is the number 401 or 403 (a three-character word whose value is one), and the word before it calls it a status, with
+// nothing but blanks, ":" or "=" between them; "status code" takes the two words, blanks between.
+function statusSaidAt(words,at){
+  const {word,gap}=words[at],before=words[at-1];
+  if(word.length!==3||!PASSWORD_REFUSAL_STATUSES.has(Number(word))||!before||!/^[\s:=]+$/.test(gap))return false;
+  return STATUS_NAMES.has(before.word)||(before.word==="code"&&/^\s+$/.test(before.gap)&&words[at-2]?.word==="status");
+}
+export function openCodeServerRefused(error){
+  if(causeLinks(error).some(linkRefuses))return true;
+  const text=typeof error==="string"?error:typeof error?.message==="string"?error.message:"";
+  const words=wordsWithGaps(text);
+  return words.some(({word},at)=>REFUSAL_WORDS.has(word)||statusSaidAt(words,at));
 }
 // OpenCode's own answer for a profile, from its 1.x or 2.x server: its version chooses the client, as it does for the relay and Git text.
 function readOpenCodeCatalog({version=null,...options}={}){return (String(version||"").startsWith("2.")?discoverOpenCode2ModelCatalog:discoverOpenCodeModelCatalog)(options)}
@@ -328,18 +371,14 @@ export function openCodeCommandHolder(prefix,{platform=process.platform,packageN
 function openCodeHolderRefusal(prefix,holder,packageName,line,platform=process.platform){
   return `npm cannot update ${packageName} in ${prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode ${line}.x, uninstall ${holder}, or run \`${shownCommand("npm",[...npmInstallArgs(packageName,String(line),prefix),"--force"],platform)}\` yourself (the opencode command then runs OpenCode ${line}.x).`;
 }
-export function runtimeCompatibility(kind,version){
-  const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;
-  const parsed=parsedSemver(normalizeAgentRuntime(kind)==="muse"?String(parseMuseVersion(version)||"").replace(/-R\d+(?:\.\d+)?$/,""):version);
-  const normalized=parsed?parsed.raw:null;
-  const matched=normalized?policy.ranges.find(item=>satisfiesSimpleRange(normalized,item.range)):null;
-  const status=matched?.status||"unknown";
-  const message=matched?.message?matched.message:status==="broken"
-    ?`This ${RUNTIMES[normalizeAgentRuntime(kind)]?.name||kind} version is known to be incompatible with Trebell Code. Use ${policy.recommendedRange}.`
-    :status==="unsupported"
-      ?`This ${RUNTIMES[normalizeAgentRuntime(kind)]?.name||kind} version is outside Trebell Code's supported range. Use ${policy.recommendedRange}.`
-      :status==="graceful"?`This runtime has limited compatibility with Trebell Code. Use ${policy.recommendedRange} for full support.`:null;
-  return {status,message,recommendedVersion:policy.recommendedVersion||null,recommendedRange:policy.recommendedRange||null,version:normalized};
+// The OpenCode release an install or update would pin, judged by harnessReleaseSupport: only a release Trebell Code knows works is
+// installed, and any other is refused with what was found.
+function openCodeReleaseToPin(targetVersion){
+  const support=harnessReleaseSupport("opencode",targetVersion);
+  if(support?.status==="supported")return support;
+  throw new Error(support?.message||(targetVersion
+    ?`Trebell Code has not checked OpenCode ${targetVersion}, and installs only a release it knows works. Nothing was installed.`
+    :"Trebell Code could not tell which OpenCode release it would install. Nothing was installed."));
 }
 
 export function normalizeAgentRuntime(value){
@@ -503,7 +542,7 @@ export class AgentRuntimeManager{
     if(!instance)return null;
     if(instance.kind==="native")return "native:in-process";
     if(instance.kind==="codex"){
-      return resolveCodexHomeLayout({
+      return planCodexHomes({
         homePath:String(instance.homePath||"").trim()||null,
         shadowHomePath:String(instance.shadowHomePath||"").trim()||null,
         defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex"),
@@ -677,7 +716,7 @@ export class AgentRuntimeManager{
     if(kind!=="native")for(const name of Object.keys(env))if(isHarnessCredentialName(name)&&name.toUpperCase()!=="OPENCODE_SERVER_PASSWORD")delete env[name];
     const keys=key&&kind!=="native"?this.harnessKeys(instance).env:{};
     if(kind==="codex"){
-      const layout=resolveCodexHomeLayout(this.codexHomeConfig(instance));
+      const layout=planCodexHomes(this.codexHomeConfig(instance));
       if(layout.effectiveHomePath)env.CODEX_HOME=layout.effectiveHomePath;
     }
     if(kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
@@ -816,7 +855,7 @@ export class AgentRuntimeManager{
     const profile=this.activeEnvironment(environmentId),remote=Boolean(profile&&profile.type!=="local");
     if(instance.kind==="muse"&&remote)throw new Error(MUSE_LOCAL_ONLY);
     if(instance.kind==="codex"&&!remote){
-      const layout=resolveCodexHomeLayout({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
+      const layout=planCodexHomes({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
       if(layout.error)throw new Error(layout.error);
     }
     const prelude=remote?remoteRuntimeSetup(instance):"";
@@ -868,9 +907,9 @@ export class AgentRuntimeManager{
     const plan=await this.installPlan(target.runtime,{environmentId,instanceId}),def=RUNTIMES[target.runtime];
     const result={runtime:target.runtime,packageName:plan.packageName,method:plan.method,targetVersion:plan.targetVersion,...(plan.compatibility?{compatibility:plan.compatibility}:{})};
     if(plan.installedVersion&&plan.targetVersion&&releaseOrder(target.runtime,plan.installedVersion,plan.targetVersion)>=0)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`${def.name} ${plan.installedVersion} is already the newest ${target.runtime==="opencode"?`OpenCode ${parsedSemver(plan.installedVersion).major}.x`:def.name} release.`};
-    // An updater can download a few hundred MB (Claude Code's native binary), so it gets 5 minutes. Meta's launcher downloads the
-    // whole muse-bin before it answers, bounding each request of its own, so it gets half an hour.
-    const minutes=target.runtime==="muse"?30:5,ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:minutes*60_000,environmentId,env:plan.env||null});
+    // An updater can download a few hundred MB (Claude Code's native binary): 300 MB at 5 Mbit/s takes 8 minutes, so it gets 10.
+    // Meta's launcher downloads the whole muse-bin before it answers, bounding each request of its own, so it gets half an hour.
+    const minutes=target.runtime==="muse"?30:10,ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:minutes*60_000,environmentId,env:plan.env||null});
     if(!ran.ok){
       // An updater stopped when its time ran out is said as such (Meta's launcher then leaves its staging file in its folder).
       if(ran.error==="probe timed out"||ran.error==="command timed out")throw new Error(`The ${plan.installedVersion?"update":"install"} did not finish within ${minutes} minutes, so Trebell Code stopped it.${target.runtime==="muse"&&plan.binary?` Meta's launcher may have left a partial download (a .muse-update file) in ${dirname(plan.binary)}, which can be deleted.`:""}`);
@@ -930,10 +969,7 @@ export class AgentRuntimeManager{
       if(!packageName)throw new Error(`${def.name} is not installed, and Trebell Code only updates it: install it, then refresh.`);
       await this.#npmReady(environmentId);
       let targetVersion=null,compatibility=null;
-      if(runtime==="opencode"){
-        targetVersion=await this.#npmRelease(packageName,{environmentId});compatibility=runtimeCompatibility("opencode",targetVersion);
-        if(!targetVersion||!compatibility?.version||["broken","unsupported","unknown"].includes(compatibility.status))throw new Error(compatibility?.message||("Trebell could not verify that OpenCode "+targetVersion+" is compatible. Nothing was installed."));
-      }
+      if(runtime==="opencode"){targetVersion=await this.#npmRelease(packageName,{environmentId});compatibility=openCodeReleaseToPin(targetVersion)}
       const args=npmInstallArgs(packageName,targetVersion);
       return {instance,method:"npm",binary:null,installedVersion:null,targetVersion,packageName,...(compatibility?{compatibility}:{}),pinned:Boolean(targetVersion),command:"npm",args,shown:shownCommand("npm",args,remote?"linux":this.platform)};
     }
@@ -946,15 +982,14 @@ export class AgentRuntimeManager{
     const holder=owner.method==="npm"&&owner.prefix&&runtime==="opencode"?openCodeCommandHolder(owner.prefix,{platform:this.platform,packageName}):null;
     if(holder)throw new Error(openCodeHolderRefusal(owner.prefix,holder,packageName,line,this.platform));
     let targetVersion;
-    if(owner.method==="npm"){await this.#npmReady(environmentId);targetVersion=await this.#npmRelease(packageName,{environmentId,range:packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null})}
+    if(owner.method==="npm"){await this.#npmReady(environmentId);targetVersion=await this.#npmRelease(packageName,{environmentId,range:packageName==="@opencode/cli"?supportedLineRange("opencode",2):null})}
     else{
       const release=this.#registryRead(runtime,packageName,line);targetVersion=await this.#latestRelease(release.key,{fresh:true,read:release.read});
       if(!targetVersion)throw new Error(`Trebell Code could not read the newest ${def.name} release from the npm registry. Nothing was installed.`);
     }
     let compatibility=null;
     if(runtime==="opencode"){
-      compatibility=runtimeCompatibility("opencode",targetVersion);
-      if(!targetVersion||!compatibility?.version||["broken","unsupported","unknown"].includes(compatibility.status))throw new Error(compatibility?.message||("Trebell could not verify that OpenCode "+targetVersion+" is compatible. Nothing was installed."));
+      compatibility=openCodeReleaseToPin(targetVersion);
       if(parsedSemver(targetVersion).major!==line)throw new Error(`The newest OpenCode release, ${targetVersion}, is not an OpenCode ${line}.x like the one this profile runs (${installed}), and Trebell Code updates an OpenCode only within its own line (2.x converts OpenCode's shared database in place). Nothing was installed.`);
     }
     // The harness's own updater runs as the profile runs it, Codex's with CODEX_HOME at the shared home whose standalone tree it keeps.
@@ -968,7 +1003,7 @@ export class AgentRuntimeManager{
   async #museUpdatePlan(instance,installed){
     const launcher=this.#museLauncher(instance),env=this.childEnv(instance,{key:false}),channel=museChannel(env);
     if(!launcher.updates)throw new Error(museUpdateRefusal(launcher.real||RUNTIMES.muse.command));
-    if(!MUSE_CHANNELS.includes(channel))throw new Error(`This Muse Code runs on the channel ${channel} (MUSE_CHANNEL), which Meta does not publish: Meta's launcher runs only on muse-stable or muse-canary. Nothing was installed.`);
+    if(!PUBLISHED_MUSE_CHANNELS.includes(channel))throw new Error(`This Muse Code runs on the channel ${channel} (MUSE_CHANNEL), which Meta does not publish: Meta's launcher runs only on muse-stable or muse-canary. Nothing was installed.`);
     const targetVersion=await this.#latestRelease(museChannelUrl(channel),{fresh:true,read:()=>latestMuseRelease(this.fetchImpl,channel)});
     if(!targetVersion)throw new Error(`Trebell Code could not read the newest Muse Code release from ${museChannelUrl(channel)}. Nothing was installed.`);
     return {instance,method:"launcher",binary:launcher.real,installedVersion:installed,targetVersion,packageName:null,pinned:false,command:launcher.binary,args:["--version"],env:museUpdateEnvironment(env),shown:museUpdateText(launcher.binary,env,this.platform)};
@@ -987,7 +1022,7 @@ export class AgentRuntimeManager{
     if(!status?.installed||this.processSpawner(instance))return null;
     const current=parseMuseVersion(status.version),env=this.childEnv(instance),channel=museChannel(env);
     const latest=current?await this.#latestRelease(museChannelUrl(channel),{wait:waitMs!=null,waitMs,read:()=>latestMuseRelease(this.fetchImpl,channel)}):null;
-    const newer=Boolean(latest&&compareMuseVersions(current,latest)<0),launcher=this.#museLauncher(instance);
+    const newer=Boolean(latest&&museVersionOrder(current,latest)<0),launcher=this.#museLauncher(instance);
     const advisory={current,latest,newer,canUpdate:false,command:null,binary:launcher.real,message:null};
     if(!current)return advisory;
     if(!launcher.updates)return {...advisory,message:newer?manualUpdateText({name:RUNTIMES.muse.name,latest,binary:launcher.real||RUNTIMES.muse.command}):null};
@@ -1005,13 +1040,15 @@ export class AgentRuntimeManager{
     // Windows' own reading of the real path also gives the file's name as it is spelled (PATH's lookup spells it as PATHEXT does).
     const binary=resolveWindowsCommandShim(found,{platform:this.platform});let real=binary;try{real=(this.platform==="win32"?realpathSync.native:realpathSync)(binary)}catch{}
     const user=String(this.env.USERPROFILE||this.env.HOME||"").trim()||homedir();
-    const codexHome=instance.kind==="codex"?resolveCodexHomeLayout({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")}).sharedHomePath:null;
+    const codexHome=instance.kind==="codex"?planCodexHomes({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")}).sharedHomePath:null;
     const grokHome=instance.kind==="grok"?String(env.GROK_HOME||"").trim()||join(user,".grok"):null;
     return {...harnessInstallOwner(instance.kind,{paths:{found,binary,real},packageName:npmPackageFor(instance.kind,version),command:RUNTIMES[instance.kind].command,platform:this.platform,env:this.env,codexHome,grokHome}),binary,real};
   }
   #releases=new Map();
   // The newest release kept under key: npm's registry's for a package, or the one read gives (npm's own answer, Muse Code's
-  // channel, kept by its URL), kept an hour once read and a minute when it could not be read; reads at once share one. wait:false
+  // channel, kept by its URL), kept two hours once read and two minutes when it could not be read (Trebell's own: an update notice
+  // needs no fresher answer, and a read that failed, most often on a dropped connection, is tried again soon); reads at once share
+  // one. wait:false
   // answers from what is kept and reads nothing; waitMs waits for a read
   // on its way only that long after it began, then answers what was kept before while the read goes on for the next answer.
   async #latestRelease(key,{wait=true,fresh=false,waitMs=null,read=()=>registryRelease(this.fetchImpl,key)}={}){
@@ -1025,7 +1062,7 @@ export class AgentRuntimeManager{
     if(!fresh&&kept&&this.now()<kept.until)return kept.version;
     if(!wait)return kept?.version??null;
     const entry={version:kept?.version??null,started:Date.now()};
-    entry.pending=Promise.resolve().then(read).catch(()=>null).then(version=>{if(this.#releases.get(key)===entry)this.#releases.set(key,{version,until:this.now()+(version?3_600_000:60_000)});return version});
+    entry.pending=Promise.resolve().then(read).catch(()=>null).then(version=>{if(this.#releases.get(key)===entry)this.#releases.set(key,{version,until:this.now()+(version?7_200_000:120_000)});return version});
     this.#releases.set(key,entry);
     return await waited(entry);
   }
@@ -1035,7 +1072,7 @@ export class AgentRuntimeManager{
   #releaseRead(instance,version,owner=null){
     const packageName=npmPackageFor(instance.kind,version);if(!packageName)return null;
     if(this.processSpawner(instance)||(owner||this.#installOwner(instance,version)).method!=="npm")return this.#registryRead(instance.kind,packageName,parsedSemver(version)?.major);
-    const range=packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null;
+    const range=packageName==="@opencode/cli"?supportedLineRange("opencode",2):null;
     return {key:`npm view ${range?packageName+"@"+range:packageName}`,read:()=>this.#npmRelease(packageName,{range})};
   }
   // npm's registry's read of a package's newest release, and its key: an OpenCode 2.x's within its line (registryRelease), as
@@ -1117,8 +1154,8 @@ export class AgentRuntimeManager{
   // A status check's provider list: the last complete one read for this binary and version, one that is not if it was read within
   // OPENCODE_INCOMPLETE_REUSE_MS, one read within OPENCODE_CATALOG_REUSE_MS for a fresh check (a complete one of any age for a failed
   // turn's recheck, keepCatalog), or a new read (always for Settings' Refresh, refresh), which may take this long, and as long once its
-  // server is up. OpenCode's server can take up to 30 seconds to start (its first run converts the shared database), and a start that
-  // runs out of time fails the read itself.
+  // server is up. OpenCode's server can take up to 45 seconds to start (SERVER_START_TIMEOUT_MS; its first run converts the shared
+  // database), and a start that runs out of time fails the read itself.
   async #openCodeStatusCatalog(instance,version,{fresh=false,refresh=false,keepCatalog=false}={}){
     const timers=[],read={};let done=false;
     const after=then=>{const timer=setTimeout(then,OPENCODE_STATUS_TIMEOUT_MS);timer.unref?.();timers.push(timer)};
@@ -1141,13 +1178,7 @@ export class AgentRuntimeManager{
       if(permissionMode==="auto")return ["--auto-review","acp"];
       return ["acp"];
     }
-    if(instance.kind==="grok"){
-      if(permissionMode==="full")return ["agent","--always-approve","stdio"];
-      if(permissionMode==="auto")return ["--permission-mode","auto","agent","stdio"];
-      // `grok agent` has no accept-edits mode (it treats acceptEdits as asking): it asks, and Trebell
-      // answers its edit requests itself in the edits mode.
-      return ["--permission-mode","default","agent","stdio"];
-    }
+    if(instance.kind==="grok")return grokAgentLaunchArgs(permissionMode);
     if(instance.kind==="opencode")return [];
     if(instance.kind==="antigravity")return this.platform==="linux"?["--uid="]:[];
     return [];
@@ -1179,7 +1210,7 @@ export class AgentRuntimeManager{
     const pending=this.#probeNow(instance,{environmentId,fresh,refresh,keepCatalog});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||value.account?.type==="customEndpoint"||keptProbeAnswer(value))||versionCheckOnly(value))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
+      if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||value.account?.type===CLAUDE_OWN_ENDPOINT.type||keptProbeAnswer(value))||versionCheckOnly(value))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
@@ -1259,7 +1290,7 @@ export class AgentRuntimeManager{
   // (`claude auth status`, Codex's account read, OpenCode's catalog server, `muse serve`). #keyGate says why. null for any other.
   #refusedAfterVersion(instance,environmentId,fields={}){
     const refusal=this.keyRefusal(instance,environmentId);if(!refusal)return null;
-    const compatibility=runtimeCompatibility(instance.kind,fields.version);
+    const compatibility=harnessReleaseSupport(instance.kind,fields.version);
     return {id:instance.id,kind:instance.kind,name:RUNTIMES[instance.kind].name,available:false,installed:true,authenticated:false,managed:false,account:null,...fields,message:refusal.message,...(compatibility?{compatibility}:{})};
   }
   // Settings saved or removed a key these profiles run on: their kept statuses go (and the Codex account reads), so the next status
@@ -1278,8 +1309,8 @@ export class AgentRuntimeManager{
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
       const checked=await this.#versionCheck(instance,{environmentId,fresh}),failure=checked.ok?null:versionCheckFailure(checked),host=Boolean(failure&&this.processSpawner(instance,environmentId));
-      // Here a --version that ran out of time leaves the answer to Codex's account read, which has 20 s of its own and names the
-      // version. On a host (SSH, WSL) a failed check is unavailable as before (see below).
+      // Here a --version that ran out of time leaves the answer to Codex's account read, which has CODEX_ACCOUNT_PROBE_TIMEOUT_MS
+      // (25 s) of its own and names the version. On a host (SSH, WSL) a failed check is unavailable as before (see below).
       if(failure&&(host||failure!=="timeout")){
         const missing=failure==="missing";
         return {id:instance.id,kind:"codex",name:def.name,available:false,installed:!host&&!missing,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
@@ -1340,9 +1371,9 @@ export class AgentRuntimeManager{
       else authenticated=auth.ok;
       // A profile here that runs through a router or gateway has no Claude sign-in for `claude auth status` to find: the endpoint
       // holds its credentials, which only a session can check.
-      const endpoint=authenticated===false&&!this.processSpawner(instance,environmentId)&&claudeCustomEndpoint(this.childEnv(instance));
-      if(endpoint){authenticated=null;account={...(account||{}),type:"customEndpoint",label:"Custom API endpoint"};message="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts."}
-      else if(authenticated===false)message="Claude Code is signed out. Sign in with `claude auth login` and try again.";
+      const endpoint=authenticated===false&&!this.processSpawner(instance,environmentId)&&claudeOwnEndpoint(this.childEnv(instance));
+      if(endpoint){authenticated=null;account={...(account||{}),type:CLAUDE_OWN_ENDPOINT.type,label:CLAUDE_OWN_ENDPOINT.label};message=CLAUDE_OWN_ENDPOINT.message}
+      else if(authenticated===false)message=signInNeeded("claude");
       else if(authenticated==null)message="Claude Code is installed, but Trebell could not verify its authentication status.";
       // On its API key `claude auth status` reads the ANTHROPIC_API_KEY its launch has (apiKeySource), as the row then says.
       else if(this.authMethod(instance)===HARNESS_API_KEY)message="Runs on the Anthropic API key.";
@@ -1360,16 +1391,18 @@ export class AgentRuntimeManager{
       if(this.authMethod(instance)===HARNESS_API_KEY){
         authenticated=true;account={authMethod:"api_key",label:"xAI API key"};message="Runs on the xAI API key.";
       }else{
-        const signedIn=async()=>{const models=await this.#run(instance,["models"],{timeoutMs:10_000,environmentId});return models.ok?parseGrokModelsAuth((models.stdout||"")+"\n"+(models.stderr||"")):null};
+        // Each `grok models` gets GROK_MODELS_TIMEOUT_MS.
+        const signedIn=async()=>{const models=await this.#run(instance,["models"],{timeoutMs:GROK_MODELS_TIMEOUT_MS,environmentId});return models.ok?parseGrokModelsAuth((models.stdout||"")+"\n"+(models.stderr||"")):null};
         // Grok prints the logged-out line for an access token that has just expired, then refreshes it in the same process: a
-        // second `grok models` tells that from a sign-out. One that reads nothing keeps the first.
+        // second `grok models` tells that from a sign-out. One is enough, since the first had saved the refreshed token by the
+        // time it exited, and a third would read the same. One that reads nothing keeps the first.
         authenticated=await signedIn();
         if(authenticated===false)authenticated=(await signedIn())??false;
-        if(authenticated===false)message="Grok CLI is installed but not logged in. Run grok login.";
-        else if(authenticated==null)message="Grok CLI is installed, but Trebell could not verify its authentication status.";
+        if(authenticated===false)message=signInNeeded("grok");
+        else if(authenticated==null)message="Grok Build is installed, but Trebell could not tell whether it is signed in.";
       }
     }else if(instance.kind==="opencode"&&!this.processSpawner(instance,environmentId)){
-      const versionLine=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null,compatibility=runtimeCompatibility("opencode",versionLine);
+      const versionLine=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null,compatibility=harnessReleaseSupport("opencode",versionLine);
       const unavailable=(message,fields={})=>({id:instance.id,kind:instance.kind,name:def.name,available:false,installed:true,authenticated:null,protocol:def.protocol,managed:false,binary:command,version:versionLine,account:null,message,...(compatibility?{compatibility}:{}),...fields});
       if(compatibility?.status==="unsupported")return unavailable(compatibility.message);
       // The status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected, ready once it lists
@@ -1377,11 +1410,11 @@ export class AgentRuntimeManager{
       let catalog;
       try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh,refresh,keepCatalog})}
       catch(error){
-        if(instance.serverUrl&&openCodeServerRefused(error))return unavailable(openCodeServerRefusal(compatibility?.version),{authenticated:false});
+        if(instance.serverUrl&&openCodeServerRefused(error))return unavailable(openCodeServerPassword(compatibility?.version),{authenticated:false});
         return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500));
       }
       const connected=Array.isArray(catalog?.connectedProviders)?catalog.connectedProviders.length:0,models=Array.isArray(catalog?.models)?catalog.models.length:0;
-      authenticated=openCodeCatalogReady(catalog)?true:null;account={connectedProviders:connected};message=openCodeStatusMessage(connected,{external:Boolean(instance.serverUrl),models});
+      authenticated=openCodeCatalogReady(catalog)?true:null;account={connectedProviders:connected};message=openCodeReadiness({providers:connected,models,ownServer:Boolean(instance.serverUrl)});
     }else if(instance.kind==="opencode"&&!instance.serverUrl){
       const auth=await this.#run(instance,["auth","list"],{timeoutMs:10_000,environmentId});
       if(auth.ok){
@@ -1395,7 +1428,7 @@ export class AgentRuntimeManager{
       }
     }
     const version=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null;
-    const compatibility=runtimeCompatibility(instance.kind,version);
+    const compatibility=harnessReleaseSupport(instance.kind,version);
     return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version,account,message,...(compatibility?{compatibility}:{})};
   }
   // Muse Code's status check: `muse --version`, then the models a short read-only host lists. The Muse
@@ -1407,11 +1440,11 @@ export class AgentRuntimeManager{
     if(this.processSpawner(instance,environmentId))return answer({available:false,installed:false,version:null,message:MUSE_LOCAL_ONLY});
     const checked=await this.#versionCheck(instance,{environmentId,fresh}),said=(checked.stdout||"")+"\n"+(checked.stderr||"");
     if(!checked.ok){
-      if(/ENOENT|not recognized as an internal or external command|command not found/i.test(String(checked.error||checked.stderr||"")))return answer({available:false,installed:false,version:null,message:`Muse Code (muse) was not found. Install it with ${museInstallCommand(this.platform)} (https://dev.meta.ai/docs/muse-code), then sign in with muse login.`});
+      if(/ENOENT|not recognized as an internal or external command|command not found/i.test(String(checked.error||checked.stderr||"")))return answer({available:false,installed:false,version:null,message:museNotFound(museInstallCommand(this.platform))});
       // What Muse printed stays out of the answer, which Settings shows.
       return answer({available:false,installed:true,version:parseMuseVersion(said),message:checked.error==="probe timed out"?"Muse Code did not answer `muse --version` in time. Press Refresh to check it again.":`Muse Code is installed, but \`muse --version\` failed${Number.isInteger(checked.code)?` with exit code ${checked.code}`:""}. Check its executable path, or install Muse Code again.`});
     }
-    const version=parseMuseVersion(said),compatibility=runtimeCompatibility("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
+    const version=parseMuseVersion(said),compatibility=harnessReleaseSupport("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
     // On its API key with no key, `muse serve` would list the models of the person's own `muse login`: it does not start.
     const refusal=this.keyRefusal(instance,environmentId);if(refusal)return answer({...known,available:false,authenticated:false,message:refusal.message});
     let catalog;
@@ -1511,7 +1544,7 @@ export class AgentRuntimeManager{
         if(catalog?.models?.length)this.#acpModelLists.set(key,{at:Date.now(),value:catalog});
       }
     }catch(error){return {models:[],metadata:[],source:"unavailable",error:`${label} could not list its models: ${error?.message||String(error)}`}}
-    if(!catalog?.models?.length)return {models:[],metadata:[],source:"unavailable",error:`${label} did not list any models.`};
+    if(!catalog?.models?.length)return {models:[],metadata:[],source:"unavailable",error:`${label} lists no models.`};
     return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live",...(catalog.inventory?{inventory:catalog.inventory}:{})};
   }
   // How a short-lived listing process starts: where the profile runs, in the asking (supervised) launch mode; a local
@@ -1591,9 +1624,9 @@ export class AgentRuntimeManager{
   }
   // Claude Code's no-prompt capability probe (models, commands, agents, account and plan usage), run where the profile runs and
   // shared for five minutes.
-  claudeCapabilities(instance,{environmentId=undefined,cwd=null,includeUsage=true,fresh=false,maxAgeMs=undefined}={}){
+  claudeCapabilities(instance,{environmentId=undefined,cwd=null,withPlanUsage=true,fresh=false,maxAgeMs=undefined}={}){
     const profile=this.activeEnvironment(environmentId),spawnProcess=this.processSpawner(instance,environmentId);
-    return this.claudeCapabilitiesCache.load({command:this.executable(instance,{environmentId}),cwd,env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):"",includeUsage},{fresh,maxAgeMs});
+    return this.claudeCapabilitiesCache.load({command:this.executable(instance,{environmentId}),cwd,env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):"",withPlanUsage},{fresh,maxAgeMs});
   }
   // The probes kept for this profile where it runs (every folder's) go, so the next read asks Claude Code again.
   dropClaudeCapabilities(instance,{environmentId=undefined}={}){

@@ -15,6 +15,7 @@ test("secret redactor removes common credential formats and exact secret env val
   ].join("\n"),{environment,redactHomes:true});
   assert.match(text,/path=~\/project/);
   assert.match(text,/Bearer \[redacted\]/);
+  // Re-pinned note: this text can reach a model, so a pairing link is written as 2.1.2 wrote it there.
   assert.match(text,/\[pairing-url\]/);
   assert.doesNotMatch(text,/bearer-value|private-key|ghp_|odd-value-not-shaped|PAIRSECRET|opaque-password/);
   assert.match(text,/https:\/\/\[redacted\]@example\.test\/repository\.git/);

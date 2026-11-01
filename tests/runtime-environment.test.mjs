@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRuntimeEnvironment, carriesCredentials, isHarnessCredentialName, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
+import { buildRuntimeEnvironment, carriesCredentials, GROK_BUILD_ENVIRONMENT_KEYS, isHarnessCredentialName, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
 import { MODEL_PROVIDERS } from "../src/provider-manager.mjs";
 
 // A harness signs in with its own login, or runs on its vendor's key only when its profile is set to an API key (harness-auth.mjs,
@@ -40,6 +40,40 @@ test("every model provider's key and every harness's sign-in variable counts as 
   for(const name of ["OPENAI_API_KEY","CODEX_API_KEY","ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","CURSOR_API_KEY","CURSOR_AUTH_TOKEN","XAI_API_KEY","GROK_CODE_XAI_API_KEY","GROK_AUTH","GROK_AUTH_PROVIDER_COMMAND","OPENCODE_API_KEY","OPENCODE_AUTH_CONTENT","GEMINI_API_KEY","GOOGLE_API_KEY","GOOGLE_APPLICATION_CREDENTIALS","META_API_KEY","MODEL_API_KEY","HF_TOKEN","NVIDIA_API_KEY","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_BEARER_TOKEN_BEDROCK","ANTHROPIC_CUSTOM_HEADERS","MUSE_CUSTOM_HEADERS","SOME_SERVICE_CREDENTIALS","github_token","xai_api_key"])
     assert.ok(isHarnessCredentialName(name),name);
   for(const name of ["PATH","CODEX_HOME","GROK_HOME","OPENAI_BASE_URL","ANTHROPIC_BASE_URL","MUSE_CHANNEL","HTTPS_PROXY","JAVA_HOME","TEAM_FEATURE_FLAG"])assert.equal(isHarnessCredentialName(name),false,name);
+});
+
+// Grok Build's own documentation names each of these: its home, the sign-in service it uses and for whom, the services it calls
+// and the settings it lays over its config.toml. Its sign-ins and keys stay out, and so do its other settings and the other
+// harnesses' names unless a profile approves a name that holds no credential. Fixture values only.
+test("a Grok Build profile gets Grok Build's home, sign-in service, service addresses and settings overlay, and no sign-in or key",()=>{
+  const grok={
+    GROK_HOME:"/home/me/.grok-work",GROK_OIDC_ISSUER:"https://sso.example/oauth2/default",GROK_OIDC_CLIENT_ID:"oidc-client-fixture",
+    GROK_OAUTH2_ISSUER:"https://auth.example",GROK_OAUTH2_CLIENT_ID:"oauth2-client-fixture",GROK_OAUTH2_PRINCIPAL_TYPE:"Team",GROK_OAUTH2_PRINCIPAL_ID:"team-fixture",
+    GROK_LOCAL_AUTH:"1",GROK_CLI_CHAT_PROXY_BASE_URL:"https://grok-proxy.example/v1",GROK_MODELS_BASE_URL:"https://models.example/v1",
+    GROK_CONFIG:"{\"features\":{\"memory\":false}}",GROK_CONFIG_PATH:"/home/me/grok-overlay.toml",
+  };
+  // In this order, after the baseline and before the profile's approved names; frozen, plain names, none a credential.
+  assert.deepEqual(GROK_BUILD_ENVIRONMENT_KEYS,Object.keys(grok));assert.ok(Object.isFrozen(GROK_BUILD_ENVIRONMENT_KEYS));
+  assert.deepEqual(runtimeEnvironmentKeys("grok",{approved:["TEAM_FEATURE_FLAG"]}),[...runtimeEnvironmentKeys("native"),...Object.keys(grok),"TEAM_FEATURE_FLAG"]);
+  for(const name of GROK_BUILD_ENVIRONMENT_KEYS){assert.match(name,/^[A-Z][A-Z0-9_]*$/,name);assert.equal(isHarnessCredentialName(name),false,name)}
+  const signIns={GROK_AUTH:"{\"token\":\"fixture\"}",GROK_AUTH_PROVIDER_COMMAND:"/usr/local/bin/sso-token",XAI_API_KEY:"xai-fixture",GROK_CODE_XAI_API_KEY:"xai-older-fixture"};
+  const otherGrok={GROK_OIDC_SCOPES:"openid profile",GROK_TELEMETRY_ENABLED:"0",GROK_SANDBOX:"strict",GROK_LOG_FILE:"/tmp/grok.log"};
+  const otherHarnesses={OPENAI_API_KEY:"sk-fixture",ANTHROPIC_API_KEY:"sk-ant-fixture",CURSOR_API_KEY:"cursor-fixture",META_API_KEY:"meta-fixture",
+    CODEX_HOME:"/home/me/.codex",OPENAI_BASE_URL:"https://openai.example/v1",ANTHROPIC_BASE_URL:"https://anthropic.example",CURSOR_API_ENDPOINT:"https://cursor.example",
+    OPENCODE_CONFIG:"/home/me/opencode.json",MUSE_CHANNEL:"beta"};
+  const parent={PATH:"/usr/bin",HOME:"/home/me",...grok,...signIns,...otherGrok,...otherHarnesses};
+  assert.deepEqual(buildRuntimeEnvironment("grok",{parent,platform:"linux"}),{PATH:"/usr/bin",HOME:"/home/me",...grok});
+  assert.deepEqual(buildRuntimeEnvironment("grok",{parent:{PATH:"/usr/bin",GROK_HOME:"",GROK_CONFIG_PATH:"/home/me/grok-overlay.toml"},platform:"linux"}),{PATH:"/usr/bin",GROK_CONFIG_PATH:"/home/me/grok-overlay.toml"},"an empty value is not passed");
+  // A profile's approved names add Grok Build's other settings and the other harnesses' plain names, never a sign-in or a key.
+  const approved=buildRuntimeEnvironment("grok",{parent,approved:[...Object.keys(signIns),...Object.keys(otherGrok),...Object.keys(otherHarnesses)],platform:"linux"});
+  for(const name of [...Object.keys(signIns),"OPENAI_API_KEY","ANTHROPIC_API_KEY","CURSOR_API_KEY","META_API_KEY"])assert.equal(approved[name],undefined,name);
+  for(const name of [...Object.keys(otherGrok),"CODEX_HOME","OPENAI_BASE_URL","ANTHROPIC_BASE_URL","CURSOR_API_ENDPOINT","OPENCODE_CONFIG","MUSE_CHANNEL"])assert.equal(approved[name],parent[name],name);
+  // On Windows each is found whatever its case and given in Grok Build's spelling; elsewhere another case is another variable.
+  assert.deepEqual(buildRuntimeEnvironment("grok",{parent:{Path:"C:\\Tools",Grok_Home:"C:\\Users\\me\\.grok-work",grok_models_base_url:"https://models.example/v1",Xai_Api_Key:"xai-fixture"},platform:"win32"}),
+    {PATH:"C:\\Tools",GROK_HOME:"C:\\Users\\me\\.grok-work",GROK_MODELS_BASE_URL:"https://models.example/v1"});
+  assert.deepEqual(buildRuntimeEnvironment("grok",{parent:{PATH:"/usr/bin",grok_home:"/home/me/.grok-work"},platform:"linux"}),{PATH:"/usr/bin"});
+  // No other kind gets them.
+  for(const kind of ["native","codex","claude","cursor","opencode","antigravity","muse"])assert.equal(runtimeEnvironmentKeys(kind).some(name=>name.startsWith("GROK_")),false,kind);
 });
 
 // Antigravity takes no Google credential, project or home from Trebell's environment (antigravity-auth.mjs).

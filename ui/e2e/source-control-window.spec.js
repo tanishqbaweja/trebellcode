@@ -137,7 +137,7 @@ test("the pull requests show while the code host diagnostics are still checking"
     const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
     await expect(right.getByRole("button",{name:/#1 Fixture pull request 1/})).toBeVisible();
     await expect(right.getByRole("button",{name:/#2 Fixture pull request 2/})).toBeVisible();
-    await expect(right.getByText("Loading pull requests…")).toHaveCount(0);
+    await expect(right.getByText("Reading pull requests…")).toHaveCount(0);
     await expect(right.getByText("Git: checking…",{exact:true})).toBeVisible();
     await right.screenshot({animations:"disabled",path:auditDir+"source-control-prs-before-diagnostics.png"});
     // With no host chosen the server lists the remote's own (github here), as the diagnostics would have chosen.
@@ -214,7 +214,7 @@ test("linked thread refresh failures retain last-known-good data for the same pu
   const project=page.locator(".project-card").filter({hasText:"Source control reliability"});await expect(project).toBeVisible();await project.locator(".project-open").click();await expect(page.getByRole("heading",{name:"What do you want to build?"})).toBeVisible();
   await page.getByTestId("right-panel-toggle").click();const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
   const prButton=right.getByRole("button",{name:/#7 Reliability PR/});await expect(prButton).toBeVisible();await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();
-  await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();await expect(right.getByRole("alert")).toHaveText("Could not load linked threads: Deliberate reverse-link refresh failure");expect(reverseReads).toBe(2);
+  await prButton.click();await expect(right.getByText("Stable review thread")).toBeVisible();await expect(right.getByRole("alert")).toHaveText("Could not read the threads of this pull request: Deliberate reverse-link refresh failure");expect(reverseReads).toBe(2);
   await page.setViewportSize({width:1280,height:800});await right.scrollIntoViewIfNeeded();const metrics=await right.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"source-control-linked-thread-refresh-failure-1280x800.png",fullPage:true});
 });
 
@@ -556,7 +556,7 @@ test("the Git panel says what it is still reading, and never an empty answer, un
   await expect(repository).toContainText("Upstream: checking…");
   await expect(repository).toContainText("Git: checking…");
   await expect(repository).toContainText("Detecting the code host…");
-  await expect(pulls.locator(".pr-loading")).toHaveText("Loading pull requests…");
+  await expect(pulls.locator(".pr-loading")).toHaveText("Reading pull requests…");
   await expect(pulls.locator(".pr-loading")).toHaveAttribute("aria-busy","true");
   await expectNoEmptyClaims(right);
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-first-load-dark-1280x800.png",fullPage:true});
@@ -619,7 +619,7 @@ test("a Git panel whose first reads fail says so, instead of loading for ever or
   // The pull requests were never asked for: the card says they wait on the repository and leaves its failure to the banner, and Git
   // (never checked) names no failure of its own.
   const unread=pulls.locator(".pr-empty-state");
-  await expect(unread).toContainText("Pull requests unavailable");
+  await expect(unread).toContainText("Pull requests are not listed");
   await expect(unread).toContainText("They are listed once the repository can be read.");
   await expect(unread).not.toHaveClass(/error/);
   await expect(right.getByText("Deliberate repository read failure")).toHaveCount(1);
@@ -655,7 +655,7 @@ test("a pull-request list that fails for a repository with a remote is named onc
   await expect(right.locator(".source-control-error")).toHaveText("Could not refresh pull requests: "+reason);
   // The card says the list is unavailable and points at the banner, which stays pinned above it, instead of repeating the reason.
   const unavailable=pulls.locator(".pr-empty-state");
-  await expect(unavailable).toContainText("Pull requests unavailable");
+  await expect(unavailable).toContainText("Pull requests are not listed");
   await expect(unavailable).toContainText("the message above says why");
   await expect(unavailable).not.toHaveClass(/error/);
   await expect(right.getByText(reason)).toHaveCount(1);
@@ -904,7 +904,7 @@ test("Merge and Auto-merge ask first, naming the pull request, the method and th
   await rows.first().scrollIntoViewIfNeeded();
   await shootBothModes(page,"source-control-pr-checks");
 
-  const question="Merge #7 “Checks fixture” into main using squash?\n\n1 check failed: unit-tests.\n2 checks are still pending: lint, ci/deploy.";
+  const question="Merge #7 “Checks fixture” into main using squash?\n\n1 check failed: unit-tests.\n2 checks have not finished: lint, ci/deploy.";
   const ask=async(button,text)=>{await detail.getByRole("button",{name:button,exact:true}).click();await expect(dialog.locator("p")).toHaveText(text,{useInnerText:true})};
   await ask("Merge",question);
   await expect(dialog.getByRole("button")).toHaveText(["Cancel","Merge"]);
@@ -914,7 +914,7 @@ test("Merge and Auto-merge ask first, naming the pull request, the method and th
   await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);
   await ask("Merge",question);await dialog.getByRole("button",{name:"Cancel"}).click();await expect(dialog).toHaveCount(0);
   // Auto-merge asks too, and turns on only when the person says so.
-  await ask("Auto-merge","Turn on auto-merge for #7 “Checks fixture” into main using squash? The host merges it once its required checks pass.\n\n1 check failed: unit-tests.\n2 checks are still pending: lint, ci/deploy.");
+  await ask("Auto-merge","Turn on auto-merge for #7 “Checks fixture” into main using squash? The host merges it once its required checks pass.\n\n1 check failed: unit-tests.\n2 checks have not finished: lint, ci/deploy.");
   await dialog.getByRole("button",{name:"Turn on auto-merge"}).click();
   await expect.poll(()=>merges().length).toBe(1);
   expect(merges()[0]).toMatchObject({number:7,method:"squash",auto:true});
@@ -1042,6 +1042,21 @@ test("a merged pull request offers only what still applies to it on its host",as
   await pulls.getByRole("button",{name:/#41 Merged change/}).click();await expect(detail.getByRole("heading",{name:"#41 Merged change"})).toBeVisible();
   await expect(actions).toHaveText(["Open","Attach","Link to thread","Revert PR"]);
   await expect(composer).toHaveText("Comment");
+  // A box that posts one kind of thing only says which in its heading: a comment on the merged one, and a review on a host that
+  // takes no comments.
+  await composer.click();
+  await expect(detail.locator(".pr-composer-head strong")).toHaveText("New comment");
+  // Escape closes it once the box has put the caret in its field, and the keyboard goes back to the button that opened it.
+  await expect(detail.getByLabel("Pull request comment")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(detail.getByTestId("pr-composer")).toBeHidden();await expect(composer).toBeFocused();
+  host.capabilities.comment=false;
+  await pulls.getByRole("button",{name:"Refresh pull requests",exact:true}).click();
+  await expect.poll(()=>host.calls.filter(call=>call.path==="prs").length).toBeGreaterThan(2);
+  await pulls.getByRole("button",{name:/#42 Open change/}).click();await expect(detail.getByRole("heading",{name:"#42 Open change"})).toBeVisible();
+  await composer.click();
+  await expect(detail.locator(".pr-composer-head strong")).toHaveText("New review");
+  await detail.getByRole("button",{name:"Close pull request composer"}).click();await expect(detail.getByTestId("pr-composer")).toBeHidden();
 });
 
 test("auto-merge that is on says so and is not offered again, and requested reviewers are listed",async({page,request})=>{
@@ -1224,7 +1239,7 @@ test("Fetch shows how far the branch is behind or ahead, and a refused Pull, Pus
   await right.getByRole("button",{name:"Push",exact:true}).click();
   await expect(alert).toContainText("Could not push:",GIT_WAIT);
   const lines=(await alert.innerText()).split("\n");
-  expect(lines[0]).toBe("Could not push: The remote has commits this branch does not have. Pull them first, then push again.");
+  expect(lines[0]).toBe("Could not push: The branch on the remote holds commits that are not in this branch yet. Bring them in first, then push.");
   expect(lines.filter(line=>/hint:/.test(line))).toEqual([]);
   expect(lines.some(line=>/^\s*! \[rejected\]\s+main -> main \(non-fast-forward\)$/.test(line))).toBe(true);
   expect(lines.some(line=>/^error: failed to push some refs to /.test(line))).toBe(true);
@@ -1459,9 +1474,14 @@ test("Link to thread with no thread open says to open one first",async({page,req
   const host=await scriptCodeHost(page,{boot,prs:[samplePr(11,{title:"Feature one"})]});
   const {right,pulls}=await openGitPanel(page,request,"Source control link without thread");
   await pulls.getByRole("button",{name:/#11 Feature one/}).click();
+  // A pull request with no checks, comments or reviews says so plainly.
+  const emptyDetail=pulls.locator(".pr-detail");
+  await expect(emptyDetail.locator(".pr-checks-none")).toHaveText("This pull request has no checks.");
+  await expect(emptyDetail.locator(".review-list").first()).toHaveText("Nobody has commented.");
+  await expect(emptyDetail.locator(".review-list").last()).toHaveText("Nobody has reviewed it.");
   const link=pulls.locator(".pr-actions").getByRole("button",{name:"Link to thread"});
   await link.click();
-  await expect(right.locator(".source-control-error")).toHaveText("Could not link the pull request: Open a thread before linking a pull request.");
+  await expect(right.locator(".source-control-error")).toHaveText("Could not add the pull request to this thread: Open a thread before linking a pull request.");
   expect(host.calls.filter(call=>call.path==="thread-link"&&call.method==="POST")).toEqual([]);
   await expect(link).toBeEnabled();
   await shootBothModes(page,"source-control-link-without-thread");

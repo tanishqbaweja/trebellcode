@@ -68,13 +68,15 @@ test("an OpenCode server that lost the first run's schema setup to another serve
   try{assert.equal((await folder.ports()).length,3)}finally{server.close()}
 });
 
-test("an OpenCode server whose database stays locked is launched four times and fails with OpenCode's own reason",async t=>{
+// Re-pinned note: Trebell's own values now: four more launches half a second apart, a second for a dead server's pipes, and 45 s
+// for a start (they were three, a quarter second, half a second and 30 s).
+test("an OpenCode server whose database stays locked is launched five times and fails with OpenCode's own reason",async t=>{
   const folder=await serveFolder(t,"permanent");
   await assert.rejects(folder.start(),error=>{
     assert.match(error.message,/^OpenCode server exited with code 1\. SQLiteError: database is locked \(SQLITE_BUSY\)$/);
     return true;
   });
-  assert.equal((await folder.ports()).length,4);
+  assert.equal((await folder.ports()).length,5);
 });
 
 test("an OpenCode server that exits for any other reason is not started again, a lock named only on stdout included",async t=>{
@@ -85,7 +87,7 @@ test("an OpenCode server that exits for any other reason is not started again, a
   }
 });
 
-test("what an OpenCode server's pipes carry just after it exits is in its error, and a process that holds them open keeps it at most half a second",async t=>{
+test("what an OpenCode server's pipes carry just after it exits is in its error, and a process that holds them open keeps it at most a second",async t=>{
   const late=await serveFolder(t,"late");
   await assert.rejects(late.start(),error=>{assert.match(error.message,/^OpenCode server exited with code 1\. Error: opencode\.json is not valid JSON$/);return true});
   const held=await serveFolder(t,"held"),startedAt=Date.now();
@@ -95,7 +97,7 @@ test("what an OpenCode server's pipes carry just after it exits is in its error,
   assert.equal((await held.ports()).length,1);
 });
 
-test("an OpenCode server that takes longer than fifteen seconds to come up is waited for up to thirty",async t=>{
+test("an OpenCode server that takes longer than fifteen seconds to come up is waited for up to forty-five",async t=>{
   // Only setTimeout is mocked: the stand-ins run on their own clocks, and it is told when to listen.
   const slow=await serveFolder(t,"slow"),silent=await serveFolder(t,"silent");
   const settle=promise=>{const state={done:false,error:null,value:null};promise.then(value=>{state.done=true;state.value=value},error=>{state.done=true;state.error=error});return state};
@@ -110,10 +112,10 @@ test("an OpenCode server that takes longer than fifteen seconds to come up is wa
     await until(()=>first.done,"the server never came up");
     assert.equal(first.error,null,first.error?.message);
     first.value.close();
-    // One that never says it listens is stopped after thirty seconds, with that in its error.
+    // One that never says it listens is stopped after forty-five seconds, with that in its error.
     const second=settle(silent.start());await until(()=>existsSync(silent.attempts+".started"),"the second stand-in did not start");
-    mock.timers.tick(29_999);await turns();assert.equal(second.done,false);
+    mock.timers.tick(44_999);await turns();assert.equal(second.done,false);
     mock.timers.tick(1);await until(()=>second.done,"the wait did not end");
-    assert.match(String(second.error?.message),/^OpenCode server did not start within 30 seconds\./);
+    assert.match(String(second.error?.message),/^OpenCode server did not start within 45 seconds\./);
   }finally{mock.timers.reset()}
 });

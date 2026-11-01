@@ -63,7 +63,7 @@ async function expectRenderedThought(text){
   await expect(text).not.toContainText("`");
 }
 
-test("a relay harness's thinking streams as a quiet Thinking row, opens to its text, and stays after a reload",async({page})=>{
+test("a relay harness's reasoning streams as a quiet Reasoning row, opens to its text, and stays after a reload",async({page})=>{
   test.setTimeout(45_000);
   const thread={id:"reasoning-relay",name:"Reasoning relay fixture",preview:"Login timeout",cwd:process.cwd(),model:"fixture-model",runtime:"cursor",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[structuredClone(FIRST_TURN)]};
   const harness=await startHarness(thread);
@@ -81,7 +81,8 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
     // A turn started by a new message reads top-down as before: the earlier reply, the new message, then the activity card.
     const sentBox=await page.locator(".user-row").last().boundingBox(),liveCardBox=await page.locator(".agent-block").boundingBox(),earlierReplyBox=await page.locator('.conversation-history [data-message-id="assistant-1"]').boundingBox();
     expect(earlierReplyBox.y+earlierReplyBox.height).toBeLessThanOrEqual(sentBox.y+1);expect(liveCardBox.y).toBeGreaterThanOrEqual(sentBox.y+sentBox.height-1);
-    await expect(live.locator(".reasoning-label")).toHaveText("Thinking");
+    await expect(live.locator(".reasoning-label")).toHaveText("Reasoning…");
+    await expect(live.locator(".reasoning-toggle")).toHaveAttribute("title","Show reasoning");
     await expect(live.locator(".reasoning-preview")).toHaveText("Next I will read the refresh call and time it");
     await expect(live.getByTestId("reasoning-text")).toHaveCount(0);
     await expect(live.locator(".reasoning-toggle")).toHaveAttribute("aria-expanded","false");
@@ -89,6 +90,7 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
 
     await live.locator(".reasoning-toggle").click();
     await expect(live.locator(".reasoning-toggle")).toHaveAttribute("aria-expanded","true");
+    await expect(live.locator(".reasoning-toggle")).toHaveAttribute("title","Hide reasoning");
     await expectRenderedThought(live.getByTestId("reasoning-text"));
     await page.screenshot({path:join(shotsDir,"reasoning-relay-streaming-expanded-1280x800.png"),fullPage:true,animations:"disabled"});
 
@@ -101,7 +103,7 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
     harness.push("turn/completed",{turn:{id:"turn-2",status:"completed",completedAt:Date.now()/1000}});
     const kept=page.locator(".conversation-history [data-testid=reasoning-row]");
     await expect(kept).toHaveCount(1);await expect(live).toHaveCount(0);
-    await expect(kept.locator(".reasoning-label")).toHaveText("Thought");
+    await expect(kept.locator(".reasoning-label")).toHaveText("Reasoning");
     await expectRenderedThought(kept.getByTestId("reasoning-text"));
     await expect(page.locator(".assistant-message-text").last()).toHaveText(answer.text);
     const order=await page.locator(".conversation-history").evaluate(node=>[...node.querySelectorAll(".user-bubble,.reasoning-row,.assistant-message-text")].map(row=>row.classList.contains("reasoning-row")?"thought":row.classList.contains("user-bubble")?"user":"answer"));
@@ -114,7 +116,7 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
     await page.getByRole("button",{name:/Reasoning relay fixture/}).first().click();
     const restored=page.locator(".conversation-history [data-testid=reasoning-row]");
     await expect(restored).toHaveCount(1);
-    await expect(restored.locator(".reasoning-label")).toHaveText("Thought");
+    await expect(restored.locator(".reasoning-label")).toHaveText("Reasoning");
     await expect(restored.locator(".reasoning-preview")).toHaveText("Inspecting the login handler");
     await expect(restored.getByTestId("reasoning-text")).toHaveCount(0);
     await page.screenshot({path:join(shotsDir,"reasoning-relay-after-reload-collapsed-1280x800.png"),fullPage:true,animations:"disabled"});
@@ -127,7 +129,7 @@ test("a relay harness's thinking streams as a quiet Thinking row, opens to its t
   }finally{await harness.close()}
 });
 
-test("Codex's reasoning summary parts stream into one Thinking row and settle into the conversation",async({page})=>{
+test("Codex's reasoning summary parts stream into one Reasoning row and settle into the conversation",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"reasoning-codex",name:"Reasoning Codex fixture",preview:"Login timeout",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[structuredClone(FIRST_TURN)]};
   const harness=await startHarness(thread);
@@ -159,7 +161,7 @@ test("Codex's reasoning summary parts stream into one Thinking row and settle in
     harness.push("item/completed",{turnId:"turn-2",item:{type:"reasoning",id:"rs_1",summary:["**Reading the handler**\n\nIt awaits the refresh.","**Timing the refresh**"],content:[]},completedAtMs:Date.now()});
     const kept=page.locator(".conversation-history [data-testid=reasoning-row]");
     await expect(kept).toHaveCount(1);await expect(live).toHaveCount(0);
-    await expect(kept.locator(".reasoning-label")).toHaveText("Thought");
+    await expect(kept.locator(".reasoning-label")).toHaveText("Reasoning");
     await expect(kept.getByTestId("reasoning-text")).toContainText("Timing the refresh");
     await kept.locator(".reasoning-toggle").click();
     await expect(kept.locator(".reasoning-preview")).toHaveText("Reading the handler");

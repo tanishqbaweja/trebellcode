@@ -440,9 +440,9 @@ test("the idle sweep leaves a process a harness's command started in the backgro
   const relay=await budgetRelay("trebell-budget-background-",{env:SWEEP_ENV});let backgroundPid=0;
   try{
     const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root}),reader=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root}),pidFile=relay.file("background.pid");
-    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"execute",title:"npm run dev",spawnPidFile:pidFile,rawOutput:"Started the dev server in the background."}]}),"utf8");
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"execute",title:"npm start",spawnPidFile:pidFile,rawOutput:"API listening on port 8080, left running in the background."}]}),"utf8");
     let completed=relay.notified("turn/completed");
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Start the dev server in the background"}]});await completed;
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Launch the API with npm start as a background job"}]});await completed;
     backgroundPid=Number(readFileSync(pidFile,"utf8"));assert.ok(alive(backgroundPid),"the background process runs once the turn ends");
     await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"read",title:"Read README.md"}]}),"utf8");
     completed=relay.notified("turn/completed");

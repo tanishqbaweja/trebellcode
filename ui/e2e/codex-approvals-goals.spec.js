@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { createGuiServer } from "../../src/gui-server.mjs";
 import { e2eHome,keepThreadMeta } from "./test-home.js";
+import { CODEX_GOAL_LEAD_IN,codexGoalFirstMessage } from "../../src/codex-goal-start.mjs";
 
 // Codex approvals and goals as a person meets them, with the app talking to a Trebell server of the test's own whose Codex relay
 // reaches a fake Codex app-server: "Allow session" answers the thread's later commands without asking, a file change's card names
@@ -237,7 +238,7 @@ test("/goal sent while Codex compacts the thread lets the compaction end, then s
     // Once it has ended, the goal is set and its first turn starts; the compaction ended as it should.
     await expect.poll(()=>codex.turns.filter(turn=>!turn.compaction).length).toBe(1);
     expect(codex.turns.find(turn=>turn.compaction).status).toBe("completed");
-    expect(codex.turns.find(turn=>!turn.compaction).input.filter(item=>item.type==="text").map(item=>item.text)).toEqual(["Start working toward this goal: Ship the release notes"]);
+    expect(codex.turns.find(turn=>!turn.compaction).input.filter(item=>item.type==="text").map(item=>item.text)).toEqual([codexGoalFirstMessage("Ship the release notes")]);
     await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
     expect(codex.sent("turn/interrupt")).toEqual([]);
     await expect(composer).toHaveValue("");
@@ -290,7 +291,7 @@ test("/goal sent while Codex compacts an ordinary turn as it works stops that tu
     await expect.poll(()=>codex.sent("turn/interrupt"),{timeout:10_000}).toEqual([{threadId:thread.id,turnId:turn.id}]);
     await expect.poll(()=>codex.turns.length).toBe(2);
     expect(turn.status).toBe("interrupted");
-    expect(codex.turns[1].input.filter(item=>item.type==="text").map(item=>item.text)).toEqual(["Start working toward this goal: Ship the release notes"]);
+    expect(codex.turns[1].input.filter(item=>item.type==="text").map(item=>item.text)).toEqual([codexGoalFirstMessage("Ship the release notes")]);
     await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
     await expect(composer).toHaveValue("");await expect(stop).toBeVisible();
     await expect(page.locator(".user-bubble").last()).toContainText("Ship the release notes");
@@ -310,19 +311,35 @@ test("/goal sent while a Codex turn runs stops that turn and starts the goal, wh
     await expect.poll(()=>codex.sent("turn/interrupt")).toEqual([{threadId:thread.id,turnId:"codex-turn-1"}]);
     await expect.poll(()=>codex.turns.length).toBe(2);
     expect(codex.turns[0].status).toBe("interrupted");
-    expect(codex.turns[1].input.filter(item=>item.type==="text").map(item=>item.text)).toEqual(["Start working toward this goal: Ship the release notes"]);
+    expect(codex.turns[1].input.filter(item=>item.type==="text").map(item=>item.text)).toEqual([codexGoalFirstMessage("Ship the release notes")]);
     await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
     expect(codex.sent("thread/goal/set").map(params=>[params.objective||null,params.status||null])).toEqual([["Ship the release notes","paused"],[null,"active"]]);
     await expect(composer).toHaveValue("");await expect(stop).toBeVisible();
-    // The person's message is the objective they typed: only Codex got the goal start before it.
+    // The person's message is the objective they typed: only Codex got the instruction to begin in front of it.
     await expect(page.locator(".user-bubble").last()).toContainText("Ship the release notes");
-    await expect(page.locator(".user-bubble").last()).not.toContainText("Start working toward this goal");
+    await expect(page.locator(".user-bubble").last()).not.toContainText(CODEX_GOAL_LEAD_IN.trim());
     await expect(page.getByTestId("composer-alert")).toHaveCount(0);
     // The Goal panel keeps the objective as written.
     await page.getByRole("button",{name:"Thread goal",exact:true}).click();
     const panel=page.getByTestId("goal-panel");
     await expect(panel.getByLabel("Objective",{exact:true})).toHaveValue("Ship the release notes");await expect(panel.locator(".goal-status")).toHaveText("active");
     await shoot(page,"goal-during-turn",()=>expect(panel.locator(".goal-status")).toHaveText("active"));
+  }finally{await harness.close()}
+});
+
+// The composer's menu says what /goal does on Codex: an objective Codex goes on pursuing, and the words that change it.
+test("the composer's menu describes /goal on a Codex thread as an objective Codex pursues, which pause, resume and clear change",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,"Release goal menu");
+  try{
+    const composer=page.getByTestId("composer"),menu=page.locator(".composer-wrap .slash-menu");
+    await composer.click();await page.keyboard.type("/go",{delay:8});
+    const row=menu.locator("button").filter({hasText:"/goal"});
+    await expect(row).toHaveCount(1);
+    await expect(row.locator("span")).toHaveText("Give Codex an objective to pursue across turns; pause, resume or clear it");
+    await shoot(page,"goal-slash-menu",()=>expect(row).toBeVisible());
+    // The mode switches took the keyboard; back in the composer, Escape closes the menu and keeps the draft.
+    await composer.focus();await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(composer).toHaveValue("/go");
   }finally{await harness.close()}
 });
 
@@ -407,5 +424,54 @@ test("a Codex goal reads paused in a window opened again after the one that saw 
     expect(pausedAfterWait(codex,ended)).toEqual([["paused",true]]);
     await expect(panel.getByTestId("goal-pause-note")).toContainText(PAUSED_WHY);
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);expect(codex.turns.filter(turn=>turn.status==="inProgress")).toEqual([]);
+  }finally{await harness.close()}
+});
+
+// /goal alone says in one line what goal the thread has, its status in words and its objective, and opens the Goal panel; in a
+// thread without a goal it says there is none.
+test("/goal alone notes the thread's goal in one line with its status in words, and a thread without a goal says it has none",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,"Release goal line");const {codex,thread}=harness;
+  try{
+    const composer=page.getByTestId("composer"),now=Math.floor(Date.now()/1000);
+    const sendGoal=async()=>{await composer.click();await page.keyboard.type("/goal",{delay:8});await page.keyboard.press("Enter");await expect(composer).toHaveValue("")};
+    await sendGoal();
+    await expect(page.getByText("This thread has no goal.",{exact:true})).toBeVisible();
+    codex.goals.set(thread.id,{threadId:thread.id,objective:"Tidy the changelog",status:"budgetLimited",tokenBudget:20000,tokensUsed:20000,timeUsedSeconds:300,createdAt:now,updatedAt:now});
+    await sendGoal();
+    const line=page.getByText("Goal budget limited: Tidy the changelog",{exact:true});
+    await expect(line).toBeVisible();await expect(page.getByTestId("goal-panel")).toBeVisible();
+    expect(codex.sent("thread/goal/set")).toEqual([]);expect(codex.turns).toEqual([]);
+    await shoot(page,"goal-line",()=>expect(line).toBeVisible());
+  }finally{await harness.close()}
+});
+
+// When Codex itself ends a goal that was active (complete, or stopped by its budget, a usage limit or a blocker), the desktop is told
+// with the goal's line: "Goal complete" or "Goal stopped" above it. A goal that is paused, or active again, tells it nothing.
+test("a Codex goal Codex ends itself tells the desktop with the goal's line, and a paused goal tells it nothing",async({page})=>{
+  test.setTimeout(60_000);
+  // The desktop app's notifications, kept to read.
+  await page.addInitScript(()=>{window.trebellDesktop={notify:note=>{(window.__trebellNotes||=[]).push(note)}}});
+  const harness=await startHarness(page,"Release goal ends");const {codex,thread}=harness;
+  try{
+    const status=page.getByTestId("goal-panel").locator(".goal-status"),now=Math.floor(Date.now()/1000);
+    const told=()=>page.evaluate(()=>(window.__trebellNotes||[]).filter(note=>/^Goal /.test(note.title)).map(note=>[note.title,note.body]));
+    // Codex changes the thread's goal and says so; the Goal panel reads the new status before the next change.
+    const goalBecomes=async(objective,state,words)=>{
+      const goal={threadId:thread.id,objective,status:state,tokenBudget:20000,tokensUsed:state==="budgetLimited"?20000:1200,timeUsedSeconds:300,createdAt:now,updatedAt:now};
+      codex.goals.set(thread.id,goal);codex.notify("thread/goal/updated",{threadId:thread.id,goal});
+      await expect(status).toHaveText(words);
+    };
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    await goalBecomes("Tidy the changelog","active","active");
+    await goalBecomes("Tidy the changelog","complete","complete");
+    await expect.poll(told).toEqual([["Goal complete","Goal complete: Tidy the changelog"]]);
+    await goalBecomes("Ship the release notes","active","active");
+    await goalBecomes("Ship the release notes","paused","paused");
+    await goalBecomes("Ship the release notes","active","active");
+    await goalBecomes("Ship the release notes","budgetLimited","budget limited");
+    await expect.poll(told).toEqual([["Goal complete","Goal complete: Tidy the changelog"],["Goal stopped","Goal budget limited: Ship the release notes"]]);
+    expect(codex.sent("thread/goal/set")).toEqual([]);expect(codex.turns).toEqual([]);
+    await shoot(page,"goal-ended-told",()=>expect(status).toHaveText("budget limited"));
   }finally{await harness.close()}
 });

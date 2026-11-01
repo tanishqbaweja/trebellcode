@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OPENCODE_RETRY_LIMITS, OPENCODE_UNSUPPORTED_SERVER, OpenCodeAgentSession, connectedOpenCodeModels, discoverOpenCodeModelCatalog, openCodeLongRequestFetch, openCodeMessageId, openCodeModelPreferences, openCodePermissionRules, openCodeRetryStop, openCodeStateDirectory, readOpenCodeRecentModels, remapOpenCodeTurns, startOpenCodeServer } from "../src/opencode-agent-session.mjs";
+import { OPENCODE_RETRY_LIMITS, OPENCODE_UNSUPPORTED_SERVER, OpenCodeAgentSession, connectedOpenCodeModels, discoverOpenCodeModelCatalog, openCodeLongRequestFetch, openCodeMessageId, openCodeMessageTime, openCodeModelPreferences, openCodeSessionRules, openCodeRetryStop, openCodeStateDirectory, readOpenCodeRecentModels, remapOpenCodeTurns, startOpenCodeServer } from "../src/opencode-agent-session.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
 
@@ -121,6 +121,16 @@ async function startedSession(fixture,options={}){
   await eventually(()=>fixture.streams.size>0,{message:"the session did not subscribe to OpenCode events"});
   return {session,updates};
 }
+// A message id OpenCode can order: "msg_", then 12 lowercase hex digits holding the send time (its milliseconds times 0x1000 plus a
+// counter, kept to 48 bits), then 14 letters and digits, as OpenCode's own ids have (re-pinned 2026-11-01: it was 28, not OpenCode's).
+function assertOpenCodeMessageId(id,sentFrom){
+  assert.equal(typeof id,"string");assert.equal(id.slice(0,4),"msg_");assert.equal(id.length,4+12+14);assert.match(id.slice(16),/^[0-9A-Za-z]+$/);
+  const time=openCodeMessageTime(id);assert.notEqual(time,null,"the 12 characters after msg_ are lowercase hex");
+  let sentWithin=false;
+  for(let millis=sentFrom;millis<=Date.now()&&!sentWithin;millis++){const step=time-BigInt.asUintN(48,BigInt(millis)*0x1000n);sentWithin=step>0n&&step<0x1000n}
+  assert.ok(sentWithin,"the id carries a millisecond of its send");
+  assert.ok([...id.slice(16)].every(character=>Number.isInteger(Number.parseInt(character,36))),"the rest is letters and digits");
+}
 const ABORTED_REPLY={info:{id:"msg_a1",parentID:"msg_u1",role:"assistant",error:{name:"MessageAbortedError",data:{message:"The operation was aborted."}}},parts:[]};
 
 test("OpenCode turns carry a message ID Trebell names, so every turn has its rewind point even when OpenCode never answers",async()=>{
@@ -130,10 +140,10 @@ test("OpenCode turns carry a message ID Trebell names, so every turn has its rew
     :json(200,{info:{id:"msg_a1",parentID:body.messageID,role:"assistant",tokens:{}},parts:[{id:"prt_1",type:"text",text:"OK"}]})}});
   const {session,updates}=await startedSession(fixture);
   try{
+    const sentFrom=Date.now();
     const result=await session.prompt([{type:"text",text:"Reply with exactly OK"}],{messageId:"101b36f4-70d2-447a-b28f-b0dff2796f59"});
     const sent=fixture.called("POST /session/ses_fixture/message")[0].body;
-    // OpenCode's message id form: "msg_", 12 hex digits of the time, then random characters.
-    assert.match(sent.messageID,/^msg_[0-9a-f]{12}[0-9A-Za-z]{28}$/);
+    assertOpenCodeMessageId(sent.messageID,sentFrom);
     assert.deepEqual(sent.model,{providerID:"huggingface",modelID:"zai-org/GLM-5.3-Flash"});
     assert.deepEqual({stopReason:result.stopReason,providerMessageId:result.providerMessageId,assistantMessageId:result.assistantMessageId},{stopReason:"end_turn",providerMessageId:sent.messageID,assistantMessageId:"msg_a1"});
     assert.equal(updates.filter(update=>update.sessionUpdate==="agent_message_chunk").map(update=>update.content.text).join(""),"OK");
@@ -169,7 +179,7 @@ test("Edit from here rewinds an OpenCode thread into a fork before the turn and 
     assert.deepEqual(rewound.messageIds,[[u1,copies[0]],[a1,copies[1]]]);
     assert.ok(rewound.tailId>copies[1],"a turn OpenCode never stored moves past every copy");
     // A fork has no rules of its own: it gets the thread's mode before the thread continues in it.
-    assert.deepEqual(fixture.called("PATCH /session/ses_fork1").map(call=>call.body.permission),[openCodePermissionRules("edits")]);
+    assert.deepEqual(fixture.called("PATCH /session/ses_fork1").map(call=>call.body.permission),[openCodeSessionRules("edits")]);
     await session.prompt([{type:"text",text:"Try another way"}]);
     assert.equal(fixture.called("POST /session/ses_fork1/message").length,1);assert.equal(fixture.called("POST /session/ses_fixture/message").length,0);
   }finally{await session.close();await fixture.close()}
@@ -215,7 +225,7 @@ test("a new OpenCode session carries the mode's permission rules and no fixed ti
   const fixture=await fakeOpenCode({agents,routes:{"GET /session/ses_child":({json})=>json(200,{id:"ses_child",parentID:"ses_fixture",permission:[{permission:"todowrite",pattern:"*",action:"deny"}]})}});
   const {session,updates}=await startedSession(fixture,{permissionMode:"supervised",repositoryMcp:null});
   try{
-    const created=fixture.called("POST /session")[0].body,rules=openCodePermissionRules("supervised",{trustedDirectories:["/tmp/opencode/*"]});
+    const created=fixture.called("POST /session")[0].body,rules=openCodeSessionRules("supervised",{trustedDirectories:["/tmp/opencode/*"]});
     assert.deepEqual(created,{permission:rules},"OpenCode names the session from its first prompt");
     // The composer's agent picker lists the primary agents only.
     assert.deepEqual(updates.find(update=>update.sessionUpdate==="session_info_update"&&update.agents).agents.map(agent=>agent.name),["build","plan"]);
@@ -223,13 +233,13 @@ test("a new OpenCode session carries the mode's permission rules and no fixed ti
     await session.setPermissionMode("supervised");
     assert.equal(fixture.called("PATCH /session/ses_fixture").length,0);
     await session.setPermissionMode("full");
-    assert.deepEqual(fixture.called("PATCH /session/ses_fixture").map(call=>call.body.permission),[openCodePermissionRules("full")]);
-    assert.deepEqual(fixture.sessions.get("ses_fixture").permission,[...rules,...openCodePermissionRules("full")]);
+    assert.deepEqual(fixture.called("PATCH /session/ses_fixture").map(call=>call.body.permission),[openCodeSessionRules("full")]);
+    assert.deepEqual(fixture.sessions.get("ses_fixture").permission,[...rules,...openCodeSessionRules("full")]);
     // A subagent's session started with only the parent's denies and folder rules; it gets the whole policy, OpenCode's own rules last.
     fixture.emit({type:"message.updated",properties:{sessionID:"ses_fixture",info:{id:"msg_a9",sessionID:"ses_fixture",role:"assistant"}}});
     fixture.emit({type:"message.part.updated",properties:{sessionID:"ses_fixture",part:{id:"prt_task",messageID:"msg_a9",sessionID:"ses_fixture",type:"tool",tool:"task",callID:"call_task",state:{status:"running",input:{},metadata:{sessionId:"ses_child"}}}}});
     await eventually(()=>fixture.called("PATCH /session/ses_child").length,{message:"the subagent session did not get the thread's rules"});
-    assert.deepEqual(fixture.called("PATCH /session/ses_child")[0].body.permission,[...openCodePermissionRules("full"),{permission:"todowrite",pattern:"*",action:"deny"}]);
+    assert.deepEqual(fixture.called("PATCH /session/ses_child")[0].body.permission,[...openCodeSessionRules("full"),{permission:"todowrite",pattern:"*",action:"deny"}]);
   }finally{await session.close();await fixture.close()}
 });
 
@@ -779,6 +789,20 @@ test("a message steered into an OpenCode turn joins the busy session with the tu
   }finally{await session.close();await fixture.close()}
 });
 
+test("an empty message steered into a running OpenCode turn is refused in Trebell's words and nothing reaches OpenCode",async()=>{
+  const prompts=heldPrompts(),fixture=await fakeOpenCode({routes:{"POST /session/ses_fixture/message":prompts.route}});
+  const {session}=await startedSession(fixture);
+  try{
+    const turn=session.prompt([{type:"text",text:"Summarize the changelog"}]);
+    await prompts.count(1);
+    for(const parts of [[],null])await assert.rejects(()=>session.steer(parts),{message:"There is nothing to add to OpenCode's running turn: the message has no text and no attachment."});
+    await delay(50);
+    assert.equal(prompts.held.length,1,"only the turn's own message was sent");
+    prompts.held[0].json(200,answer("msg_a1",prompts.held[0].body.messageID,"Done."));
+    assert.equal((await turn).stopReason,"end_turn");
+  }finally{await session.close();await fixture.close()}
+});
+
 test("a message steered into an OpenCode turn as its loop ends is answered by the next loop, and the turn waits for that answer",async()=>{
   const prompts=heldPrompts(),fixture=await fakeOpenCode({routes:{"POST /session/ses_fixture/message":prompts.route}});
   const {session}=await startedSession(fixture);
@@ -829,8 +853,8 @@ test("OpenCode gets images, PDFs and other files as file parts, and audio and vi
       {type:"file",mime:"application/pdf",filename:"spec.pdf",url:"file:///repo/spec.pdf"},
       {type:"file",mime:"text/plain",filename:"app.mjs",url:"file:///repo/src/app.mjs"},
       // OpenCode would read these as text and fail ("Cannot read binary file"); the agent gets where they are instead.
-      {type:"text",text:'[Attached audio "memo.mp3" is saved at: /repo/memo.mp3]'},
-      {type:"text",text:'[Attached video "demo clip.mp4" is saved at: /repo/demo clip.mp4]'},
+      {type:"text",text:'[Audio attachment "memo.mp3" at /repo/memo.mp3]'},
+      {type:"text",text:'[Video attachment "demo clip.mp4" at /repo/demo clip.mp4]'},
     ]);
   }finally{await session.close();await fixture.close()}
 });

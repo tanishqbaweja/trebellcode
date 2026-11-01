@@ -13,7 +13,7 @@ test("a failure names its action before the reason, and only once",()=>{
   assert.equal(failureText("Could not load usage",new Error("could not load usage.")),"could not load usage.");
   assert.equal(failureText("Windows sandbox setup failed","Windows sandbox setup failed"),"Windows sandbox setup failed");
   // Another failure, or one that only shares the first words, is a reason: the action still comes first.
-  assert.equal(failureText("Could not use the reset credit",new Error("Could not connect to Codex app-server")),"Could not use the reset credit: Could not connect to Codex app-server");
+  assert.equal(failureText("Could not spend the reset credit",new Error("Could not connect to Codex app-server")),"Could not spend the reset credit: Could not connect to Codex app-server");
   assert.equal(failureText("Could not load usage",new Error("Could not load usages.json")),"Could not load usage: Could not load usages.json");
   assert.equal(failureText("Windows sandbox setup failed",undefined),"Windows sandbox setup failed.");
 });

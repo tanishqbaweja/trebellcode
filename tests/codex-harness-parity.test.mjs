@@ -6,7 +6,7 @@ import { join, win32 } from "node:path";
 import { spawn } from "node:child_process";
 import { codexBin } from "../src/paths.mjs";
 import { codexAccountLabel, codexAccountStatus, codexVersionFromUserAgent, readCodexAccount } from "../src/codex-account-probe.mjs";
-import { codexReasoningEffortLabel, preferredCodexDefaultModel } from "../src/codex-model-catalog.mjs";
+import { codexReasoningEffortLabel, codexStartingModel } from "../src/codex-model-catalog.mjs";
 import { codexGoalRecord, codexGoalSetParams, codexGoalStatus } from "../src/codex-goal.mjs";
 import { normalizeGoal } from "../src/goal-state.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
@@ -34,7 +34,7 @@ test("Trebell runs the user's installed Codex, never the package it depends on i
 test("Codex readiness is its own account/read answer",()=>{
   assert.deepEqual(codexAccountStatus({account:{type:"chatgpt",email:"a@b.c",planType:"pro"},requiresOpenaiAuth:true}),{ready:true,authenticated:true,authType:"chatgpt",label:"ChatGPT Pro 200",message:"Signed in with ChatGPT Pro 200"});
   assert.equal(codexAccountStatus({account:{type:"apiKey"}}).label,"OpenAI API key");
-  assert.deepEqual(codexAccountStatus({account:null,requiresOpenaiAuth:true}),{ready:false,authenticated:false,authType:null,label:null,message:"Codex CLI is signed out. Sign in with codex login and try again."});
+  assert.deepEqual(codexAccountStatus({account:null,requiresOpenaiAuth:true}),{ready:false,authenticated:false,authType:null,label:null,message:"Codex has no account signed in. Run codex login, then try again."});
   const ollama=codexAccountStatus({account:null,requiresOpenaiAuth:false});
   assert.equal(ollama.ready,true,"a model provider without OpenAI sign-in is ready as configured");assert.equal(ollama.authenticated,null);
   assert.equal(codexAccountLabel({type:"chatgpt",planType:"something-new"}),"ChatGPT");
@@ -80,7 +80,7 @@ test("a Codex profile is ready when signed in or when its model provider needs n
     const status=async mode=>{const value=await manager.probe(manager.instances().find(item=>item.id==="codex-"+mode));return {available:value.available,authenticated:value.authenticated,version:value.version,message:value.message,account:value.account}};
     assert.deepEqual(await status("chatgpt"),{available:true,authenticated:true,version:"codex-cli 0.162.0",message:"Signed in with ChatGPT Plus",account:{type:"chatgpt",label:"ChatGPT Plus"}});
     assert.deepEqual(await status("local"),{available:true,authenticated:null,version:"codex-cli 0.162.0",message:"Ready · this Codex model provider does not use OpenAI sign-in",account:{type:null,label:null}});
-    assert.deepEqual(await status("signedout"),{available:false,authenticated:false,version:"codex-cli 0.162.0",message:"Codex CLI is signed out. Sign in with codex login and try again.",account:{type:null,label:null}});
+    assert.deepEqual(await status("signedout"),{available:false,authenticated:false,version:"codex-cli 0.162.0",message:"Codex has no account signed in. Run codex login, then try again.",account:{type:null,label:null}});
     const before=(await readFile(log,"utf8")).trim().split("\n").length;
     await status("chatgpt");
     assert.equal((await readFile(log,"utf8")).trim().split("\n").length,before,"a probe answer is reused for a minute: nothing runs again");
@@ -110,11 +110,13 @@ test("a shadow-home Codex profile is probed in the home its app-server runs in",
   }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
-test("Codex's default model follows the preferred-family ranking over the live catalog, and its effort labels include Ultra",()=>{
-  assert.equal(preferredCodexDefaultModel([{id:"gpt-5.5",isDefault:true},{id:"gpt-5.6-terra"},{id:"openai.gpt-5.6-sol"}]),"openai.gpt-5.6-sol");
-  assert.equal(preferredCodexDefaultModel([{id:"gpt-5.5"},{model:"gpt-5.4",isDefault:true}]),"gpt-5.4");
-  assert.equal(preferredCodexDefaultModel([{id:"gpt-5.5"}]),null);
-  assert.equal(codexReasoningEffortLabel("ultra"),"Ultra");assert.equal(codexReasoningEffortLabel("xhigh"),"Extra High");assert.equal(codexReasoningEffortLabel("turbo"),"turbo");
+// Re-pinned: a fixed list of preferred families used to win over the model Codex flags, and a list with no flag gave no model.
+// Codex's own rule decides now: the flagged model, else the first one listed.
+test("Codex's default model is the one its live catalog flags, else its first, and its effort labels include Ultra",()=>{
+  assert.equal(codexStartingModel([{id:"gpt-5.5",isDefault:true},{id:"gpt-5.6-terra"},{id:"openai.gpt-5.6-sol"}]),"gpt-5.5");
+  assert.equal(codexStartingModel([{id:"gpt-5.5"},{model:"gpt-5.4",isDefault:true}]),"gpt-5.4");
+  assert.equal(codexStartingModel([{id:"gpt-5.5"}]),"gpt-5.5");
+  assert.equal(codexReasoningEffortLabel("ultra"),"Ultra");assert.equal(codexReasoningEffortLabel("xhigh"),"Extra high");assert.equal(codexReasoningEffortLabel("turbo"),"turbo");
 });
 
 test("a Codex goal is mirrored with Codex's own status, times and accounting, next to Trebell's guidance",()=>{

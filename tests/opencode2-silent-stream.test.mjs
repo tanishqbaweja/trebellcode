@@ -8,7 +8,7 @@ import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode
 // the session subscribes again and asks OpenCode whether it still runs the turn (opencode2-stream-reconnect has the rest).
 // These run on mocked timers; polling uses setImmediate.
 const UNSENT="OpenCode never confirmed the message and is not running it, so Trebell stopped the turn. Send the message again to retry.";
-// Runs a promise to its end while time goes by in steps (the session's start waits a quarter second between two model reads).
+// Runs a promise to its end while time goes by in steps (the session's start waits 300 ms between two model reads).
 async function along(t,promise,stepMs=250){
   let done=false;promise.then(()=>{done=true},()=>{done=true});
   for(let step=0;step<400&&!done;step++){t.mock.timers.tick(stepMs);await flush()}
@@ -61,7 +61,8 @@ test("an OpenCode 2 turn whose prompt request OpenCode never answered ends after
   }finally{await session.close()}
 });
 
-test("an OpenCode 2 server that does not answer server.info within 5 seconds fails the session's start saying so",{timeout:30_000},async t=>{
+// Re-pinned note: an OpenCode 2 server has Trebell's own 8 s to answer server.info now (OPENCODE2_INFO_TIMEOUT_MS; it was 5 s).
+test("an OpenCode 2 server that does not answer server.info within 8 seconds fails the session's start saying so",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
   const signals=[];
   const fake=fakeOpenCode2Client({overrides:{"server.info":(_input,options)=>{signals.push(options?.signal);return new Promise(()=>{})}}});
@@ -69,10 +70,10 @@ test("an OpenCode 2 server that does not answer server.info within 5 seconds fai
   try{
     const starting=session.start({});
     await eventually(()=>fake.called("server.info").length===1);
-    t.mock.timers.tick(4_999);await flush();
+    t.mock.timers.tick(7_999);await flush();
     assert.equal(await settledWithin(starting),"pending");
     t.mock.timers.tick(1);
-    await assert.rejects(starting,{message:"OpenCode server did not answer within 5 seconds."});
+    await assert.rejects(starting,{message:"OpenCode server did not answer within 8 seconds."});
     assert.equal(signals[0]?.aborted,true,"the request is cancelled");
     assert.equal(fake.called("session.create").length,0);
   }finally{await session.close()}

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, gitInfo, commitAll, createBranch, createWorktree, pullRepo, pushRepo, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
+import { git, gitInfo, gitReason, commitAll, createBranch, createWorktree, pullRepo, pushRepo, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
 import { withGermanColoredGit } from "./fixtures/git-catalog.mjs";
 
 // Each test runs up to two dozen git commands, which take seconds each on a host that benchmarks load: the 20 s and 30 s bounds these
@@ -49,7 +49,48 @@ test("a refused branch name, Pull or Push fails with git's reason in plain words
     await assert.rejects(()=>createBranch(work,"bad..name"),{message:"fatal: 'bad..name' is not a valid branch name"});
     await assert.rejects(()=>pullRepo(work),{message:"This branch and its upstream have diverged, each with commits the other does not have."});
     await assert.rejects(()=>pushRepo(work),error=>{
-      assert.match(error.message,/^The remote has commits this branch does not have\. Pull them first, then push again\.\nTo .+\n ! \[rejected\] +\S+ -> main \(non-fast-forward\)\nerror: failed to push some refs to '.+'$/);
+      assert.match(error.message,/^The branch on the remote holds commits that are not in this branch yet\. Bring them in first, then push\.\nTo .+\n ! \[rejected\] +\S+ -> main \(non-fast-forward\)\nerror: failed to push some refs to '.+'$/);
+      return true;
+    });
+  }finally{await rm(root,RETRY)}
+});
+
+// git reports each ref of a push on a line of its own (git-push(1), OUTPUT): " <flag> <summary> <from> -> <to> (<reason>)". Only a ref
+// git did not send ("!", "[rejected]") for one of its two reasons that mean the branch on the remote is ahead ("non-fast-forward",
+// "fetch first") gets the plain words, ahead of git's own lines; any other refusal keeps git's lines alone.
+const REMOTE_AHEAD="The branch on the remote holds commits that are not in this branch yet. Bring them in first, then push.";
+test("only a ref git rejected because the branch on the remote is ahead gets the plain words, ahead of git's own lines",()=>{
+  const push=(line,hints=["hint: Updates were rejected because the remote contains work that you do not","hint: have locally."])=>["To /srv/origin.git",line,"error: failed to push some refs to '/srv/origin.git'",...hints].join("\n");
+  const kept=line=>["To /srv/origin.git",line,"error: failed to push some refs to '/srv/origin.git'"].join("\n");
+  for(const reason of ["non-fast-forward","fetch first"]){
+    const line=` ! [rejected]        main -> main (${reason})`;
+    assert.equal(gitReason(push(line)),REMOTE_AHEAD+"\n"+kept(line));
+    assert.equal(gitReason(push(line).replace(/\n/g,"\r\n")),REMOTE_AHEAD+"\n"+kept(line),"Windows line ends");
+    assert.equal(gitReason(push(line.replace("[rejected]","\x1b[31m[rejected]").replace("main -> main","main -> main\x1b[m"))),REMOTE_AHEAD+"\n"+kept(line),"in color");
+  }
+  for(const line of [" ! [rejected]        v1 -> v1 (already exists)"," ! [rejected]        main -> main (stale info)"," ! [rejected]        main -> main (needs force)",
+    " ! [remote rejected] main -> main (pre-receive hook declined)"," ! [remote rejected] main -> main (fetch first)"," ! [rejected]        main -> main (fetch first) and more"])
+    assert.equal(gitReason(push(line)),kept(line),line);
+  // A push of two refs, one of them up to date and one rejected, says it once.
+  const two=["To /srv/origin.git"," = [up to date]      dev -> dev"," ! [rejected]        main -> main (non-fast-forward)","error: failed to push some refs to '/srv/origin.git'"].join("\n");
+  assert.equal(gitReason(two),REMOTE_AHEAD+"\n"+two);
+});
+
+// A peer pushed a commit this repository has not fetched: git refuses with "fetch first", and the Push says so in plain words.
+test("a Push the remote is ahead of with commits not fetched yet says so in plain words, before git's lines",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-git-fetch-first-"));const origin=join(root,"origin.git"),work=join(root,"work"),peer=join(root,"peer");
+  try{
+    await git(root,["init","--bare","--initial-branch=main",origin]);
+    await mkdir(work,{recursive:true});await git(work,["init","-b","main"]);await git(work,["config","user.email","trebell@example.test"]);await git(work,["config","user.name","Trebell Test"]);
+    await writeFile(join(work,"a.txt"),"base\n");await git(work,["add","a.txt"]);await git(work,["commit","-m","Base"]);await git(work,["remote","add","origin",origin]);await git(work,["push","-u","origin","main"]);
+    await git(root,["clone",origin,peer]);await git(peer,["config","user.email","peer@example.test"]);await git(peer,["config","user.name","Peer"]);
+    await writeFile(join(peer,"b.txt"),"peer\n");await git(peer,["add","b.txt"]);await git(peer,["commit","-m","Peer"]);await git(peer,["push"]);
+    await writeFile(join(work,"c.txt"),"mine\n");await git(work,["add","c.txt"]);await git(work,["commit","-m","Mine"]);
+    await assert.rejects(()=>pushRepo(work),error=>{
+      const [first,...rest]=error.message.split("\n");
+      assert.equal(first,REMOTE_AHEAD);
+      assert.ok(rest.some(line=>/^ ! \[rejected\] +main -> main \(fetch first\)$/.test(line)),error.message);
+      assert.equal(rest.some(line=>line.startsWith("hint:")),false);
       return true;
     });
   }finally{await rm(root,RETRY)}

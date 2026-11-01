@@ -642,7 +642,7 @@ test("Claude Code made ready in Settings, by its sign-in finished in its termina
     await toAgentsHere(page);
     const claude=harnessRow(page,"Claude Code"),panel=claude.getByTestId("harness-auth-claude"),message=page.getByTestId("agent-runtime-message");
     // The command it names reads as code, as in its notes, with no backtick shown as typed.
-    await expect(rowSaid(claude)).toHaveText("Claude Code is signed out. Sign in with claude auth login and try again.");
+    await expect(rowSaid(claude)).toHaveText("Claude Code has no account signed in. Run claude auth login, then try again.");
     await expect(rowSaid(claude).locator("code.run-command")).toHaveText("claude auth login");
     await claude.getByRole("button",{name:"Sign in",exact:true}).click();
     await expect(page.getByTestId("drawer")).toBeVisible();
@@ -686,7 +686,7 @@ test("Grok Build set to its API key, back to Sign in, then signed in outside Tre
     await expectReady(page,"grok",false);
     await toAgentsHere(page);
     const grok=harnessRow(page,"Grok Build"),choice=grok.getByRole("radiogroup",{name:"Grok Build signs in with"}),message=page.getByTestId("agent-runtime-message");
-    await expect(rowSaid(grok)).toHaveText("Grok CLI is installed but not logged in. Run grok login.");
+    await expect(rowSaid(grok)).toHaveText("Grok Build has no account signed in. Run grok login, then try again.");
     // By keys: API key, on the xAI key saved before.
     await choice.getByRole("radio",{name:"API key"}).focus();await page.keyboard.press("Space");
     await expect(message).toContainText("Grok Build runs on its API key.");
@@ -698,7 +698,7 @@ test("Grok Build set to its API key, back to Sign in, then signed in outside Tre
     await toAgentsHere(page);
     await choice.getByRole("radio",{name:"Sign in"}).check();
     await expect(message).toContainText("Grok Build signs in with its own sign-in.");
-    await expect(rowSaid(grok)).toHaveText("Grok CLI is installed but not logged in. Run grok login.");
+    await expect(rowSaid(grok)).toHaveText("Grok Build has no account signed in. Run grok login, then try again.");
     await toNewTask(page);
     await expectReady(page,"grok",false);
     // Signed in outside Trebell (grok login in the person's own terminal), then Settings' Refresh.

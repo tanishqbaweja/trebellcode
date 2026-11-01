@@ -734,7 +734,7 @@ test("a refused Save profile says why in the profile editor, in view, once",asyn
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
     const editor=page.locator(".runtime-profile-editor"),refusal=editor.getByRole("alert");
-    const autoCompact=editor.getByRole("spinbutton",{name:"Auto-compact after"}),save=editor.getByRole("button",{name:"Save profile",exact:true});
+    const autoCompact=editor.getByRole("spinbutton",{name:"Compaction threshold"}),save=editor.getByRole("button",{name:"Save profile",exact:true});
     for(const pass of ["dark","light"])for(const width of [1280,900]){
       await switchMode(page,pass);await page.setViewportSize({width,height:800});
       await page.getByRole("button",{name:"Threads",exact:true}).click();await openHarnessSettings(page);
@@ -1238,7 +1238,7 @@ test("an update's answer that comes while the person types further down Settings
       await pressUpdateOpenCode(page);
       // While it runs: a new profile, then a custom model further down, scrolled to with the wheel, its id typed.
       await page.getByRole("button",{name:"Add profile",exact:true}).click();await expect(page.locator(".runtime-profile-editor")).toBeVisible();
-      const add=page.getByRole("button",{name:"Add custom model",exact:true});await wheelIntoView(page,add);await add.click();
+      const add=page.getByRole("button",{name:"Add a model by ID",exact:true});await wheelIntoView(page,add);await add.click();
       const field=page.getByLabel("Model ID",{exact:true});await field.click();await page.keyboard.type("fixture-model",{delay:20});
       const row=await opencode.boundingBox();expect(row.y+row.height,"the OpenCode row is out of view, above the window").toBeLessThan(52);
       const before=await field.boundingBox();
@@ -1325,7 +1325,7 @@ const FAILED_RUNTIME_CHANGES=[
     const profile=page.locator(".runtime-profile-row").filter({hasText:"Claude Code"});
     await expect(profile.getByText("Active",{exact:true})).toBeVisible();
     await profile.getByRole("button",{name:"Edit",exact:true}).click();
-    await page.getByLabel("Auto-compact after").fill("50000");
+    await page.getByLabel("Compaction threshold").fill("50000");
     const rejected=agentRuntimePost(page);
     await page.getByRole("button",{name:"Save profile",exact:true}).click();
     expect((await rejected).status()).toBe(400);

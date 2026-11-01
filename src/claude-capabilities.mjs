@@ -1,91 +1,169 @@
 import { createHash } from "node:crypto";
 import { claudeUsageResponseToLimits } from "./agent-usage-limits.mjs";
-import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
+import { adminMcpFilePresent } from "./claude-managed-mcp.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
-// The Claude Agent SDK loads with the first probe that needs it, not with the server (budget B25).
-let claudeAgentSdk=null;
-const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
-
-// Claude Code reports its models, slash commands, agents, account and plan usage through the SDK initialize handshake.
-// The probe offers a prompt that never yields, so no message reaches the model API:
-// the CLI finishes its local initialization, the answer is read, and the process is stopped.
+// The capability read. Claude Code, started through its Agent SDK, answers the SDK's initialize request with its models, slash
+// commands, agents and account, and on request reports the plan's usage windows. The read never sends a message, so it costs no
+// model request, and it stops Claude Code as soon as it has its answers. The cache further down shares one read per Claude Code,
+// Claude home, folder and sign-in.
 export const CLAUDE_CAPABILITIES_TTL_MS=5*60_000;
-export const CLAUDE_CAPABILITIES_TIMEOUT_MS=25_000;
-const CLAUDE_USAGE_TIMEOUT_MS=15_000;
+// How long the read may take, Claude Code's start included: Trebell's own 30 s, 2.1.2's 25 s and a fifth more, as long as
+// Claude Code's --version gets, so a machine slow to start it still has its models, commands and account read.
+export const CLAUDE_CAPABILITIES_TIMEOUT_MS=30_000;
+// The usage request has a limit of its own: a plan read that hangs costs the answer its usage, never its models and commands.
+const PLAN_USAGE_LIMIT_MS=15_000;
 
-function withTimeout(promise,ms,message){
+// The SDK is imported by the first read that brings no query of its own, not while the server starts (budget B25).
+let agentSdk=null;
+const loadAgentSdk=()=>agentSdk??=import("@anthropic-ai/claude-agent-sdk");
+
+// Claude Code's own variables whose value the read decides, whatever the caller's environment says
+// (code.claude.com/docs/en/env-vars). A text is set; null takes the variable out.
+const DECIDED_VARIABLES=new Map([
+  // "Set to false to stop Claude Code from fetching claude.ai MCP servers."
+  ["ENABLE_CLAUDEAI_MCP_SERVERS","false"],
+  // The automatic IDE connection: "Set to false to prevent this."
+  ["CLAUDE_CODE_AUTO_CONNECT_IDE","false"],
+  // "Set to 1 to skip auto-installation of IDE extensions."
+  ["CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL","1"],
+  // With any value at all, "0" too, Claude Code takes its terminal for a supported IDE's. A Trebell started from an IDE's terminal
+  // may hand it on, so it goes.
+  ["FORCE_CODE_TERMINAL",null],
+]);
+
+// The read's environment: a copy of the caller's without its own say on the variables above (names compared in capitals, as
+// Windows compares them), then the read's values. The caller's object is left as it was.
+function readEnvironment(callerEnv){
+  const copy={};
+  for(const [name,value] of Object.entries(callerEnv??{}))if(!DECIDED_VARIABLES.has(name.toUpperCase()))copy[name]=value;
+  for(const [name,value] of DECIDED_VARIABLES)if(value!==null)copy[name]=value;
+  return copy;
+}
+
+const dropText=()=>{};
+// The SDK options of a read (Options in the SDK's sdk.d.ts), one rule per requirement. A rule answers with the options it needs,
+// or with nothing when it does not apply, so an option that does not apply is absent rather than undefined. Each read gets
+// objects and lists of its own.
+const READ_OPTION_RULES=[
+  // Started here: the program behind a Windows launcher, since the SDK itself starts only a native binary or a .js file.
+  // Started elsewhere: the caller's spawner starts the command it was given, as given.
+  ({command,spawnProcess})=>spawnProcess
+    ?{pathToClaudeCodeExecutable:command,spawnClaudeCodeProcess:spawnProcess}
+    :{pathToClaudeCodeExecutable:resolveWindowsCommandShim(command,{allowScripts:true})},
+  // A folder's read runs in that folder; the machine-wide read names none.
+  ({cwd})=>cwd?{cwd}:null,
+  ({env})=>({env:readEnvironment(env)}),
+  ({abortController})=>({abortController}),
+  // Nothing to resume later: no transcript goes under the Claude home's projects folder.
+  ()=>({persistSession:false}),
+  // The person's, the project's and the project's local settings, for the commands and agents they define.
+  ()=>({settingSources:["user","project","local"]}),
+  // In the flag settings layer, above the person's and the project's files: their hooks and the status line do not run. Hooks an
+  // administrator manages are not the read's to turn off, and still run.
+  ()=>({settings:{disableAllHooks:true}}),
+  // No tool is approved, and the read brings no MCP server.
+  ()=>({allowedTools:[],mcpServers:{}}),
+  // No MCP server but those named above, that is none (--strict-mcp-config). Next to an administrator's managed-mcp.json Claude
+  // Code stops at startup on that flag, so there it stays off.
+  ({adminMcpFile})=>adminMcpFile?null:{strictMcpConfig:true},
+  ()=>({stderr:dropText}),
+];
+
+export function capabilityReadOptions(input={}){
+  return Object.assign({},...READ_OPTION_RULES.map(rule=>rule(input)));
+}
+
+// Claude Code's input for a read: no message, ever. It ends when the read is over (over settles), also for an iteration that
+// begins after that.
+async function* noMessage(over){
+  await over;
+}
+
+// What work settles to, or a failure saying message once ms have passed first. The timer never holds the process open, and it
+// is cleared as soon as either settles.
+function withinLimit(work,ms,message){
   let timer;
-  return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),ms);timer.unref?.()})]).finally(()=>clearTimeout(timer));
+  const late=new Promise((_,reject)=>{
+    timer=setTimeout(()=>reject(new Error(message)),ms);
+    timer?.unref?.();
+  });
+  return Promise.race([work,late]).finally(()=>clearTimeout(timer));
 }
 
-// The probe keeps the filesystem setting sources (workspace commands and agents) but runs no hooks, starts no MCP server and
-// skips IDE discovery: it is a noninteractive health check. Next to an administrator's managed-mcp.json (managedMcpConfig), which
-// already allows only the managed servers, Claude Code exits at startup on --strict-mcp-config, so that flag goes, and only that.
-export function claudeCapabilitiesProbeOptions({command,cwd=null,env={},spawnProcess=null,abortController,managedMcpConfig=false}={}){
-  const environment={...env,ENABLE_CLAUDEAI_MCP_SERVERS:"false",CLAUDE_CODE_AUTO_CONNECT_IDE:"0",CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL:"1"};
-  delete environment.FORCE_CODE_TERMINAL;
-  return {
-    persistSession:false,
-    // A Windows .cmd shim cannot be spawned directly; the SDK runs a native binary or a .js entry itself.
-    pathToClaudeCodeExecutable:spawnProcess?command:resolveWindowsCommandShim(command,{allowScripts:true}),
-    abortController,
-    settingSources:["user","project","local"],
-    settings:{disableAllHooks:true},
-    allowedTools:[],
-    mcpServers:{},
-    ...(managedMcpConfig?{}:{strictMcpConfig:true}),
-    env:environment,
-    ...(cwd?{cwd}:{}),
-    stderr:()=>{},
-    ...(spawnProcess?{spawnClaudeCodeProcess:spawnProcess}:{}),
-  };
+// The SDK's usage request without the scan of local transcripts that fills its behaviors section (skipBehaviors): the read wants
+// only the plan's rate limits. One that throws before it returns a promise, or an SDK without it, gives a rejected promise.
+async function askPlanUsage(session){
+  return session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({skipBehaviors:true});
+}
+// A failure in words: its message, or the failure itself as text when it has none.
+const failureWords=failure=>String(failure?.message||failure);
+
+// The usage part of the answer. Nothing that goes wrong here fails the read: the failure comes back as text in usageError,
+// beside the models and commands, and the usage answer as Claude Code gave it.
+function planUsagePart(session,wanted){
+  if(!wanted)return {usage:null,usageError:null};
+  return withinLimit(askPlanUsage(session),PLAN_USAGE_LIMIT_MS,"Claude Code did not report usage in time.").then(
+    usage=>({usage,usageError:null}),
+    failure=>({usage:null,usageError:failureWords(failure)}),
+  );
 }
 
-// managedMcpExists: the managed-mcp.json check's exists(path), for tests. A Claude Code started elsewhere (spawnProcess) reads its own
-// machine's managed file, which this check cannot see, so it keeps the flag.
-export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProcess=null,includeUsage=true,query=null,timeoutMs=CLAUDE_CAPABILITIES_TIMEOUT_MS,managedMcpExists=undefined}={}){
-  const startQuery=query||(await loadClaudeAgentSdk()).query;
-  const managedMcpConfig=!spawnProcess&&await hasClaudeManagedMcpConfig({exists:managedMcpExists});
-  const abortController=new AbortController();
-  const prompt=(async function*(){
-    await new Promise(resolve=>{if(abortController.signal.aborted)resolve();else abortController.signal.addEventListener("abort",()=>resolve(),{once:true})});
-  })();
-  let runtime=null;
+const ANSWER_LISTS=["models","commands","agents"];
+const isObject=value=>value!==null&&typeof value==="object";
+
+// The read's answer: the initialize answer's lists (an empty one where a list is missing), its account object or null, whether
+// that account reads as signed out (what the Usage card says in place of a plan without limits, readClaudeUsageLimits), the usage
+// part and when it was read.
+function capabilityAnswer(hello,env,usagePart){
+  const answer={};
+  for(const name of ANSWER_LISTS)answer[name]=Array.isArray(hello?.[name])?hello[name]:[];
+  answer.account=isObject(hello?.account)?hello.account:null;
+  answer.signedOut=claudeAnsweredSignedOut(answer.account,env);
+  return Object.assign(answer,usagePart,{checkedAt:new Date().toISOString()});
+}
+
+// One read. query stands in for the SDK's (tests and specs) and managedMcpExists for the look for the administrator's file
+// (tests). Only a Claude Code started on this machine reads this machine's managed-mcp.json: one started elsewhere is not looked
+// at and keeps strict MCP mode. Whatever happens, the read ends its input, aborts and closes what it started (a close that
+// throws is ignored). Input keys that are not the read's (the cache's scope) are ignored.
+export async function readClaudeCodeCapabilities({command,cwd=null,env={},spawnProcess=null,withPlanUsage=true,query=null,timeoutMs=CLAUDE_CAPABILITIES_TIMEOUT_MS,managedMcpExists=undefined}={}){
+  const start=typeof query==="function"?query:(await loadAgentSdk()).query;
+  const adminMcpFile=spawnProcess?false:await adminMcpFilePresent({exists:managedMcpExists});
+  const controller=new AbortController();
+  let endInput;
+  const over=new Promise(resolve=>{endInput=resolve});
+  let session=null;
   try{
-    runtime=startQuery({prompt,options:claudeCapabilitiesProbeOptions({command,cwd,env,spawnProcess,abortController,managedMcpConfig})});
-    const init=await withTimeout(runtime.initializationResult(),timeoutMs,"Claude Code did not report its capabilities in time.");
-    // Usage has its own deadline so a slow optional read cannot discard the initialization answer. skipBehaviors skips the
-    // local transcript scan: only the plan rate limits are read.
-    let usage=null,usageError=null;
-    if(includeUsage){
-      try{usage=await withTimeout(runtime.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({skipBehaviors:true}),CLAUDE_USAGE_TIMEOUT_MS,"Claude Code did not report usage in time.")}
-      catch(error){usageError=String(error?.message||error)}
-    }
-    const account=init?.account&&typeof init.account==="object"?init.account:null;
-    return {
-      models:Array.isArray(init?.models)?init.models:[],
-      commands:Array.isArray(init?.commands)?init.commands:[],
-      agents:Array.isArray(init?.agents)?init.agents:[],
-      // signedOut: Claude Code answered signed out, which the Usage card says (readClaudeUsageLimits) instead of a plan without limits.
-      account,signedOut:claudeProbeSignedOut(account,env),
-      usage,usageError,
-      checkedAt:new Date().toISOString(),
-    };
+    session=start({prompt:noMessage(over),options:capabilityReadOptions({command,cwd,env,spawnProcess,abortController:controller,adminMcpFile})});
+    const hello=await withinLimit(session.initializationResult(),timeoutMs,"Claude Code did not report its capabilities in time.");
+    return capabilityAnswer(hello,env,await planUsagePart(session,withPlanUsage));
   }finally{
-    abortController.abort();
-    try{runtime?.close?.()}catch{}
+    endInput();
+    controller.abort();
+    try{session?.close?.()}catch{}
   }
 }
 
-// Claude Code answers signed out with tokenSource "none" and no API key, email or plan. Another API
-// backend (Bedrock, Vertex, a gateway) or a custom ANTHROPIC_BASE_URL signs in where these fields cannot show it.
-function claudeProbeSignedOut(account,env={}){
-  if(!account||typeof account!=="object"||account.tokenSource!=="none")return false;
-  if(account.apiProvider!==undefined&&account.apiProvider!=="firstParty")return false;
-  if((account.apiKeySource&&account.apiKeySource!=="none")||account.email||account.subscriptionType)return false;
-  let endpoint=null;try{endpoint=new URL(String(env?.ANTHROPIC_BASE_URL||"").trim())}catch{}
-  return !(endpoint&&/^https?:$/.test(endpoint.protocol)&&endpoint.hostname&&endpoint.hostname!=="api.anthropic.com");
+
+// Ways an account answer shows a sign-in other than Claude Code's own login: another API backend (Bedrock, Vertex, a gateway, whose
+// sign-in these fields cannot show), an API key, an email, a plan.
+const OTHER_SIGN_IN=[
+  account=>account.apiProvider!==undefined&&account.apiProvider!=="firstParty",
+  account=>Boolean(account.apiKeySource)&&account.apiKeySource!=="none",
+  account=>Boolean(account.email),
+  account=>Boolean(account.subscriptionType),
+];
+// ANTHROPIC_BASE_URL naming an http(s) host other than Anthropic's own API: a sign-in there does not show in the account either.
+function customEndpointIn(env){
+  let url;
+  try{url=new URL(String(env?.ANTHROPIC_BASE_URL||"").trim())}catch{return false}
+  return (url.protocol==="https:"||url.protocol==="http:")&&url.hostname!=="api.anthropic.com";
+}
+// Claude Code answers signed out with tokenSource "none" and none of the signs above, unless the read went to an endpoint of its own.
+function claudeAnsweredSignedOut(account,env){
+  if(!isObject(account)||account.tokenSource!=="none")return false;
+  return !OTHER_SIGN_IN.some(shows=>shows(account))&&!customEndpointIn(env);
 }
 // How a probe's Claude Code signs in, as its launch's environment says: on the ANTHROPIC_API_KEY it has (a fingerprint of it, never
 // the key), or on the person's own login when it has none (a profile on Sign in never has one, AgentRuntimeManager.childEnv).
@@ -97,7 +175,7 @@ function signInOf(env){
 // read failed (what the Usage card says it could not read) and one Claude answered signed out are asked again next time.
 function keptClaudeProbe(value,env){
   if(value?.usageError||(value?.usage&&claudeUsageResponseToLimits(value.usage).unavailable?.reason==="probeFailed"))return false;
-  return !claudeProbeSignedOut(value?.account,env);
+  return !claudeAnsweredSignedOut(value?.account,env);
 }
 
 // One cache per Claude home, executable, working folder and environment (scope names a remote one): each holds the latest
@@ -108,7 +186,7 @@ function keptClaudeProbe(value,env){
 // fails puts back the answer it was to replace.
 // It is kept per sign-in too (signInOf): a profile moved between its own login and an API key, or onto another key, is asked again,
 // never served the account, models and plan usage of the other.
-export function createClaudeCapabilitiesCache({probe=probeClaudeCapabilities,ttlMs=CLAUDE_CAPABILITIES_TTL_MS,now=()=>Date.now()}={}){
+export function createClaudeCapabilitiesCache({probe=readClaudeCodeCapabilities,ttlMs=CLAUDE_CAPABILITIES_TTL_MS,now=()=>Date.now()}={}){
   const entries=new Map();
   const keyOf=({command,cwd,env,spawnProcess,scope})=>[String(command||""),String(env?.CLAUDE_CONFIG_DIR||""),String(cwd||""),spawnProcess?"remote:"+String(scope||""):"local",signInOf(env)].join("\0");
   const current=(entry,maxAgeMs)=>Boolean(entry?.value)&&now()-entry.at<(maxAgeMs??entry.ttl);

@@ -68,8 +68,8 @@ test("onboarding names the real reason Codex history cannot be imported",async({
 test("onboarding names each conversation it could not import and why",async({page,request})=>{
   test.setTimeout(60_000);
   const boot=await (await request.get("/api/bootstrap")).json();
-  const sessions=[["claude:login","claude","Fix the flaky login test"],["claude:notes","claude","Draft the release notes"],["codex:cli","codex","Port the CLI to Rust"],["codex:docs","codex","Write the docs site"]];
-  const reasons={"claude:notes":"Session file is truncated (line 212 is not JSON)","codex:cli":"Local Codex app-server is not available","codex:docs":"Local Codex app-server is not available"};
+  const sessions=[["claude:export","claude","Speed up the CSV export"],["claude:invoices","claude","Round invoice totals to whole cents"],["codex:uploads","codex","Retry uploads after a dropped connection"],["codex:locale","codex","Translate the settings page into Spanish"]];
+  const reasons={"claude:invoices":"Session file is truncated (line 212 is not JSON)","codex:uploads":"Local Codex app-server is not available","codex:locale":"Local Codex app-server is not available"};
   const imported=new Set(),posts=[];
   await page.route(/\/api\/history-import$/,route=>{
     if(route.request().method()!=="POST")return route.fulfill({json:{codexImportAvailable:true,sessions:sessions.map(([id,source,title])=>({id,source,providerSessionId:id.split(":")[1],cwd:boot.cwd,title,preview:title,alreadyImported:imported.has(id)}))}});
@@ -86,16 +86,16 @@ test("onboarding names each conversation it could not import and why",async({pag
       imported.clear();await switchModeUnderSetup(page,request,mode);
       await expect(step).toContainText("4 recent conversations can be copied into Trebell.");
       await step.getByRole("button",{name:"Import history",exact:true}).click();
-      await expect(message).toHaveText("Imported 1 conversation. “Draft the release notes” could not be imported: Session file is truncated (line 212 is not JSON). “Port the CLI to Rust” and “Write the docs site” could not be imported: Local Codex app-server is not available.");
+      await expect(message).toHaveText("Imported 1 conversation. “Round invoice totals to whole cents” could not be imported: Session file is truncated (line 212 is not JSON). “Retry uploads after a dropped connection” and “Translate the settings page into Spanish” could not be imported: Local Codex app-server is not available.");
       await expect(message).not.toHaveClass(/error/);
       await expect(step).toContainText("3 recent conversations can be copied into Trebell.");
-      expect(posts.at(-1)).toEqual(["claude:login","claude:notes","codex:cli","codex:docs"]);
+      expect(posts.at(-1)).toEqual(["claude:export","claude:invoices","codex:uploads","codex:locale"]);
       await shootSetup(page,"history-import-partial",mode);
       // A retry tries only the three that are left, and says again what failed and why.
       await step.getByRole("button",{name:"Import history",exact:true}).click();
-      await expect(message).toHaveText("“Draft the release notes” could not be imported: Session file is truncated (line 212 is not JSON). “Port the CLI to Rust” and “Write the docs site” could not be imported: Local Codex app-server is not available.");
+      await expect(message).toHaveText("“Round invoice totals to whole cents” could not be imported: Session file is truncated (line 212 is not JSON). “Retry uploads after a dropped connection” and “Translate the settings page into Spanish” could not be imported: Local Codex app-server is not available.");
       await expect(message).toHaveClass(/error/);
-      expect(posts.at(-1)).toEqual(["claude:notes","codex:cli","codex:docs"]);
+      expect(posts.at(-1)).toEqual(["claude:invoices","codex:uploads","codex:locale"]);
       await shootSetup(page,"history-import-retry-failed",mode);
     }
   }finally{

@@ -35,6 +35,9 @@ test("a harness profile's editor says a harness on this computer gets the proxy 
     await expect(editor).toBeVisible();
     // Codex's own field, so this is that harness's profile.
     await expect(editor.getByLabel("CODEX_HOME")).toBeVisible();
+    // Its account sign-in home, empty until the person gives one.
+    await expect(editor.getByLabel("Sign-in home for this account")).toHaveValue("");
+    await expect(editor.getByLabel("Sign-in home for this account")).toHaveAttribute("placeholder","Optional, for example ~/.codex-work");
     const note=editor.locator("p").filter({hasText:"Trebell passes only a safe OS baseline"});
     await expect(note).toHaveText(SAID+" "+APPROVE+" "+NO_KEYS+" Values are read from the parent process at launch time and are not stored in the profile.");
     // The profile's own choice of how it signs in, Sign in by default.

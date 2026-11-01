@@ -24,7 +24,7 @@ test("follow-up settings obey runtime steering capability instead of runtime nam
   await expect(page.getByTestId("composer")).toBeVisible();
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   const card=page.locator('[data-setting-target="general-followups"]');
-  await expect(card).toContainText("Follow-up behavior");
+  await expect(card).toContainText("Messages sent during a turn");
   const select=card.getByRole("combobox",{name:"While the agent is working"});
   await expect(select).toBeVisible();
   await expect(select.locator('option[value="steer"]')).toHaveText("Steer current turn immediately");

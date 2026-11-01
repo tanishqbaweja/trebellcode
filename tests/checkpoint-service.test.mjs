@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CheckpointService, isTransientCheckpointGitError } from "../src/checkpoint-service.mjs";
@@ -14,12 +14,143 @@ function gitCommand(args){
   return args[index];
 }
 
+// What git (2.50.1) writes under a lock another process holds, as it wrote it with a lock file left in place before a git add and
+// a git update-ref: the failed call, a blank line and its advice.
+const GIT_LOCK_ADVICE="\n\nAnother git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'. Please make sure all processes\nare terminated then try again. If it still fails, a git process\nmay have crashed in this repository earlier:\nremove the file manually to continue.";
+
 test("checkpoint retry classification accepts only transient lock and disappearing-file races",()=>{
-  assert.equal(isTransientCheckpointGitError(new Error("fatal: Unable to create '/repo/index.lock': File exists")),true);
-  assert.equal(isTransientCheckpointGitError(new Error('error: open("/repo/file"): No such file or directory')),true);
-  assert.equal(isTransientCheckpointGitError(new Error("fatal: unable to stat '/repo/file': No such file or directory")),true);
-  assert.equal(isTransientCheckpointGitError(new Error("fatal: Unable to create '/repo/index.lock': Permission denied")),false);
-  assert.equal(isTransientCheckpointGitError(new Error("fatal: index file corrupt")),false);
+  const verdicts=[
+    ["git add while another git holds the index",true,"fatal: Unable to create 'D:/work/atlas/.git/index.lock': File exists."+GIT_LOCK_ADVICE],
+    ["a branch update while its ref is locked",true,"fatal: update_ref failed for ref 'refs/heads/main': cannot lock ref 'refs/heads/main': Unable to create 'D:/work/atlas/.git/refs/heads/main.lock': File exists."+GIT_LOCK_ADVICE],
+    ["a file deleted while git add read it",true,"error: open(\"reports/q3.csv\"): No such file or directory\nerror: unable to index file 'reports/q3.csv'\nfatal: adding files failed"],
+    ["a file deleted before git add looked at it",true,"fatal: unable to stat 'reports/q3.csv': No such file or directory"],
+    ["a lock git may not create",false,"fatal: Unable to create 'D:/work/atlas/.git/index.lock': Permission denied"],
+    ["an index git cannot write",false,"fatal: unable to write new index file"],
+  ];
+  for(const [what,transient,failure] of verdicts)assert.equal(isTransientCheckpointGitError(new Error(failure)),transient,what);
+});
+
+// Git writes a failed system call on one line: what it was doing, naming the file, then ": " and the system's error. A lock
+// another process holds (EEXIST on a .lock) and a listed file deleted before Git read it (ENOENT on stat, lstat or open)
+// pass on their own; anything else, or the same words split over two lines, would fail again.
+test("a checkpoint runs Git again only after a held lock or a listed file that went away, read line by line in any case",()=>{
+  const passing=[
+    "fatal: Unable to create '/home/dev/shop/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository.",
+    "error: cannot lock ref 'refs/trebell/checkpoints/t-42': Unable to create '/home/dev/shop/.git/refs/trebell/checkpoints/t-42.lock': File exists.",
+    "fatal: Unable to create \"C:/work/shop/.git/index.lock\": File exists.",
+    "fatal: unable to create /home/dev/shop/.git/index.lock: file exists",
+    "fatal: Unable to create 'C:/work/shop/.git/index.lock': File exists.\r",
+    "error: lstat(\"notes/today.md\"): No such file or directory",
+    "warning: in the working copy of 'notes/a.md', LF will be replaced by CRLF\nerror: open(\"notes/today.md\"): No such file or directory\nerror: unable to index file 'notes/today.md'\nfatal: adding files failed",
+    "FATAL: UNABLE TO STAT 'NOTES/TODAY.MD': NO SUCH FILE OR DIRECTORY",
+    // A symbolic link removed between git listing it and reading where it points.
+    "error: readlink(\"assets/logo.svg\"): No such file or directory\nerror: unable to index file 'assets/logo.svg'",
+  ];
+  const lasting=[
+    "error: open(): No such file or directory",
+    "error: unlink(\"notes/today.md\"): No such file or directory",
+    "fatal: Unable to create '.lock': File exists",
+    "fatal: Unable to create '/home/dev/shop/.git/index.lock': No such file or directory",
+    "fatal: Unable to create '/home/dev/shop/.git/index': File exists",
+    "fatal: Unable to create '/home/dev/shop/.git/index.lock':\nFile exists",
+    "fatal: unable to stat 'notes/today.md':\nNo such file or directory",
+    "fatal: cannot change to '/home/dev/gone': No such file or directory",
+    "fatal: unable to stat: No such file or directory",
+    "error: insufficient permission for adding an object to repository database .git/objects",
+    // Only the letters A-Z are read in either case: a Kelvin sign or a long s, which a full case folding would make k or s,
+    // is not one of Git's words.
+    "fatal: Unable to create '/home/dev/shop/.git/index.loc\u212A': File exists",
+    "fatal: unable to \u017Ftat 'notes/today.md': No such file or directory",
+  ];
+  for(const text of passing){
+    assert.equal(isTransientCheckpointGitError(new Error(text)),true,text);
+    assert.equal(isTransientCheckpointGitError(text),true,"thrown as a string: "+text);
+  }
+  for(const text of lasting)assert.equal(isTransientCheckpointGitError(new Error(text)),false,text);
+  for(const value of [null,undefined,"",0,new Error(""),{message:""}])assert.equal(isTransientCheckpointGitError(value),false,String(value));
+});
+
+// A repository's path or a file's name can hold ": " itself, which is also what git writes between its step and the system's
+// error: the race is still seen, from wherever in the line git's step begins, and a step that is no race still is not one.
+test("a held lock or a vanished file is a race even when the repository's path or the file's name holds a colon and a space",()=>{
+  const races=[
+    "fatal: Unable to create '/home/dev/my: project/.git/index.lock': File exists.",
+    "error: open(\"notes/meeting: monday.md\"): No such file or directory",
+    "fatal: unable to stat 'notes/q&a: today.md': No such file or directory",
+    "error: cannot lock ref 'refs/trebell/checkpoints/t-7': Unable to create '/srv/work: 2026/.git/refs/trebell/checkpoints/t-7.lock': File exists."+GIT_LOCK_ADVICE,
+    "warning: in the working copy of 'plans/q4: draft.md', LF will be replaced by CRLF\nerror: readlink(\"assets/logo: dark.svg\"): No such file or directory\nerror: unable to index file 'assets/logo: dark.svg'",
+  ];
+  const notRaces=[
+    "error: unlink(\"notes/meeting: monday.md\"): No such file or directory",
+    "fatal: Unable to create '/home/dev/my: project/.git/index': File exists",
+    "fatal: Unable to create '/home/dev/my: project/.git/index.lock': Permission denied",
+    "fatal: cannot change to '/home/dev/my: project': No such file or directory",
+    "fatal: unable to stat notes/meeting: monday.md: No such file or directory",
+  ];
+  for(const text of races)assert.equal(isTransientCheckpointGitError(new Error(text)),true,text);
+  for(const text of notRaces)assert.equal(isTransientCheckpointGitError(new Error(text)),false,text);
+  // The other lines of the same review, which keep their verdicts: a ref's lock, a lock line ended by CRLF, a bare lock name and a
+  // stat call are races; a stat message whose name has no quotes is not one, as read-cache.c always quotes it.
+  const kept=[
+    [true,"error: cannot lock ref 'refs/trebell/checkpoints/t1': Unable to create '/srv/app/.git/refs/trebell/checkpoints/t1.lock': File exists."],
+    [true,"fatal: Unable to create 'C:/Users/ana/app/.git/index.lock': File exists.\r\n\r\nAnother git process seems to be running in this repository, e.g."],
+    [true,"fatal: Unable to create /srv/app/.git/index.lock: File exists."],
+    [true,"error: stat(\"notes/today.md\"): No such file or directory"],
+    [false,"error: unable to stat notes/today.md: No such file or directory"],
+  ];
+  for(const [race,text] of kept)assert.equal(isTransientCheckpointGitError(new Error(text)),race,text);
+  // Many places a step could begin cost no more than one pass: about 1.6 million characters of ": " pieces before the error.
+  const started=performance.now();
+  assert.equal(isTransientCheckpointGitError(new Error("fatal: "+"x: ".repeat(530_000)+"unable to stat 'a.md': No such file or directory")),true);
+  assert.equal(isTransientCheckpointGitError(new Error("fatal: "+"x: ".repeat(530_000)+"File exists")),false);
+  const took=performance.now()-started;
+  assert.ok(took<1000,`read in ${took.toFixed(1)} ms`);
+});
+
+// What a failed Git run wrote can be megabytes (the runner keeps up to 8 MiB). Reading it takes time in step with its length:
+// 1.6 million characters of operations that never meet their error take a few milliseconds, where a check that went back over
+// the rest of the line from each operation would take seconds.
+test("a long Git failure is read in time in step with its length",()=>{
+  // Each of the four calls git names as it fails, with its file but without the system's error, again and again over about
+  // 400,000 characters of a line of its own.
+  const calls=["fatal: Unable to create 'D:/work/atlas/.git/index.lock' ","fatal: unable to stat 'reports/q3.csv' ","error: lstat(\"reports/q3.csv\") ","error: open(\"reports/q3.csv\") "];
+  const lines=calls.map(call=>call.repeat(Math.ceil(400_000/call.length)));
+  const started=performance.now();
+  assert.equal(isTransientCheckpointGitError(new Error(lines.join("\n"))),false);
+  assert.equal(isTransientCheckpointGitError(new Error(lines.join(" ")+": No such file or directory")),true);
+  const took=performance.now()-started;
+  assert.ok(took<1000,`read in ${took.toFixed(1)} ms`);
+});
+
+// The runner's side: a lock still held at the third run fails the checkpoint with Git's words after two waits, and a file that
+// went away while add read it is read again once, so the checkpoint is made.
+test("a checkpoint's Git command runs at most three times, 75 ms apart, and a file gone during add is staged again",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-checkpoint-race-"));
+  const state={addCheckpoint:item=>({...item,createdAt:1}),checkpoints:()=>[],updateCheckpoint:()=>null};
+  const serviceFor=(onAdd,sleeps)=>new CheckpointService({
+    state,env:{...process.env,TREBELL_HOME:home},
+    gitInfoFn:async()=>({isGit:true,root:"/home/dev/shop"}),
+    sleepFn:async ms=>{sleeps.push(ms)},
+    gitFn:async(_cwd,args)=>{
+      const command=gitCommand(args);
+      if(command==="rev-parse")return {ok:true,stdout:"/home/dev/shop\n.git/index\nhead42\n",stderr:""};
+      if(command==="read-tree"||command==="update-ref")return {ok:true,stdout:"",stderr:""};
+      if(command==="add")return onAdd();
+      if(command==="write-tree")return {ok:true,stdout:"tree42\n",stderr:""};
+      if(command==="commit-tree")return {ok:true,stdout:"commit42\n",stderr:""};
+      throw new Error("unexpected git "+args.join(" "));
+    },
+  });
+  try{
+    let held=0;const heldSleeps=[];
+    const lockHeld=serviceFor(()=>{held++;throw new Error("fatal: Unable to create '/home/dev/shop/.git/index.lock': File exists.")},heldSleeps);
+    await assert.rejects(()=>lockHeld.create({cwd:"/home/dev/shop",threadId:"thread-held"}),{message:"fatal: Unable to create '/home/dev/shop/.git/index.lock': File exists."});
+    assert.equal(held,3);assert.deepEqual(heldSleeps,[75,75]);
+    let reads=0;const goneSleeps=[];
+    const fileGone=serviceFor(()=>{reads++;if(reads===1)throw new Error("error: open(\"notes/today.md\"): No such file or directory\nerror: unable to index file 'notes/today.md'\nfatal: adding files failed");return {ok:true,stdout:"",stderr:""}},goneSleeps);
+    const checkpoint=await fileGone.create({cwd:"/home/dev/shop",threadId:"thread-gone"});
+    assert.equal(checkpoint.supported,true);assert.equal(reads,2);assert.deepEqual(goneSleeps,[75]);
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("checkpoint capture retries a transient Git failure without restarting the whole capture",async()=>{
@@ -33,7 +164,7 @@ test("checkpoint capture retries a transient Git failure without restarting the 
     if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
     if(command==="add"){
       addAttempts++;
-      if(addAttempts===1)throw new Error("fatal: Unable to create '/repo/private-index.lock': File exists");
+      if(addAttempts===1)throw new Error("fatal: Unable to create '/repo/.git/trebell-checkpoint.index.lock': File exists."+GIT_LOCK_ADVICE);
       return {ok:true,stdout:"",stderr:""};
     }
     if(command==="write-tree")return {ok:true,stdout:"tree123\n",stderr:""};
@@ -101,12 +232,12 @@ test("checkpoint capture does not retry non-transient Git failures",async()=>{
       const command=gitCommand(args);
       if(command==="rev-parse")return {ok:true,stdout:"/repo\n.git/index\nhead123\n",stderr:""};
       if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
-      if(command==="add"){addAttempts++;throw new Error("fatal: index file corrupt")}
+      if(command==="add"){addAttempts++;throw new Error("fatal: unable to write new index file")}
       throw new Error("unexpected git "+args.join(" "));
     },
   });
   try{
-    await assert.rejects(()=>service.create({cwd:"/repo"}),/index file corrupt/);
+    await assert.rejects(()=>service.create({cwd:"/repo"}),/unable to write new index file/);
     assert.equal(addAttempts,1);
     assert.equal(sleepCalls,0);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
@@ -179,7 +310,7 @@ test("checkpoint objects and refs request fsync before state publication",async(
     assert.equal(published,true);
     for(const command of ["add","write-tree","commit-tree","update-ref"]){
       const args=calls.find(item=>gitCommand(item)===command);assert.ok(args,command+" was called");
-      assert.equal(args[0],"-c");assert.equal(args[1],"core.fsync=objects,reference");
+      assert.equal(args[0],"-c");assert.equal(args[1],"core.fsync=committed");
       assert.equal(args[2],"-c");assert.equal(args[3],"core.fsyncMethod=fsync");
       assert.equal(args[4],command);
     }
@@ -211,8 +342,9 @@ test("a repository with no git identity still gets its checkpoint, under Trebell
   const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-identity-"));
   const home=join(root,"home"),repo=join(root,"repo"),globalConfig=join(root,"gitconfig");
   try{
-    // useConfigOnly makes git refuse to guess an email from the host name, as it does on a host name with no domain.
-    await writeFile(globalConfig,"[user]\n\tuseConfigOnly = true\n");
+    // A global config with user.useConfigOnly, written by git itself: git then takes no name or email it was not given, as when
+    // it cannot make an email from a host name with no domain.
+    await git(root,["config","--file",globalConfig,"user.useConfigOnly","true"]);
     const parent=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(EMAIL|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL))$/.test(key)));
     const env={...parent,TREBELL_HOME:home,GIT_CONFIG_GLOBAL:globalConfig,GIT_CONFIG_NOSYSTEM:"1"};
     const repoGit=args=>git(repo,args,{env});
@@ -284,11 +416,16 @@ test("remote checkpoints capture, diff, and restore through the pinned environme
   assert.equal(calls.some(call=>/^[A-Za-z]:\\/.test(String(call.cwd||""))),false,"remote checkpoints must not fall back to local Windows paths");
 });
 
+// What a refused file restore says; the window shows it after "Could not restore the files, so the conversation was not changed: ".
+const THREAD_MOVED="This thread no longer works in the folder its checkpoint was taken in.";
+const NOT_OWN_WORKTREE="Files go back only in a worktree Trebell made for the thread, and this folder is not one. Go back in the conversation only, and leave the files as they are.";
+const FOLDER_SHARED="Another thread also works in this folder, so putting the files back could undo its changes. Go back in the conversation only, and leave the files as they are.";
+
 test("remote checkpoint restore refuses shared workspaces just like local restore",async()=>{
   const checkpoint={id:"remote-shared",threadId:"thread-remote",root:"/srv/repo",commit:"commit123",environmentId:"ssh-1"};
   const state={checkpoints:()=>[checkpoint],threadMeta:()=>({cwd:"/srv/repo",environmentId:"ssh-1"}),projects:()=>[{path:"/srv/repo",environmentId:"ssh-1"}],listThreadMeta:()=>({"thread-remote":{cwd:"/srv/repo",environmentId:"ssh-1"}})};
   const environments={get:()=>({id:"ssh-1",type:"ssh"}),executeArgv:async()=>{throw new Error("remote command should not run before isolation is proven")}};
-  await assert.rejects(()=>new CheckpointService({state,environments}).restore("remote-shared",{threadId:"thread-remote"}),/isolated Trebell worktree/i);
+  await assert.rejects(()=>new CheckpointService({state,environments}).restore("remote-shared",{threadId:"thread-remote"}),{message:NOT_OWN_WORKTREE});
 });
 
 test("remote checkpoint capture skips an unborn nested repository instead of abandoning the checkpoint",async()=>{
@@ -336,13 +473,13 @@ test("file rewind restores only an isolated managed worktree and refuses sibling
 
     await writeFile(join(worktree,"file.txt"),"sibling work\n");
     state.updateThreadMeta("thread-sibling",{cwd:worktree,archived:true});
-    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/another thread|isolated Trebell worktree/i);
+    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),{message:FOLDER_SHARED});
     assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"sibling work\n");
 
     state.updateThreadMeta("thread-sibling",{deletedAt:Date.now()});
     const nested=join(worktree,"nested-owner");await mkdir(nested,{recursive:true});
     state.updateThreadMeta("thread-nested",{cwd:nested,archived:false});
-    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/another thread|isolated Trebell worktree/i);
+    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),{message:FOLDER_SHARED});
     assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"sibling work\n");
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
@@ -356,8 +493,63 @@ test("file rewind refuses ordinary shared project directories and checkpoint cro
     state.touchProject(repo,{});state.updateThreadMeta("thread-owner",{cwd:repo});
     const service=new CheckpointService({state,env});const checkpoint=await service.create({cwd:repo,threadId:"thread-owner"});
     await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-other"}),/thread that created/i);
-    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/isolated Trebell worktree/i);
+    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),{message:NOT_OWN_WORKTREE});
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// Each refusal names its own reason, and a refused restore leaves the files as the turn left them. A thread that was deleted, or
+// whose folder is gone, works nowhere any more and does not hold a restore back.
+test("a refused file restore says why: the thread moved, another thread works in a folder holding the worktree, or the worktree was cleaned up",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-refusals-"));
+  const home=join(root,"home"),repo=join(root,"repo"),worktree=join(root,"worktree"),elsewhere=join(root,"elsewhere");
+  try{
+    await mkdir(repo,{recursive:true});await mkdir(elsewhere,{recursive:true});
+    await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+    await git(repo,["checkout","-b","main"]);await writeFile(join(repo,"file.txt"),"base\n");await git(repo,["add","."]);await git(repo,["commit","-m","Base"]);
+    await git(repo,["branch","feature"]);await git(repo,["worktree","add",worktree,"feature"]);
+    const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
+    const kept={root:repo,branch:"feature",baseBranch:"main",submodules:"none",createdAt:Date.now()};
+    state.touchProject(worktree,{managedWorktree:kept});state.updateThreadMeta("thread-owner",{cwd:worktree});
+    const service=new CheckpointService({state,env});
+    await writeFile(join(worktree,"file.txt"),"checkpoint\n");
+    const checkpoint=await service.create({cwd:worktree,threadId:"thread-owner"});
+    await writeFile(join(worktree,"file.txt"),"turn work\n");
+    const refused=async message=>{
+      await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),{message});
+      assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"turn work\n","a refused restore leaves the files as they are");
+    };
+    state.updateThreadMeta("thread-owner",{cwd:elsewhere});await refused(THREAD_MOVED);
+    state.updateThreadMeta("thread-owner",{cwd:worktree});
+    state.updateThreadMeta("thread-around",{cwd:root});await refused(FOLDER_SHARED);
+    state.updateThreadMeta("thread-around",{deletedAt:Date.now()});
+    state.updateThreadMeta("thread-gone",{cwd:join(await realpath(worktree),"removed-folder")});
+    state.touchProject(worktree,{managedWorktree:{...kept,cleanedAt:Date.now()}});await refused(NOT_OWN_WORKTREE);
+    state.touchProject(worktree,{managedWorktree:kept});
+    await service.restore(checkpoint.id,{threadId:"thread-owner"});
+    assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"checkpoint\n","a deleted thread and one whose folder is gone do not hold the restore back");
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// Over an environment the same reasons, told apart by the environment too: a thread, a kept worktree or another thread counts only
+// on the checkpoint's own environment. Nothing runs there before the checks pass, and once they do, the restore runs in the folder
+// as the checks wrote it.
+test("over an environment a refused file restore says why before any command runs, and only threads and worktrees on that environment count",async()=>{
+  const checkpoint={id:"remote-reasons",threadId:"thread-remote",root:"/srv/repo/",commit:"commit123",environmentId:"ssh-1"};
+  const kept={path:"/srv/repo",environmentId:"ssh-1",managedWorktree:{root:"/srv/main",createdAt:1,cleanedAt:null}};
+  const owner={cwd:"/srv/repo",environmentId:"ssh-1"};
+  const restoreWith=async({threads,projects=[kept]})=>{
+    const calls=[],state={checkpoints:()=>[checkpoint],threadMeta:id=>threads[id],projects:()=>projects,listThreadMeta:()=>threads};
+    const environments={get:id=>({id,type:"ssh"}),executeArgv:async(_id,request)=>{calls.push(request);throw new Error("the restore went on to its first remote command")}};
+    const error=await new CheckpointService({state,environments}).restore(checkpoint.id,{threadId:"thread-remote"}).then(()=>null,failure=>failure);
+    return {message:error?.message,folder:calls[0]?.cwd??null};
+  };
+  assert.deepEqual(await restoreWith({threads:{"thread-remote":{cwd:"/srv/repo",environmentId:"ssh-2"}}}),{message:THREAD_MOVED,folder:null});
+  assert.deepEqual(await restoreWith({threads:{"thread-remote":{cwd:"/srv/other",environmentId:"ssh-1"}}}),{message:THREAD_MOVED,folder:null});
+  assert.deepEqual(await restoreWith({threads:{"thread-remote":owner},projects:[{...kept,environmentId:"ssh-2"}]}),{message:NOT_OWN_WORKTREE,folder:null});
+  assert.deepEqual(await restoreWith({threads:{"thread-remote":owner},projects:[{...kept,managedWorktree:{...kept.managedWorktree,cleanedAt:2}}]}),{message:NOT_OWN_WORKTREE,folder:null});
+  assert.deepEqual(await restoreWith({threads:{"thread-remote":owner,"thread-around":{cwd:"/srv",environmentId:"ssh-1"}}}),{message:FOLDER_SHARED,folder:null});
+  assert.deepEqual(await restoreWith({threads:{"thread-remote":owner,"thread-inside":{cwd:"/srv/repo/packages/a",environmentId:"ssh-1"}}}),{message:FOLDER_SHARED,folder:null});
+  assert.deepEqual(await restoreWith({threads:{"thread-remote":{cwd:"\\srv\\repo\\",environmentId:"ssh-1"},"thread-elsewhere":{cwd:"/srv/repo",environmentId:"ssh-2"},"thread-next-door":{cwd:"/srv/repo2",environmentId:"ssh-1"}}}),{message:"the restore went on to its first remote command",folder:"/srv/repo"});
 });
 
 // A managed worktree owned by one thread, its checkpoint, and then work done after it: a tracked file changed, one deleted, one

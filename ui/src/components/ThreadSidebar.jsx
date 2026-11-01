@@ -120,7 +120,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
           <button disabled={!canMoveUp} title={orderHint} onClick={()=>runMenuAction(()=>onMove(thread,-1))}>Move up</button>
           <button disabled={!canMoveDown} title={orderHint} onClick={()=>runMenuAction(()=>onMove(thread,1))}>Move down</button>
         </>}
-        <button onClick={()=>runMenuAction(()=>copy(references.threadId))}>Copy thread ID</button>
+        <button onClick={()=>runMenuAction(()=>copy(references.threadId))}>Copy ID</button>
         {references.branch&&<button onClick={()=>runMenuAction(()=>copy(references.branch))}>Copy branch</button>}
         {references.path&&!meta?.projectless&&<button onClick={()=>runMenuAction(()=>copy(references.path))}>Copy path</button>}
         {!foreignRuntime&&<><button onClick={()=>runMenuAction(()=>onAction(thread,"archive"))}>Archive</button><button className="danger" onClick={()=>runMenuAction(()=>onAction(thread,"delete"))}>Delete</button></>}

@@ -66,7 +66,7 @@ test("the Thinking picker on GPT-6 Luna shows Max with nothing saved, offers no 
   await expect(page.getByTestId("model-picker")).toContainText("GPT-6 Luna");
   const thinking=page.getByTestId("reasoning-effort-picker");
   await expect(thinking).toHaveValue("max");
-  await expect(thinking.locator("option")).toHaveText(["Thinking · None","Thinking · Low","Thinking · Medium","Thinking · High","Thinking · Extra High","Thinking · Max"]);
+  await expect(thinking.locator("option")).toHaveText(["Thinking · None","Thinking · Low","Thinking · Medium","Thinking · High","Thinking · Extra high","Thinking · Max"]);
   await expect(thinking).toHaveAttribute("title",/Default: Max, the level Trebell Native was measured with/);
   const saved=async()=>(await (await request.get("/api/settings")).json()).modelReasoningEfforts?.["native:openai:gpt-6-luna"]??null;
   expect(await saved()).toBe(null);

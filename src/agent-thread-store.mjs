@@ -63,10 +63,14 @@ function persistedItem(item,environment){
   return next;
 }
 
-// A thread's title from its first message: one line of at most 50 characters.
+// A thread's title from its first message: one line of at most THREAD_TITLE_CHARS characters, then "..." when the message goes on.
+// Trebell's own 80, a terminal line's width: room for a request's first sentence where a whole title shows (thread history, the
+// command palette, a notification), while the sidebar clips what does not fit its width. A thread is titled once, when it has no
+// title, so a title given before (50 characters in 2.1.2) is kept as it was.
+const THREAD_TITLE_CHARS=80;
 export function threadTitleFromText(value){
   const message=String(value??"").trim().replace(/\s+/g," ");
-  return message?(message.length<=50?message:message.slice(0,50)+"..."):null;
+  return message?(message.length<=THREAD_TITLE_CHARS?message:message.slice(0,THREAD_TITLE_CHARS)+"..."):null;
 }
 
 export class AgentThreadStore{

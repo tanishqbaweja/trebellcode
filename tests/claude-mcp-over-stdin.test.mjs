@@ -16,7 +16,8 @@ import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
 import { claudeResult, fakeClaudeChildren, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
 
 const SOURCE="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 90 seconds. Send the message again; if it keeps timing out, check the MCP servers in Settings.";
+// Re-pinned note: Claude Code has Trebell's own 2 minutes now to answer the registration (2.1.2 gave it 90 s).
+const TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 2 minutes. Send the message again; if it keeps timing out, check the MCP servers in Settings.";
 const TOKEN="workspace-token-7f3a91";
 const WORKSPACE={type:"stdio",command:"workspace-mcp",args:["--stdio"],env:{WORKSPACE_TOKEN:TOKEN}};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -117,8 +118,8 @@ test("a resumed conversation whose MCP registration stalls opens once more after
   await claude.start({providerSessionId:SOURCE});
   const prompting=claude.prompt([{type:"text",text:"Continue"}]);
   await until(()=>calls[0]?.log.length===1);
-  t.mock.timers.tick(89_999);await tick();
-  assert.equal(calls.length,1,"Claude Code has 90 seconds to connect them");
+  t.mock.timers.tick(119_999);await tick();
+  assert.equal(calls.length,1,"Claude Code has 2 minutes to connect them");
   t.mock.timers.tick(1);
   await until(()=>calls.length===2);
   assert.equal(calls[0].closed,true,"the stalled process is closed first");
@@ -138,7 +139,7 @@ test("a stalled MCP registration on a new conversation, or a second stall, fails
   await fresh.start();
   const first=fresh.prompt([{type:"text",text:"hi"}]).then(()=>null,error=>error);
   await until(()=>calls[0]?.log.length===1);
-  t.mock.timers.tick(90_000);
+  t.mock.timers.tick(120_000);
   const failure=await first;
   assert.equal(failure?.message,TIMED_OUT);
   assert.equal(calls.length,1);assert.equal(calls[0].closed,true);assert.equal(calls[0].inputs.length,0);
@@ -149,9 +150,9 @@ test("a stalled MCP registration on a new conversation, or a second stall, fails
   await resumed.start({providerSessionId:SOURCE});
   const second=resumed.prompt([{type:"text",text:"Continue"}]).then(()=>null,error=>error);
   await until(()=>resumedCalls[0]?.log.length===1);
-  t.mock.timers.tick(90_000);
+  t.mock.timers.tick(120_000);
   await until(()=>resumedCalls[1]?.log.length===1);
-  t.mock.timers.tick(90_000);
+  t.mock.timers.tick(120_000);
   assert.equal((await second)?.message,TIMED_OUT);
   assert.equal(resumedCalls.length,2);assert.ok(resumedCalls.every(call=>call.closed&&!call.inputs.length));
   await resumed.close();
@@ -170,7 +171,7 @@ test("a stalled resumed conversation opens again only once its stalled Claude Co
     const claude=resumedSession(sdk,spawnChild);await claude.start({providerSessionId:SOURCE});
     const prompting=claude.prompt([{type:"text",text:"Continue"}]);
     await until(()=>calls[0]?.log.length===1);
-    t.mock.timers.tick(90_000);
+    t.mock.timers.tick(120_000);
     await until(()=>children[0].signals.length>0);
     assert.deepEqual(children[0].signals,["SIGKILL"],"killed once the close did not end it");
     await until(()=>calls.length===2);
@@ -184,7 +185,7 @@ test("a stalled resumed conversation opens again only once its stalled Claude Co
     const claude=resumedSession(sdk,spawnChild);await claude.start({providerSessionId:SOURCE});
     const prompting=claude.prompt([{type:"text",text:"Continue"}]).then(()=>null,error=>error);
     await until(()=>calls[0]?.log.length===1);
-    t.mock.timers.tick(90_000);
+    t.mock.timers.tick(120_000);
     await until(()=>children[0].signals.length>0);
     t.mock.timers.tick(9_999);await tick();
     assert.equal(calls.length,1,"it has 10 seconds to exit");
@@ -211,7 +212,7 @@ test("a stalled resumed conversation on a Claude Code started through spawnProce
   const claude=resumedElsewhere(sdk,spawnProcess);await claude.start({providerSessionId:SOURCE});
   const prompting=claude.prompt([{type:"text",text:"Continue"}]);
   await until(()=>calls[0]?.log.length===1);
-  t.mock.timers.tick(90_000);
+  t.mock.timers.tick(120_000);
   await until(()=>calls.length===2);
   assert.deepEqual(firstAtStart[1],{exitCode:null,signalCode:"SIGKILL"},"the next Claude Code started once the stalled one had exited, killed");
   assert.deepEqual(fake.children[0].signals,["SIGKILL"],"killed once the close did not end it");
@@ -225,7 +226,7 @@ test("a stalled resumed conversation on a Claude Code started through spawnProce
   const claude=resumedElsewhere(sdk,spawnProcess);await claude.start({providerSessionId:SOURCE});
   const prompting=claude.prompt([{type:"text",text:"Continue"}]).then(result=>result,error=>error);
   await until(()=>calls[0]?.log.length===1);
-  t.mock.timers.tick(90_000);
+  t.mock.timers.tick(120_000);
   await until(()=>calls.length>1||fake.children[0].signals.length>0);
   assert.equal(calls.length,1,"no second Claude Code while the stalled one runs");
   assert.deepEqual([fake.children[0].exitCode,fake.children[0].signalCode],[null,null],"it still runs");
@@ -254,7 +255,7 @@ test("Claude Code started on this machine runs hidden, and a conversation it say
   await claude.close();
 });
 
-// Stop pressed once the 90 s are up, while the stalled process is still closing, finds no process and no turn of the prompt: the
+// Stop pressed once the 2 minutes are up, while the stalled process is still closing, finds no process and no turn of the prompt: the
 // opening is marked, so no other Claude Code opens and the prompt, which never reached Claude Code, ends cancelled.
 for(const resumed of [true,false])test(`Stop while a stalled MCP registration's process closes opens no other process and ends the prompt cancelled (${resumed?"a resumed":"a new"} conversation)`,async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
@@ -267,7 +268,7 @@ for(const resumed of [true,false])test(`Stop while a stalled MCP registration's 
     await claude.start(resumed?{providerSessionId:SOURCE}:{});
     const prompting=claude.prompt([{type:"text",text:"Continue"}]).then(result=>result,error=>error);
     await until(()=>calls[0]?.log.length===1);
-    t.mock.timers.tick(90_000);
+    t.mock.timers.tick(120_000);
     await until(()=>calls[0].closed);
     await claude.cancel();
     t.mock.timers.tick(5_000);

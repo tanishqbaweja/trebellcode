@@ -3,7 +3,7 @@ import { api } from "../api.js";
 import { asSentence } from "../inspector-labels.js";
 
 function deliveryLabel(packet){
-  if(packet?.delivery==="additionalContext")return "Codex additional context";
+  if(packet?.delivery==="additionalContext")return "Extra context sent to Codex";
   if(packet?.delivery==="promptPreamble")return "Runtime prompt preamble";
   return "Not injected yet";
 }

@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import spawn from "cross-spawn";
-import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./acp-client.mjs";
+import { agentLogExcerpt, extendAgentLog } from "./agent-log.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
@@ -9,14 +9,15 @@ import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 // one's own transport. Trebell owns the process, so it has its pid and its exit: on Windows muse.cmd runs cmd.exe, which runs
 // PowerShell with .muse-launcher.ps1, which runs the 400 MB muse-bin-<version>.exe, and the whole tree is stopped on close.
 
-export const MUSE_STARTUP_TIMEOUT_MS=20_000;
-export const MUSE_SHUTDOWN_TIMEOUT_MS=10_000;
+// The two waits of a host, each the default of one of its options: answerMs is how long a host Trebell has spawned may take to
+// answer initialize before the start gives up (startupTimeoutMs), and exitMs how long a host whose input has ended may take to
+// exit before its process tree is stopped (shutdownTimeoutMs, the name Meta's SDK gives the same wait).
+export const MUSE_HOST_BOUNDS=Object.freeze({answerMs:20_000,exitMs:10_000});
 // How long the frames Muse wrote last have to arrive once its process has exited, while a tool it started may hold its output.
 export const MUSE_EXIT_DRAIN_MS=1_000;
 const MUSE_SIGTERM_GRACE_MS=2_000;
 const MUSE_GROUP_POLL_MS=50;
 const MUSE_KILL_WAIT_MS=3_000;
-const MUSE_SCHEMA_VERSION=1;
 
 // The SDK loads with the first Muse host, never with the server (budget B25); a failed load is tried again by the next host.
 let museSdk=null;
@@ -27,61 +28,130 @@ export function loadMuseSdk(){
   });
 }
 
-// The flags a host keeps for its lifetime: Read only runs without Muse's shell and file writes, and without
-// trusting the workspace (its skills and rules); every other mode trusts the workspace, and Full access also runs Muse's shell
-// without its sandbox. The read-only probe host (model/list) also leaves the session log off.
-export function museServeArgs(mode="supervised",{sessionLog=true}={}){
-  const value=normalizePermissionMode(mode);
-  return ["serve",...(value==="read-only"?["--disable-shell","--disable-write"]:["--trust-workspace",...(value==="full"?["--disable-sandbox"]:[])]),...(sessionLog?[]:["--no-session-log"])];
+// What `muse serve` is allowed at each of Trebell's access levels, for the whole life of a host. Read only keeps Muse to
+// reading: no shell, no file writes and no trust in the workspace (its own skills and rules). Every other level trusts the
+// workspace, and Full access also lets Muse's shell run outside its sandbox.
+function museServeAllowance(mode){
+  const access=normalizePermissionMode(mode),readOnly=access==="read-only";
+  return {shell:!readOnly,write:!readOnly,trustWorkspace:!readOnly,sandbox:access!=="full"};
 }
-// The permission profile and approval mode a session starts or resumes in, by Trebell's mode, asked for explicitly: without one
-// Muse's own default may be Auto-review, where its AI reviewer decides. Full
-// access lets everything run; Auto is Muse's Auto-review, whose reviewer clears what it can and asks the person the rest, as
-// Cursor's --auto-review; Supervised, Auto-accept edits and Read only ask (Muse lets file reads and edits in the workspace through
-// in every mode, and a Read only host has no shell or writes to ask about).
-export function museSessionPolicy(mode="supervised"){
-  const value=normalizePermissionMode(mode);
-  if(value==="full")return {permissionProfile:":unrestricted",approvalMode:"allowAll"};
-  return {permissionProfile:value==="auto"?":auto-review":":ask-me",approvalMode:"promptUnmatched"};
+// Each flag of `muse serve` beside the allowance that calls for it, in the order a host is given them: launch plans are
+// compared as JSON (needsRelaunch), so the order never varies.
+const SERVE_FLAGS=Object.freeze([
+  ["--disable-shell",allowed=>!allowed.shell],
+  ["--disable-write",allowed=>!allowed.write],
+  ["--trust-workspace",allowed=>allowed.trustWorkspace],
+  ["--disable-sandbox",allowed=>!allowed.sandbox],
+  ["--no-session-log",allowed=>!allowed.sessionLog],
+]);
+// The arguments a host starts with, a new array each time. The session log stays on unless options.sessionLog is given and
+// false (the read-only host that lists the models turns it off).
+export function museServeArgs(mode,options={}){
+  const sessionLog=options?.sessionLog===undefined||Boolean(options.sessionLog);
+  const allowed={...museServeAllowance(mode),sessionLog};
+  return ["serve",...SERVE_FLAGS.filter(([,wanted])=>wanted(allowed)).map(([flag])=>flag)];
+}
+// A session's permission profile and approval mode at each of Trebell's access levels, as [profile, mode]. Muse's protocol lets
+// a client pick among the profiles and modes its host already defines, never make one, and a session/start or session/resume that
+// names neither runs under the host's own default, which can hand approvals to Muse's reviewer; so Trebell always names both.
+// Full access runs every tool call; Auto takes Muse's auto-review profile, whose reviewer clears what it can and leaves the rest to
+// the person, like Cursor's --auto-review. A level missing here (Supervised, Auto-accept edits, Read only, or one Trebell does not
+// know) has Muse ask the person about anything no rule of its own allows. Muse lets reads and edits inside the workspace through
+// at every level, and a Read only host has no shell or writes to ask about.
+const SETTINGS_BY_ACCESS=new Map([
+  ["full",[":unrestricted","allowAll"]],
+  ["auto",[":auto-review","promptUnmatched"]],
+]);
+const ASK_THE_PERSON=[":ask-me","promptUnmatched"];
+// The settings for a level by any name Trebell's permission policy knows it by (no level at all is Supervised), as a new object.
+export function museSessionSettings(mode="supervised"){
+  const [permissionProfile,approvalMode]=SETTINGS_BY_ACCESS.get(normalizePermissionMode(mode))??ASK_THE_PERSON;
+  return {permissionProfile,approvalMode};
 }
 // Everything a mode fixes when the host launches: a mode with another plan needs a new host (needsRelaunch).
-export function museLaunchPlan(mode="supervised"){return {args:museServeArgs(mode),...museSessionPolicy(mode)}}
+export function museLaunchPlan(mode="supervised"){return {args:museServeArgs(mode),...museSessionSettings(mode)}}
 
-// The keys and header strings Muse Code reads in place of the person's own `muse login` (its binary: "META_API_KEY always takes
-// priority over the account login"), or to reach another provider: none reaches it, matched by name in any case and never read,
-// except META_API_KEY for a profile set to an API key (authMethod "api-key", Settings' choice), whose launch carries the Meta key.
-const MUSE_KEY_NAMES=new Set(["META_API_KEY","MODEL_API_KEY","OPENAI_API_KEY","ANTHROPIC_API_KEY","OPENROUTER_API_KEY","MUSE_CUSTOM_HEADERS"]);
-// The environment Muse Code runs with: MUSE_NO_AUTO_UPDATE=1, since Meta's launcher may otherwise
-// update itself in the foreground, or start a hidden PowerShell updater, each time Trebell starts Muse Code; and none of the keys
-// above on Sign in, so a key set for something else (Native on Meta's API) never bills the person per token in place of their
-// subscription.
-export function museEnvironment(env=process.env,{authMethod="sign-in"}={}){
-  const out={},onKey=authMethod==="api-key";
-  for(const name of Object.keys(env||{})){const upper=name.toUpperCase();if(!MUSE_KEY_NAMES.has(upper)||(onKey&&upper==="META_API_KEY"))out[name]=env[name]}
-  out.MUSE_NO_AUTO_UPDATE="1";
-  return out;
+// Variables that would give Muse Code a key or extra request headers in place of the person's own `muse login` (its binary:
+// "META_API_KEY always takes priority over the account login"), or send it to another provider. Held back from every host, by
+// their upper-case names, as Windows compares names.
+const MUSE_KEY_VARIABLES=new Set(["META_API_KEY","MODEL_API_KEY","OPENAI_API_KEY","ANTHROPIC_API_KEY","OPENROUTER_API_KEY","MUSE_CUSTOM_HEADERS"]);
+// The one of them a profile set to its API key (authMethod "api-key", Settings' choice) passes on: the Meta key it signs in with.
+const PROFILE_KEY_VARIABLE="META_API_KEY";
+// Turns off the self-update of Meta's launcher, which may otherwise update itself in the foreground, or start a hidden PowerShell
+// updater, each time Trebell starts Muse Code (Settings' Update runs Muse with its own environment, muse-maintenance.mjs).
+const NO_SELF_UPDATE=Object.freeze({MUSE_NO_AUTO_UPDATE:"1"});
+
+// Whether a variable is kept from the host: one of the key variables, unless it is the profile key and the profile passes it on.
+function heldBack(name,passesProfileKey){
+  const upper=name.toUpperCase();
+  return MUSE_KEY_VARIABLES.has(upper)&&!(passesProfileKey&&upper===PROFILE_KEY_VARIABLE);
+}
+// The environment a Muse Code host runs with: the given one (the process's own when none is given), less the variables held
+// back, whose values are never read, and with the self-update off whatever it said. So a key set for something else (Native on
+// Meta's API) never bills the person per token in place of their subscription. The given object stays as it was.
+export function museHostEnvironment(source=process.env,{authMethod="sign-in"}={}){
+  const passesProfileKey=authMethod==="api-key";
+  const passed=Object.keys(source??{}).filter(name=>!heldBack(name,passesProfileKey));
+  return {...Object.fromEntries(passed.map(name=>[name,source[name]])),...NO_SELF_UPDATE};
 }
 // What a host started without an environment runs with: what a Muse Code profile gets of Trebell's own (runtime-environment.mjs),
 // so no other harness's key reaches Muse either.
 function inheritedMuseEnvironment(){return buildRuntimeEnvironment("muse",{parent:process.env})}
 
-export function museInitializeParams(version="0.0.0",requestedCapabilities=["sessionMcp"]){
-  return {clientInfo:{name:"trebell_code",title:"Trebell Code",version:String(version||"0.0.0")},capabilities:{requestedCapabilities:[...requestedCapabilities]}};
+// Who Trebell is to a host (msp.d.ts ClientInfo: a machine name of [a-z0-9_], a display name, then the version).
+const TREBELL_CLIENT=Object.freeze({name:"trebell_code",title:"Trebell Code"});
+// The initialize request: Trebell Code at the app's version (0.0.0 when it has none), asking for a copy of the capabilities named.
+function initializeRequest(appVersion,capabilities){
+  return {clientInfo:{...TREBELL_CLIENT,version:String(appVersion||"0.0.0")},capabilities:{requestedCapabilities:Array.from(capabilities)}};
 }
 
-// A Windows folder in the verbatim form turn/start's workspaceRoots takes: \\?\C:\repo, or \\?\UNC\server\share\repo for a share.
-export function museVerbatimPath(path){
-  const value=String(path||"");
-  if(value.startsWith("\\\\?\\"))return value;
-  return value.startsWith("\\\\")?"\\\\?\\UNC\\"+value.slice(2):"\\\\?\\"+value;
+// The wire envelope version Trebell's frames are written for (msp.d.ts SchemaInfo.version: 1 in v1, and meant to stay 1).
+const MSP_ENVELOPE_VERSION=1;
+// What Trebell makes of the schema pair in a host's initialize answer. Another envelope version, or none, is a refusal: Trebell
+// cannot read that host's frames. Otherwise the answer stands, with a warning or null. The fingerprint names the stable surface
+// the host serves, and one other than the SDK's pin only warns, since that surface grows by additions (Meta's SDK: advisory,
+// never a connection failure); compare is the SDK's checkServedFingerprint. A host that names no fingerprint gets Trebell's own
+// warning.
+export function museSchemaVerdict(answer,compare){
+  const schema=answer?.schema,version=schema?.version;
+  if(version!==MSP_ENVELOPE_VERSION){
+    const given=version==null?"named no session protocol version":`answered with session protocol version ${JSON.stringify(version)}`;
+    return {refusal:`Muse Code ${given}, but Trebell Code reads only version ${MSP_ENVELOPE_VERSION}. Install a Muse Code release that serves version ${MSP_ENVELOPE_VERSION}.`};
+  }
+  if(typeof schema.fingerprint!=="string")return {warning:"Muse Code did not name its protocol schema fingerprint, so Trebell could not check it against Meta's SDK; the session goes on."};
+  return {warning:compare(schema.fingerprint)?.message??null};
 }
 
-// The folder as Muse Code takes it: links resolved and spelled as the disk spells it (native realpath; Muse refuses a root whose
-// case differs), and for turn/start on Windows in the verbatim form, the only one Muse 1.4.13 accepts there ("expected a canonical
-// path"). The process itself starts in the plain folder: cmd.exe cannot start in a verbatim one.
+// How a Windows path starts in the verbatim form (\\?\), in that form for a share (\\?\UNC\), and as a share is usually
+// written (\\server\share).
+const VERBATIM_PREFIX="\\\\?\\",VERBATIM_SHARE_PREFIX="\\\\?\\UNC\\",SHARE_PREFIX="\\\\";
+
+// A Windows path in the verbatim form, the only one Muse 1.4.13 takes in turn/start's workspaceRoots ("expected a canonical
+// path"): D:\code\app is \\?\D:\code\app, the share \\fileserver\team\app is \\?\UNC\fileserver\team\app, and a path that
+// is verbatim already stays as it is. Nothing else in the path changes.
+export function verbatimWindowsPath(path){
+  const text=path?String(path):"";
+  if(text.startsWith(VERBATIM_PREFIX))return text;
+  if(text.startsWith(SHARE_PREFIX))return VERBATIM_SHARE_PREFIX+text.slice(SHARE_PREFIX.length);
+  return VERBATIM_PREFIX+text;
+}
+
+// A folder with its links followed and, on Windows, each part spelled as the disk spells it (the native realpath: Muse
+// refuses a root whose letter case differs). A folder that cannot be resolved, whether its resolver rejects or throws, is
+// taken as given, with Windows separators on Windows.
+async function resolvedFolder(folder,{windows,resolveReal}){
+  try{return await resolveReal(folder)}
+  catch{return windows?folder.replaceAll("/","\\"):folder}
+}
+
+// The folder Muse Code is given. On Windows, turn/start's roots take the verbatim form (verbatim, the default) and
+// session/start's root the plain one; elsewhere the folder is the resolved one either way. The host's process itself
+// starts in the plain folder: cmd.exe cannot start in a verbatim one.
 export async function museWorkspaceRoot(path,{platform=process.platform,verbatim=true,resolveReal=realpath}={}){
-  const canonical=await resolveReal(String(path)).catch(()=>platform==="win32"?String(path).replaceAll("/","\\"):String(path));
-  return platform==="win32"&&verbatim?museVerbatimPath(canonical):canonical;
+  const windows=platform==="win32";
+  const folder=await resolvedFolder(String(path),{windows,resolveReal});
+  if(windows&&verbatim)return verbatimWindowsPath(folder);
+  return folder;
 }
 
 // How Muse Code's host ended, in Trebell's words, by the exit codes Meta's SDK names (classifyExit), with the last thing it wrote.
@@ -93,7 +163,7 @@ const EXIT_REASONS=Object.freeze({
 });
 export function museExitMessage(exit={},stderrTail="",{command="muse",environment=process.env}={}){
   if(exit?.error)return `Could not start Muse Code '${command}': ${exit.error.message||exit.error}`;
-  const line=sanitizeAcpStderrExcerpt(stderrTail,environment).split(/\r?\n/).map(text=>text.trim()).filter(Boolean).at(-1)||"";
+  const line=agentLogExcerpt(stderrTail,environment).split(/\r?\n/).map(text=>text.trim()).filter(Boolean).at(-1)||"";
   const code=exit?.code,reason=Number.isInteger(code)?EXIT_REASONS[code]:null;
   const base=reason?`${reason} (exit code ${code})`:`Muse Code exited unexpectedly (${Number.isInteger(code)?`code ${code}`:`signal ${exit?.signal||"unknown"}`})`;
   return line?`${base}: ${line}`:`${base}.`;
@@ -132,11 +202,11 @@ export async function stopMuseProcessTree(child,{platform=process.platform,grace
 }
 
 export class MuseHost{
-  // env: the profile's (AgentRuntimeManager.childEnv), authMethod how the profile signs in (museEnvironment).
-  constructor({command="muse",args=museServeArgs(),cwd=process.cwd(),env=null,authMethod="sign-in",spawnFn=spawn,platform=process.platform,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,stopTree=stopMuseProcessTree,onWarning=null}={}){
-    this.command=command;this.args=[...args];this.cwd=cwd;this.env=museEnvironment(env??inheritedMuseEnvironment(),{authMethod});this.spawnFn=spawnFn;this.platform=platform;
+  // env: the profile's (AgentRuntimeManager.childEnv), authMethod how the profile signs in (museHostEnvironment).
+  constructor({command="muse",args=museServeArgs(),cwd=process.cwd(),env=null,authMethod="sign-in",spawnFn=spawn,platform=process.platform,startupTimeoutMs=MUSE_HOST_BOUNDS.answerMs,shutdownTimeoutMs=MUSE_HOST_BOUNDS.exitMs,stopTree=stopMuseProcessTree,onWarning=null}={}){
+    this.command=command;this.args=[...args];this.cwd=cwd;this.env=museHostEnvironment(env??inheritedMuseEnvironment(),{authMethod});this.spawnFn=spawnFn;this.platform=platform;
     this.startupTimeoutMs=startupTimeoutMs;this.shutdownTimeoutMs=shutdownTimeoutMs;this.stopTree=stopTree;this.onWarning=onWarning;
-    this.sdk=null;this.child=null;this.connection=null;this.initializeResult=null;this.fingerprintWarning=null;
+    this.sdk=null;this.child=null;this.connection=null;this.initializeResult=null;this.schemaWarning=null;
     this.stderrTail="";this.exit=null;this.closing=false;this.#closing=null;
     let settle;this.exited=new Promise(resolve=>{settle=resolve});this.#settleExit=settle;
   }
@@ -145,9 +215,10 @@ export class MuseHost{
   get pid(){return this.child?.pid??null}
   exitMessage(exit=this.exit){return museExitMessage(exit||{},this.stderrTail,{command:this.command,environment:this.env})}
 
-  // Starts the host and opens the connection: initialize (Trebell Code, with session MCP servers), a schema envelope of version 1
-  // or a refusal, a fingerprint other than the SDK's logged and let through (additive evolution), then initialized; all within
-  // startupTimeoutMs. A start that fails stops what it started.
+  // Starts the host and opens its connection. Within startupTimeoutMs of the spawn the host must answer initialize, which names
+  // Trebell Code and the capabilities asked for (a session asks for sessionMcp); museSchemaVerdict then refuses the answer, which
+  // fails the start, or accepts it, handing any warning to onWarning, and the initialized notification follows. A start that fails
+  // closes what it started. Resolves to the host.
   async start({version="0.0.0",requestedCapabilities=["sessionMcp"],loadSdk=loadMuseSdk}={}){
     this.sdk=await loadSdk();
     if(this.closing)throw new Error("Muse Code was stopped while it started.");
@@ -155,19 +226,12 @@ export class MuseHost{
     try{
       this.#spawn();
       this.connection=new this.sdk.Connection(this.#transport());
-      const answer=await Promise.race([
-        this.connection.request("initialize",museInitializeParams(version,requestedCapabilities)).then(result=>({result}),error=>({error})),
-        this.exited.then(exit=>({exit})),
-        startup.promise.then(()=>({timeout:true})),
-      ]);
-      if(answer.timeout)throw new Error(`Muse Code did not start: it did not answer within ${Math.round(this.startupTimeoutMs/1000)} seconds.`);
-      if(answer.exit)throw new Error(this.exitMessage(answer.exit));
-      if(answer.error)throw answer.error;
-      const result=answer.result;
-      if(result?.schema?.version!==MUSE_SCHEMA_VERSION)throw new Error(`This Muse Code build speaks session protocol version ${result?.schema?.version??"(none)"}, and Trebell speaks version ${MUSE_SCHEMA_VERSION}. Use a Muse Code release that Trebell supports.`);
-      this.fingerprintWarning=typeof result.schema.fingerprint==="string"?this.sdk.checkServedFingerprint(result.schema.fingerprint)||null:{message:"Muse Code sent no schema fingerprint."};
-      if(this.fingerprintWarning)try{this.onWarning?.(this.fingerprintWarning.message)}catch{}
-      this.initializeResult=result;
+      const answer=await this.#initializeAnswer(initializeRequest(version,requestedCapabilities),startup.promise);
+      const {refusal,warning=null}=museSchemaVerdict(answer,served=>this.sdk.checkServedFingerprint(served));
+      if(refusal)throw new Error(refusal);
+      this.schemaWarning=warning;
+      if(warning)try{this.onWarning?.(warning)}catch{}
+      this.initializeResult=answer;
       this.connection.notify("initialized");
       return this;
     }catch(error){
@@ -175,6 +239,19 @@ export class MuseHost{
       await this.close();
       throw failure;
     }finally{startup.cancel()}
+  }
+
+  // Settles with the host's answer to initialize, or fails with why there is none: the request's own error, the host's exit in
+  // Trebell's words when it exits first, or the start's deadline passing with no answer. The first of the three decides.
+  #initializeAnswer(params,deadline){
+    return new Promise((resolve,reject)=>{
+      let decided=false;
+      const decide=(settle,value)=>{if(!decided){decided=true;settle(value)}};
+      const seconds=Math.round(this.startupTimeoutMs/1000);
+      this.connection.request("initialize",params).then(answer=>decide(resolve,answer),error=>decide(reject,error));
+      this.exited.then(exit=>{if(!decided)decide(reject,new Error(this.exitMessage(exit)))});
+      deadline.then(()=>{if(!decided)decide(reject,new Error(`Muse Code did not start: it did not answer within ${seconds} seconds.`))});
+    });
   }
 
   // A host that exited while it started says so by its exit; a stop (close) says the start was stopped.
@@ -199,7 +276,7 @@ export class MuseHost{
     child.once("exit",(code,signal)=>{drain=setTimeout(()=>{this.#outputHeld=true;settle({code,signal});this.#releasePipes(child)},MUSE_EXIT_DRAIN_MS);drain.unref?.()});
     child.once("close",(code,signal)=>{clearTimeout(drain);settle({code,signal})});
     child.stdout.setEncoding("utf8");child.stderr.setEncoding("utf8");
-    child.stderr.on("data",chunk=>{this.stderrTail=appendAcpStderrTail(this.stderrTail,chunk)});
+    child.stderr.on("data",chunk=>{this.stderrTail=extendAgentLog(this.stderrTail,chunk)});
     child.stderr.on("error",()=>{});
     // A write to a host that has gone errors here as well as in its callback; the callback carries it.
     child.stdin.on("error",()=>{});

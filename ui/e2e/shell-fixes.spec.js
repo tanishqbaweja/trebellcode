@@ -155,7 +155,7 @@ test("an opened step keeps its details: a command's exit code, folder, duration 
     const turnId="turn-2",started=Date.now();
     harness.push("turn/started",{threadId:thread.id,turn:{id:turnId,status:"inProgress",startedAt:now()}});
     const items=[
-      {type:"commandExecution",id:"cmd-silent",command:"test -f missing.txt",cwd:"/work/notes",exitCode:1,durationMs:42,status:"failed",aggregatedOutput:""},
+      {type:"commandExecution",id:"cmd-silent",command:"grep -q TODO notes.md",cwd:"/work/notes",exitCode:1,durationMs:42,status:"failed",aggregatedOutput:""},
       // A relay harness reports every finished tool call completed, whatever the command's exit code.
       {type:"commandExecution",id:"cmd-relay",command:"Run the unit tests",cwd:"",exitCode:3,durationMs:null,aggregatedOutput:"2 failing",rawInput:{command:"npm test -- --grep auth",description:"Run the unit tests"},status:"completed"},
       {type:"commandExecution",id:"cmd-ok",command:"git status --short",cwd:"/work/notes",exitCode:0,durationMs:1250,status:"completed",aggregatedOutput:" M notes/todo.md"},
@@ -169,14 +169,14 @@ test("an opened step keeps its details: a command's exit code, folder, duration 
     harness.push("guardianWarning",{threadId:thread.id,message:"Auto review is unavailable for this turn"});
     harness.push("turn/completed",{threadId:thread.id,turn:{id:turnId,status:"completed",completedAt:now()}});
     const rows=page.locator(".agent-block .tool-event");
-    const silent=rows.filter({hasText:"test -f missing.txt"}),relay=rows.filter({hasText:"Run the unit tests"});
+    const silent=rows.filter({hasText:"grep -q TODO notes.md"}),relay=rows.filter({hasText:"Run the unit tests"});
     const codexChange=rows.filter({has:page.locator("summary",{hasText:"Editing files"})}).first(),relayChange=rows.filter({has:page.locator("summary",{hasText:"Editing files"})}).nth(1);
     await expect(rows.filter({hasText:"Auto review is unavailable for this turn"})).toHaveCount(1);
     for(const row of [silent,relay,codexChange,relayChange])await row.locator("summary").click();
     // A silent command that failed still says how: exit 1, where it ran and how long it took.
     await expect(silent.locator(".tool-event-facts>span")).toHaveText(["exit 1","/work/notes","42 ms"]);
     await expect(silent.locator(".tool-event-facts .fact-exit")).toHaveClass(/tone-err/);
-    await expect(silent.locator(".tool-event-body>pre").first()).toHaveText("test -f missing.txt");
+    await expect(silent.locator(".tool-event-body>pre").first()).toHaveText("grep -q TODO notes.md");
     // A relay command titled by what it does prints the line it ran, its output and its exit code; exit 3 is a failure, so the
     // row says failed (as Codex does for such a command), not done above a red exit code.
     await expect(relay.locator(".tool-event-body>pre").first()).toHaveText("npm test -- --grep auth");
@@ -468,7 +468,7 @@ for(const [width,height] of [[1280,800],[1600,980]])for(const mode of ["dark","l
   }finally{await harness.close()}
 });
 
-// Linked pull requests give way too: several fold into the first one's chip (#12345 +1, as the sidebar row reads), then the chip
+// A thread's pull requests give way too: several fold into the first one's chip (#12345 +1, as the sidebar row reads), then the chip
 // keeps only its icon and count, before the title is squeezed under a readable width.
 for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(`the header keeps the thread title readable beside ${prCount} linked pull request${prCount>1?"s":""} with the 520px inspector at 1280x800 in ${mode} mode`,async({page})=>{
   test.setTimeout(35_000);
@@ -536,7 +536,7 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
     const right=page.getByTestId("right-panel");
     if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
     await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
-    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Pull requests on this thread 2");
     const header=page.locator(".chat-workspace .workspace-header"),crumb=header.locator(".project-crumb:not(.sidebar-reopen)");
     // The name's box, and the width its first letter and the ellipsis take in its font: the least a shortened name shows.
     const name=()=>crumb.locator("span").evaluate(node=>{
@@ -632,12 +632,12 @@ for(const [name,sibling,crumbNamed] of [["Repo task one","Repo task two",true],[
     const right=page.getByTestId("right-panel"),header=page.locator(".chat-workspace .workspace-header");
     if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
     await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
-    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 1");
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Pull requests on this thread 1");
     await page.getByTestId("composer").click();await page.keyboard.press("Control+K");
     await page.keyboard.type("Link pull request",{delay:20});await page.keyboard.press("Enter");
     await expect(page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
     await page.keyboard.type(prs[1].url,{delay:5});await page.keyboard.press("Enter");
-    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Pull requests on this thread 2");
     // The title's box and its text's width, to the fraction of a pixel, and whether Chrome cut it with its ellipsis, and the crumb's
     // name and the least a shortened one shows (its first letter and the ellipsis, in its font), with the main column beside the
     // 258px sidebar and the 460px inspector.
@@ -775,12 +775,12 @@ for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task numbe
     const right=page.getByTestId("right-panel"),header=page.locator(".chat-workspace .workspace-header");
     if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
     await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
-    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 1");
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Pull requests on this thread 1");
     await page.getByTestId("composer").click();await page.keyboard.press("Control+K");
     await page.keyboard.type("Link pull request",{delay:20});await page.keyboard.press("Enter");
     await expect(page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
     await page.keyboard.type(prs[1].url,{delay:5});await page.keyboard.press("Enter");
-    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Pull requests on this thread 2");
     const title=header.locator(".thread-title-button strong");
     // The header's level, crumb and folded actions (in the order they fold), and the title as Chrome lays it out (its box, the width
     // of its text and whether the ellipsis cuts it: window.__titleBox), then the same at the level before: one action fewer folded,

@@ -1,7 +1,10 @@
 import React,{useRef,useState} from "react";
 import { CheckCircle2, MessageSquare, Send, X, XCircle } from "lucide-react";
 
-export default function PullRequestComposer({canComment=true,canReview=false,canRequestChanges=false,busy=false,onComment,onReview}){
+// A selected pull request's comment and review box (SourceControlPanel): it posts a comment, a review, or either, as the host allows
+// for that pull request, and keeps an unsent draft while it is closed. A review's parts go by GitHub's names for them: its comment,
+// its type (Approve, Request changes) and Submit review.
+export default function PullRequestFeedback({canComment=true,canReview=false,canRequestChanges=false,busy=false,onComment,onReview}){
   const [open,setOpen]=useState(false);
   const [mode,setMode]=useState(canComment?"comment":"review");
   const [comment,setComment]=useState("");
@@ -39,16 +42,16 @@ export default function PullRequestComposer({canComment=true,canReview=false,can
         {hasComment&&hasReview?<div className="pr-composer-modes" role="tablist" aria-label="Pull request composer mode">
           <button type="button" role="tab" aria-selected={mode==="comment"} className={mode==="comment"?"active":""} onClick={()=>setMode("comment")}>Comment</button>
           <button type="button" role="tab" aria-selected={mode==="review"} className={mode==="review"?"active":""} onClick={()=>setMode("review")}>Review</button>
-        </div>:<strong>{mode==="review"?"Review pull request":"Comment on pull request"}</strong>}
+        </div>:<strong>{mode==="review"?"New review":"New comment"}</strong>}
         <button type="button" className="pr-composer-close" aria-label="Close pull request composer" onClick={closeComposer}><X size={12}/></button>
       </div>
       {mode==="comment"?<div className="pr-composer-form">
         <textarea ref={textareaRef} aria-label="Pull request comment" value={comment} onChange={event=>setComment(event.target.value)} placeholder="Leave a comment…" onKeyDown={event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)&&!event.shiftKey){event.preventDefault();submitComment()}}}/>
         <div className="pr-composer-submit"><span>Ctrl/Cmd+Enter to post</span><button type="button" disabled={!comment.trim()||busy} onClick={submitComment}><Send size={11}/>{busy?"Posting…":"Comment"}</button></div>
       </div>:<div className="pr-composer-form">
-        <textarea ref={textareaRef} aria-label="Review summary" value={review} onChange={event=>setReview(event.target.value)} placeholder={verdict==="REQUEST_CHANGES"?"Explain what needs to change…":"Optional review summary…"} onKeyDown={event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)&&!event.shiftKey){event.preventDefault();submitReview()}}}/>
+        <textarea ref={textareaRef} aria-label="Review comment" value={review} onChange={event=>setReview(event.target.value)} placeholder={verdict==="REQUEST_CHANGES"?"Explain what needs to change…":"Optional comment for the review…"} onKeyDown={event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)&&!event.shiftKey){event.preventDefault();submitReview()}}}/>
         <div className="pr-composer-submit">
-          <select aria-label="Review verdict" value={verdict} onChange={event=>setVerdict(event.target.value)}>
+          <select aria-label="Review type" value={verdict} onChange={event=>setVerdict(event.target.value)}>
             <option value="APPROVE">Approve</option>
             {canRequestChanges&&<option value="REQUEST_CHANGES">Request changes</option>}
           </select>

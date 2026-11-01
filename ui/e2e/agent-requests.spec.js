@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { attachCodexRelay } from "../../src/codex-relay.mjs";
+import { acpApprovalOptions, acpDecisionOption } from "../../src/acp-agent-session.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // Approvals and questions an agent asks, answered as a person does. A Codex app-server is faked behind the real Codex relay: it lists
@@ -857,5 +858,36 @@ test("an app form refuses a required multi-select left empty, saying it is requi
       expect(await form.answered).toEqual({action:"accept",content:{targets:["web"]},_meta:null});
       await expect(modal).toHaveCount(0);expect(harness.answersTo(form)).toHaveLength(1);
     }
+  }finally{await harness.close()}
+});
+
+// An ACP harness's permission request as the agent relay forwards it (item/tool/requestApproval with approvalOptions, which
+// acpApprovalOptions makes): the card's buttons are the harness's own options under their names, in its order, then Trebell's stop;
+// a security warning shows with its option's name; and a click answers with the decision that picks that very option back.
+test("an ACP harness's approval card shows its own options in its order with its warning, and a click picks that option",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const options=[{kind:"reject_once",optionId:"no",name:"Not now"},{kind:"allow_once",optionId:"once",name:"Run it once"},
+      {kind:"allow_always",optionId:"always",name:"Run commands like this for the conversation",_meta:{"agy.security.warning":{title:"Careful",message:"Every matching command in this conversation runs without asking."}}}];
+    const ask=(itemId,title)=>harness.ask("item/tool/requestApproval",{threadId:RELEASE.id,turnId:"turn-release",itemId,reason:title,toolCall:{toolCallId:itemId,title,kind:"execute"},options,approvalOptions:acpApprovalOptions("antigravity",options)});
+    const card=title=>page.locator(".inline-approval .approval-card").filter({hasText:title});
+    const first=ask("acp-1","Run the release checks");
+    await expect(card("Run the release checks").locator(".approval-actions button")).toHaveText(["Not now","Run it once","Run commands like this for the conversation","Cancel this request"]);
+    await expect(card("Run the release checks").locator("small")).toHaveText("Run commands like this for the conversation: Every matching command in this conversation runs without asking.");
+    await page.screenshot({animations:"disabled",path:auditDir+"agent-requests-acp-approval-own-options-1280x800.png"});
+    await card("Run the release checks").getByRole("button",{name:"Run commands like this for the conversation",exact:true}).click();
+    const answer=await first.answered;
+    expect(answer).toEqual({decision:"acceptForSession"});
+    expect(acpDecisionOption("antigravity",options,answer.decision)).toBe("always");
+    // Trebell's own last button answers this request with no option at all, which the session sends to the harness as cancelled;
+    // it is named for the one request (re-pinned from "Stop the turn"), since the turn itself goes on until the composer's Stop.
+    const second=ask("acp-2","Publish the release");
+    await card("Publish the release").getByRole("button",{name:"Cancel this request",exact:true}).click();
+    expect(await second.answered).toEqual({decision:"cancel"});
+    expect(acpDecisionOption("antigravity",options,"cancel")).toBe(null);
+    await expect(page.locator(".inline-approval .approval-card")).toHaveCount(0);
   }finally{await harness.close()}
 });

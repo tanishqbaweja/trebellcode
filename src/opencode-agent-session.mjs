@@ -1,6 +1,6 @@
 import { createServer as createNetServer } from "node:net";
 import { execFileSync } from "node:child_process";
-import { randomBytes, randomInt } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -10,7 +10,9 @@ import { Readable } from "node:stream";
 import spawn from "cross-spawn";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
 import { isDocumentTextPath } from "./document-text.mjs";
-import { PROMPT_TEXT_PATH, textExtractedTo } from "./prompt-attachments.mjs";
+import { attachmentLine } from "./attachment-line.mjs";
+import { PROMPT_TEXT_PATH } from "./prompt-attachments.mjs";
+import { retryNotice } from "./retry-notice.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
@@ -34,10 +36,10 @@ export function openCodeBodyParts(parts){
     if(part.type==="image")return {type:"file",mime:part.mimeType||"image/png",url:`data:${part.mimeType||"image/png"};base64,${part.data}`};
     if(part.type==="resource_link"){
       const path=fileUriPath(part.uri)||"",extension=extname(path).toLowerCase(),media=MEDIA.get(extension),name=part.name||basename(path);
-      if(media)return {type:"text",text:`[Attached ${media} "${name}" is saved at: ${path}]`};
+      if(media)return {type:"text",text:attachmentLine(media,name,path)};
       const textPath=part[PROMPT_TEXT_PATH];
-      if(textPath)return [{type:"text",text:`[Attached file "${name}" is saved at: ${path}${textExtractedTo(part)}]`},{type:"file",mime:"text/plain",filename:`${name}.txt`,url:fileUri(textPath)}];
-      if(isDocumentTextPath(path))return {type:"text",text:`[Attached file "${name}" is saved at: ${path}]`};
+      if(textPath)return [{type:"text",text:attachmentLine("file",name,path,textPath)},{type:"file",mime:"text/plain",filename:`${name}.txt`,url:fileUri(textPath)}];
+      if(isDocumentTextPath(path))return {type:"text",text:attachmentLine("file",name,path)};
       return {type:"file",mime:MIME[extension]||"text/plain",filename:part.name||undefined,url:part.uri};
     }
     return {type:"text",text:JSON.stringify(part)};
@@ -97,16 +99,19 @@ export function openCodeServerHeaders(env={}){
 export function openCodeClientOptions(server,directory){
   const headers=server?.headers||{};return {baseUrl:server.url,directory,...(Object.keys(headers).length?{headers}:{})};
 }
-// How long `opencode serve` may take to say it listens: OpenCode 2 converts the shared database on its first run.
-const SERVER_START_TIMEOUT_MS=30_000;
+// How long `opencode serve` may take to say it listens: Trebell's own 45 s. OpenCode 2 converts the shared database on its first run
+// before it listens, which takes longest on a large database and a slow disk; a start that takes longer is reported as failed.
+const SERVER_START_TIMEOUT_MS=45_000;
 // Every `opencode serve` Trebell starts shares OpenCode's database (opencode.db): each thread's, the status check's and model list's,
 // and Git text's. One that finds the database locked by another exits saying so on stderr, and is started again on a new port, at most
-// three more times a quarter second apart; any other exit is final. So is one that lost the first run's schema setup to
+// four more times half a second apart: Trebell's own two seconds in all for the other server to finish its start and let go of the
+// database. Any other exit is final. So is one that lost the first run's schema setup to
 // another: OpenCode 1.x and 2.x then fail a CREATE statement of their own ("Failed query: CREATE TABLE ...", a table that already
 // exists), which a second start a moment later gets past.
-const SERVER_LOCK_RETRIES=3,SERVER_LOCK_RETRY_MS=250,DATABASE_CONTENDED=/SQLITE_BUSY|database is locked|Failed query:\s*CREATE\s/i;
-// A server that exited can still have its last words in its pipes, which a process it started may hold open: they get this long.
-const SERVER_EXIT_DRAIN_MS=500;
+const SERVER_LOCK_RETRIES=4,SERVER_LOCK_RETRY_MS=500,DATABASE_CONTENDED=/SQLITE_BUSY|database is locked|Failed query:\s*CREATE\s/i;
+// A server that exited can still have its last words in its pipes, which a process it started may hold open: they get a second,
+// Trebell's own wait for a server's late words, as long as a session's late error gets (LATE_SESSION_ERROR_MS).
+const SERVER_EXIT_DRAIN_MS=1_000;
 async function startServer({command="opencode",cwd,env=process.env,serverUrl=null}={}){
   if(serverUrl)return {url:serverUrl,headers:{},close(){}};
   for(let retry=0;;retry++){
@@ -167,8 +172,9 @@ export async function openCode2Within(ms,message,request){
   const late=new Promise((_,reject)=>{timer=setTimeout(()=>{reject(new Error(message));controller.abort()},ms)});
   try{return await Promise.race([Promise.resolve().then(()=>request(controller.signal)),late])}finally{clearTimeout(timer)}
 }
-// An OpenCode 2 server is ready once it answers server.info, which it does at once: one that has not in five seconds is not.
-export const OPENCODE2_INFO_TIMEOUT_MS=5_000;
+// An OpenCode 2 server is ready once it answers server.info, which it answers from memory: Trebell's own 8 s leaves room for a
+// machine busy with a build, and one that has not answered by then is not ready.
+export const OPENCODE2_INFO_TIMEOUT_MS=8_000;
 export function openCode2ServerInfo(client){
   return openCode2Within(OPENCODE2_INFO_TIMEOUT_MS,`OpenCode server did not answer within ${OPENCODE2_INFO_TIMEOUT_MS/1000} seconds.`,signal=>client.server.info({signal}));
 }
@@ -228,13 +234,19 @@ export function openCodeModelVariants(entry){
   const variants=entry?.variants&&typeof entry.variants==="object"&&!Array.isArray(entry.variants)?entry.variants:{};
   return Object.entries(variants).filter(([name,options])=>OPENCODE_VARIANT.test(name)&&options?.disabled!==true).map(([name])=>name);
 }
-// The level OpenCode's own clients start a provider's models on.
-export function inferOpenCodeDefaultVariant(providerID,variants=[]){
-  const values=Array.isArray(variants)?variants:[],provider=String(providerID||"");
-  if(values.length===1)return values[0];
-  if(provider==="anthropic"||provider.startsWith("google"))return values.includes("high")?"high":null;
-  if(provider==="openai"||provider==="opencode")return values.includes("medium")?"medium":values.includes("high")?"high":null;
-  return null;
+// The reasoning level a model starts on when the thread has not picked one: a model with a single level starts on it; otherwise
+// the provider decides which names come first (Anthropic's and Google's models start high, OpenAI's and OpenCode Zen's at medium,
+// or high without one), and a provider with no such names leaves the level unset (null).
+const STARTING_LEVELS=Object.freeze([
+  {provider:id=>id==="anthropic"||id.startsWith("google"),levels:["high"]},
+  {provider:id=>id==="openai"||id==="opencode",levels:["medium","high"]},
+]);
+export function openCodeStartingVariant(providerID,variants=[]){
+  const offered=Array.isArray(variants)?variants:[];
+  if(offered.length===1)return offered[0];
+  const id=providerID?String(providerID):"";
+  const preferred=STARTING_LEVELS.find(entry=>entry.provider(id))?.levels??[];
+  return preferred.find(level=>offered.includes(level))??null;
 }
 
 export function connectedOpenCodeModels(providers={},{configured=null,recent=[]}={}){
@@ -345,7 +357,7 @@ export async function discoverOpenCodeModelCatalog({command="opencode",cwd=proce
       metadata:ordered.map(item=>({
         id:item.id,name:item.name,provider:"opencode",agent:"OpenCode",upstreamProvider:item.providerName,
         ...(item.context?{contextWindow:item.context}:{}),
-        ...(item.variants.length?{reasoningEfforts:item.variants,defaultReasoningEffort:inferOpenCodeDefaultVariant(item.providerID,item.variants)}:{}),
+        ...(item.variants.length?{reasoningEfforts:item.variants,defaultReasoningEffort:openCodeStartingVariant(item.providerID,item.variants)}:{}),
       })),
       preferred:catalog.preferred,
       connectedProviders:Array.isArray(providers.connected)?providers.connected.map(String):[],
@@ -365,27 +377,62 @@ export function openCode2ModelId(model){
   return modelID?`${providerID}/${modelID}`:"";
 }
 function openCode2Variants(model){return (Array.isArray(model?.variants)?model.variants:[]).map(item=>String(item?.id||"").trim()).filter(value=>OPENCODE_VARIANT.test(value))}
-// What two reads of OpenCode 2's model list compare: each model's provider, id, name, variants and
-// whether it is enabled, in no particular order.
-const openCode2CatalogFingerprint=models=>models.map(model=>JSON.stringify([String(model?.providerID??""),String(model?.id??""),String(model?.name??""),model?.enabled!==false,(Array.isArray(model?.variants)?model.variants:[]).map(item=>String(item?.id??"")).sort()])).sort().join("\n");
-// A cold OpenCode 2 server can list part of its catalog at first, so a list counts once two reads
-// in a row, intervalMs apart, list the same models. A list with models (and with requiredModel, at a session's start) is waited for at
-// most timeoutMs, and one that agrees with it settleMs more, within timeoutMs; the latest list with models stands then, settled false.
-// A read that fails after a list with models leaves that list; one that fails before it fails the wait.
-export async function waitForOpenCode2Models(client,location,{timeoutMs=15_000,settleMs=5_000,intervalMs=250,requiredModel=null}={}){
-  const wanted=String(requiredModel||"").trim();let deadline=Date.now()+timeoutMs,latest=null,previous=null;
-  const listed=value=>Array.isArray(value?.data)&&value.data.length>0&&(!wanted||value.data.some(model=>openCode2ModelId(model)===wanted));
+// ---- OpenCode 2's model list, read until it holds still
+// A cold OpenCode 2 server may answer the first reads of its model list from a catalog it is still loading. So the list counts once
+// two usable answers in a row list the same models (modelCensus says what "the same" covers). The wait gives up at whichever comes
+// first, timeoutMs after it began or settleMs after the first usable answer, and then keeps the newest usable answer (or, without
+// one, the last answer) as not settled. A read that fails keeps the newest usable answer in the same way, and fails the wait when
+// there is none yet. Trebell's own values: two answers, the least that can show the list stopped changing (each further one would
+// add a read to every cold start); intervalMs 300 ms between reads, so two that agree are a little further apart than 2.1.2's
+// quarter second; settleMs 6 s, 2.1.2's 5 s and a fifth more, which at that spacing still holds twenty reads; timeoutMs 15 s.
+const blankIfMissing=value=>value===undefined||value===null?"":String(value);
+// What two answers must agree on: how many times each model is listed, a model being its provider and id, its name, whether it is
+// enabled (a model without the flag is) and its variants' ids in sorted order. Neither the list's order nor its variants' order counts.
+function modelCensus(models){
+  const census=new Map();
+  for(const model of models){
+    const variantIds=(Array.isArray(model?.variants)?model.variants:[]).map(variant=>blankIfMissing(variant?.id)).sort();
+    const description=JSON.stringify([blankIfMissing(model?.providerID),blankIfMissing(model?.id),blankIfMissing(model?.name),model?.enabled!==false,variantIds]);
+    census.set(description,(census.get(description)??0)+1);
+  }
+  return census;
+}
+const sameCensus=(earlier,later)=>earlier.size===later.size&&[...earlier].every(([description,count])=>later.get(description)===count);
+// One wait's state. take(answer) weighs the next answer and gives the wait's result once it is over (null: read again); failed(error)
+// gives the result after a read that threw.
+function modelListSettling({timeoutMs,settleMs,requiredModel}){
+  const needed=String(requiredModel||"").trim();
+  let giveUpAt=Date.now()+timeoutMs,newestUsable=null,censusBefore=null;
+  // Usable: some models, and the one the session must have among them.
+  const usable=answer=>{
+    const models=answer?.data;
+    return Array.isArray(models)&&models.length>0&&(needed===""||models.some(model=>openCode2ModelId(model)===needed));
+  };
+  return {
+    take(answer){
+      const census=usable(answer)?modelCensus(answer.data):null;
+      if(census&&censusBefore&&sameCensus(censusBefore,census))return {...answer,settled:true};
+      if(census){
+        if(!newestUsable)giveUpAt=Math.min(giveUpAt,Date.now()+settleMs);
+        newestUsable=answer;
+      }
+      censusBefore=census;
+      return Date.now()<giveUpAt?null:{...(newestUsable??answer),settled:false};
+    },
+    failed(error){
+      if(!newestUsable)throw error;
+      return {...newestUsable,settled:false};
+    },
+  };
+}
+export async function waitForOpenCode2Models(client,location,{timeoutMs=15_000,settleMs=6_000,intervalMs=300,requiredModel=null}={}){
+  const settling=modelListSettling({timeoutMs,settleMs,requiredModel});
   for(;;){
-    let result;
-    try{result=await client.model.list({location})}catch(error){if(latest)return {...latest,settled:false};throw error}
-    if(listed(result)){
-      const fingerprint=openCode2CatalogFingerprint(result.data);
-      if(fingerprint===previous)return {...result,settled:true};
-      if(!latest)deadline=Math.min(deadline,Date.now()+settleMs);
-      latest=result;previous=fingerprint;
-    }else previous=null;
-    if(Date.now()>=deadline)return {...(latest||result),settled:false};
-    await new Promise(resolve=>setTimeout(resolve,intervalMs));
+    let answer;
+    try{answer=await client.model.list({location})}catch(error){return settling.failed(error)}
+    const over=settling.take(answer);
+    if(over)return over;
+    await new Promise(resume=>setTimeout(resume,intervalMs));
   }
 }
 export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null,onServerStart=null}={}){
@@ -409,7 +456,7 @@ export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=proc
     const pending=[...(rows.length&&modelResult?.settled===false?["models"]:[]),...pendingLists({commands,skills,agents})];
     return {
       models:ordered.map(item=>item.id),
-      metadata:ordered.map(item=>({id:item.id,name:item.name,provider:"opencode",agent:"OpenCode",upstreamProvider:item.providerName,...(item.context?{contextWindow:item.context}:{}),...(item.variants.length?{reasoningEfforts:item.variants,defaultReasoningEffort:inferOpenCodeDefaultVariant(item.providerID,item.variants)}:{})})),
+      metadata:ordered.map(item=>({id:item.id,name:item.name,provider:"opencode",agent:"OpenCode",upstreamProvider:item.providerName,...(item.context?{contextWindow:item.context}:{}),...(item.variants.length?{reasoningEfforts:item.variants,defaultReasoningEffort:openCodeStartingVariant(item.providerID,item.variants)}:{})})),
       preferred,
       connectedProviders:[...new Set(ordered.map(item=>item.providerID).filter(Boolean))],
       inventory:{commands:commands||[],skills:skills||[],agents:openCode2PrimaryAgents(agents||[])},
@@ -460,50 +507,55 @@ export function openCodePermissionDisposition(mode,type){
   return permissionDisposition(mode,normalizePermissionKind(type),{readOnlyAllowsRead:false});
 }
 
-// A session's permission rules. OpenCode has no sandbox of its own: its rules are what keeps a tool
-// from running unasked. It evaluates the agent's rules and then the session's, and the last rule that matches decides; "*" matches every
-// permission and path. Without session rules OpenCode's agents run edits and commands without asking in every Trebell mode.
-const OPENCODE_ALLOWED_PERMISSIONS=Object.freeze(["question","read","glob","grep","list","lsp","todowrite","todoread","task","skill"]);
-const OPENCODE_RESTRICTED_PERMISSIONS=Object.freeze(["bash","edit","webfetch","websearch","codesearch","external_directory","doom_loop"]);
-const permissionRule=(permission,action,pattern="*")=>({permission,pattern,action});
-// allowedTools: tool permission names that run unasked (Trebell's read-only repository MCP tools). trustedDirectories: the folders
-// outside the workspace that OpenCode's agents already allow (its tool-output and temporary folders, skill folders, the user's own
-// allows), which "*" rules for other folders would otherwise take away.
-export function openCodePermissionRules(mode,{allowedTools=[],trustedDirectories=[]}={}){
-  const profile=normalizePermissionMode(mode);
-  if(profile==="full")return [permissionRule("*","allow"),permissionRule("external_directory","allow")];
-  const allowed=[...OPENCODE_ALLOWED_PERMISSIONS,...allowedTools].map(permission=>permissionRule(permission,"allow"));
-  const trusted=[...new Set((Array.isArray(trustedDirectories)?trustedDirectories:[]).map(String).filter(Boolean))].map(pattern=>permissionRule("external_directory","allow",pattern));
-  // Read only: edits, searches outside the workspace and folders outside it are removed outright; any other tool asks, and Trebell's
-  // read-only policy answers it (a URL fetch is a read, everything else is refused). The shell tool asks rather than being removed:
-  // OpenCode leaves a tool whose last rule denies it out of the request, and OpenCode Zen's free tier refuses a request without it
-  // ("OpenCode's free tier can only be used from within OpenCode"). Every command is refused
-  // unasked. The leading denies are what a subagent's session starts with, so a subagent gets no commands at all.
-  if(profile==="read-only"){
-    const removed=OPENCODE_RESTRICTED_PERMISSIONS.filter(permission=>permission!=="webfetch");
-    return [
-      ...removed.map(permission=>permissionRule(permission,"deny")),
-      permissionRule("*","ask"),
-      ...removed.map(permission=>permissionRule(permission,permission==="bash"?"ask":"deny")),
-      ...allowed,
-      permissionRule("read","deny","*.env"),permissionRule("read","deny","*.env.*"),permissionRule("read","allow","*.env.example"),
-      ...trusted,
-    ];
-  }
-  // A subagent's (task tool's) session inherits only the parent's deny rules and its external_directory rules, and runs on the rules it
-  // started with. The leading denies keep commands, edits and network tools away from subagents in the asking modes, where nobody
-  // could be asked for them. OpenCode drops a tool whose last rule denies it from the model's tool list, so a leading "*" deny would
-  // leave a subagent no tools at all; OpenCode Zen then refuses the request. Auto lets Trebell answer every request, so nothing is
-  // held back from its subagents, and auto-accept edits lets them edit.
-  const seeds=profile==="auto"?[]:OPENCODE_RESTRICTED_PERMISSIONS.filter(permission=>profile!=="edits"||permission!=="edit");
-  return [
-    ...seeds.map(permission=>permissionRule(permission,"deny")),
-    permissionRule("*","ask"),...OPENCODE_RESTRICTED_PERMISSIONS.map(permission=>permissionRule(permission,"ask")),
-    ...allowed,
-    permissionRule("read","ask","*.env"),permissionRule("read","ask","*.env.*"),permissionRule("read","allow","*.env.example"),
-    ...(profile==="edits"?[permissionRule("edit","allow")]:[]),
-    ...trusted,
-  ];
+// A session's permission rules are the only thing that keeps an OpenCode tool from running unasked: OpenCode has no sandbox. It
+// reads the agent's rules and then the session's, and the last rule whose permission and pattern match decides ("*" matches all).
+// A tool whose last "*" rule denies it is left out of the model's request, and OpenCode Zen's free tier refuses a request without
+// the shell or read tool ("OpenCode's free tier can only be used from within OpenCode"), so no mode denies those two in the session.
+//
+// OpenCode's permission keys, from its permissions page and the v2 PermissionConfig its SDK declares, each list sorted by key. A
+// mode decides the guarded ones: shell commands, file changes, the network (a URL fetch, web and code search), paths outside the
+// project, and one call repeated three times over. OpenCode answers rules for distinct keys independently, so their order in a run
+// changes no decision.
+const GUARDED_KEYS=Object.freeze(["bash","codesearch","doom_loop","edit","external_directory","webfetch","websearch"]);
+// The rest run unasked in every mode: reading and searching the project, language-server queries, skills, subagents, the todo list
+// (todoread is the separate read tool of earlier OpenCode releases) and questions to the person.
+const FREE_KEYS=Object.freeze(["glob","grep","list","lsp","question","read","skill","task","todoread","todowrite"]);
+const ruleMaker=action=>(permission,pattern="*")=>({permission,pattern,action});
+const allowRule=ruleMaker("allow"),askRule=ruleMaker("ask"),denyRule=ruleMaker("deny");
+// Each mode that asks, as the layers its rules are built from, in order:
+// - forSubagents: the gated tools a subagent may not run. A subagent's (task tool's) session starts with only the parent's deny
+//   and folder rules, and nobody can be asked there: in supervised mode it gets none of these tools, in edits mode only edits, in
+//   read only no commands either. Auto lets Trebell answer every request, so nothing is held back there.
+// - inSession: how the session itself answers each gated tool, "ask" or "deny", or nothing, which leaves it to "*" (ask). Read only
+//   removes edits, searches beyond the workspace and other folders, and asks for commands, which its policy then refuses unasked;
+//   a URL fetch is a read and asks through "*".
+// - secrets: how a read of a .env file is answered (a .env.example is always read).
+// - editsRun: whether edits run unasked.
+const ASKING_MODES=Object.freeze({
+  supervised:{forSubagents:()=>true,inSession:()=>"ask",secrets:"ask",editsRun:false},
+  edits:{forSubagents:tool=>tool!=="edit",inSession:()=>"ask",secrets:"ask",editsRun:true},
+  auto:{forSubagents:()=>false,inSession:()=>"ask",secrets:"ask",editsRun:false},
+  "read-only":{forSubagents:tool=>tool!=="webfetch",inSession:tool=>tool==="webfetch"?null:tool==="bash"?"ask":"deny",secrets:"deny",editsRun:false},
+});
+// Folder patterns as text, each once in the order first given, empty ones left out.
+const folderPatterns=folders=>new Set((Array.isArray(folders)?folders:[]).map(String).filter(folder=>folder.length>0));
+// mode: a Trebell permission mode. allowedTools: tool permission names that run unasked (Trebell's read-only repository MCP tools).
+// trustedDirectories: folders outside the workspace that OpenCode's agents already allow (its tool-output and temporary folders,
+// skill folders, the user's own), which the rule for other folders would otherwise take away. Full mode allows everything, other
+// folders too, and needs neither.
+export function openCodeSessionRules(mode,{allowedTools=[],trustedDirectories=[]}={}){
+  const level=normalizePermissionMode(mode);
+  if(level==="full")return [allowRule("*"),allowRule("external_directory")];
+  const layers=ASKING_MODES[level]??ASKING_MODES.supervised,rules=[];
+  for(const tool of GUARDED_KEYS)if(layers.forSubagents(tool))rules.push(denyRule(tool));
+  rules.push(askRule("*"));
+  for(const tool of GUARDED_KEYS){const action=layers.inSession(tool);if(action)rules.push(ruleMaker(action)(tool))}
+  for(const tool of [...FREE_KEYS,...(Array.isArray(allowedTools)?allowedTools:[])])rules.push(allowRule(tool));
+  const secretRule=ruleMaker(layers.secrets);
+  rules.push(secretRule("read","*.env"),secretRule("read","*.env.*"),allowRule("read","*.env.example"));
+  if(layers.editsRun)rules.push(allowRule("edit"));
+  for(const folder of folderPatterns(trustedDirectories))rules.push(allowRule("external_directory",folder));
+  return rules;
 }
 const sameRule=(left,right)=>left?.permission===right?.permission&&left?.pattern===right?.pattern&&left?.action===right?.action;
 // OpenCode adds the rules of a session update after the ones the session has. Rules whose last entries already are these change nothing.
@@ -511,12 +563,15 @@ export function openCodeRulesEndWith(current=[],rules=[]){
   const have=Array.isArray(current)?current:[];
   return rules.length>0&&have.length>=rules.length&&rules.every((rule,index)=>sameRule(have[have.length-rules.length+index],rule));
 }
-// A subagent's session gets the parent's whole policy, followed by the rules OpenCode added for
-// that agent (no nested tasks or todo list, for one), which must stay last.
-export function openCodeChildPermissionRules(parentRules=[],nativeChildRules=[]){
-  const inherited=parentRules.filter(rule=>rule.permission==="external_directory"||rule.action==="deny");
-  const childSpecific=(Array.isArray(nativeChildRules)?nativeChildRules:[]).filter(rule=>!inherited.some(item=>sameRule(item,rule)));
-  return [...parentRules,...childSpecific];
+// A subagent's session, once it exists, gets the parent's whole rule list, then the rules OpenCode gave that agent itself (no todo
+// list or nested tasks, say), which must stay last to keep deciding. OpenCode started the subagent's session with the parent's deny
+// and folder rules followed by the agent's own; the inherited ones are in the parent's list already and are not repeated.
+const ruleIdentity=rule=>JSON.stringify([rule?.permission,rule?.pattern,rule?.action]);
+export function openCodeSubagentRules(rulesOfParent=[],openCodeRules=[]){
+  const parent=Array.isArray(rulesOfParent)?rulesOfParent:[],inherited=new Set();
+  for(const rule of parent)if(rule?.action==="deny"||rule?.permission==="external_directory")inherited.add(ruleIdentity(rule));
+  const agentOwn=(Array.isArray(openCodeRules)?openCodeRules:[]).filter(rule=>!inherited.has(ruleIdentity(rule)));
+  return [...parent,...agentOwn];
 }
 // The folders OpenCode's agents allow outside the workspace, sorted: OpenCode lists its skill folders in no set order, and a session
 // reopened by another server must get the same rules, or they would be appended again.
@@ -527,18 +582,38 @@ export function openCodeTrustedDirectories(agents=[]){
   }
   return [...patterns].sort();
 }
+// A message that is "/name" or "/name arguments" asks for a command: the name runs from the "/" to the first space or line break
+// and holds no other "/", and the arguments are what follows that space, from its first other character (empty without one).
+// Anything else is a plain message (null).
+export function openCodeSlashCommand(text){
+  const message=String(text??"");
+  if(message[0]!=="/")return null;
+  const gap=message.search(/\s/),name=gap<0?message.slice(1):message.slice(1,gap);
+  if(!name||name.includes("/"))return null;
+  return {name,arguments:gap<0?"":message.slice(gap).trimStart()};
+}
 
-// OpenCode message IDs: "msg_", 12 hex digits of (milliseconds * 0x1000 + a counter) in 48 bits, then random characters. OpenCode
-// orders a session's messages and forks by comparing these IDs, so a client ID must sort after every message the session has. Trebell
-// names each user message itself, which gives a turn its rewind point before OpenCode answers.
-const MESSAGE_ID_ALPHABET="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+// OpenCode message IDs, as OpenCode makes its own (packages/opencode/src/id/id.ts, Identifier.create, at v1.3.15): "msg_", then a
+// 48-bit clock (milliseconds * 0x1000 + a counter, the higher bits dropped) as six bytes in hex, then 14 base62 characters, its ID
+// length of 26 less those 12 digits. OpenCode orders a session's messages and forks by comparing these IDs, so a client ID must
+// sort after every message the session has. Trebell names each user message itself, which gives a turn its rewind point before
+// OpenCode answers.
+const OPENCODE_ID_RANDOM_LENGTH=14;
+const BASE62_DIGITS="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+// Random base62 characters, each as likely as the others: a byte picks one only below 248 (four times 62), the rest are drawn again.
+function randomBase62(count){
+  let text="";
+  while(text.length<count)for(const byte of randomBytes(count))if(byte<248&&text.length<count)text+=BASE62_DIGITS[byte%62];
+  return text;
+}
 export function openCodeMessageTime(id){
   const match=/^msg_([0-9a-f]{12})/.exec(String(id||""));
   return match?BigInt("0x"+match[1]):null;
 }
-export function openCodeMessageId(time){
-  let random="";for(let index=0;index<28;index++)random+=MESSAGE_ID_ALPHABET[randomInt(MESSAGE_ID_ALPHABET.length)];
-  return `msg_${BigInt.asUintN(48,BigInt(time)).toString(16).padStart(12,"0")}${random}`;
+export function openCodeMessageId(clock){
+  const sixBytes=Buffer.alloc(6);
+  sixBytes.writeUIntBE(Number(BigInt.asUintN(48,BigInt(clock))),0,6);
+  return "msg_"+sixBytes.toString("hex")+randomBase62(OPENCODE_ID_RANDOM_LENGTH);
 }
 // A fork gives every copied message a new ID. A turn's rewind point moves to its copy; a turn whose message OpenCode never stored (the
 // request failed before it arrived) moves to the copy of the next message after it, or past every copy when there is none.
@@ -560,16 +635,57 @@ export function remapOpenCodeTurns(turns=[],mapping={}){
   });
 }
 
-// OpenCode's read tool wraps what it read in tags, each on a line of its own: <path>, <type> (file or directory), then <content> (the
-// file's numbered lines) or <entries> (the folder's). A read's output is what it read, with any text OpenCode added after the wrapping
-// (a system reminder, say) kept as it is. Output in any other shape is left alone.
-export function openCodeReadOutput(output){
+// OpenCode 1.x's read tool wraps what it read in tags, a line each: <path>, <type> (file or directory), then the file's numbered
+// lines between <content> and </content>, or the folder's entries between <entries> and </entries>. A read row shows what was read,
+// followed by whatever OpenCode wrote after the closing tag (a system reminder with a folder's instructions, say). Output in any
+// other shape (OpenCode 2's own read output, plain text, a wrapping cut short) is shown as it is.
+export function unwrapOpenCodeRead(output){
   if(typeof output!=="string")return output;
-  const header=/^<path>[^\r\n]+<\/path>\r?\n<type>(directory|file)<\/type>\r?\n/.exec(output);if(!header)return output;
-  const body=output.slice(header[0].length);
-  // A file's lines are numbered ("2: </content>"), so only a closing tag on a line of its own ends the wrapping.
-  const wrapped=header[1]==="directory"?/^<entries>\r?\n([\s\S]*?)\r?\n<\/entries>(?=\r?\n|$)/.exec(body):/^<content>(?:\r?\n)?([\s\S]*?)\r?\n<\/content>(?=\r?\n|$)/.exec(body);
-  return wrapped?wrapped[1]+body.slice(wrapped[0].length):output;
+  const pathLine=lineAt(output,0);
+  if(pathLine.next<0||!namesAPath(textOf(output,pathLine)))return output;
+  const typeLine=lineAt(output,pathLine.next);
+  const kind=typeLine.next<0?null:READ_KINDS.get(textOf(output,typeLine));
+  const read=kind==="file"?fileLines(output,typeLine.next):kind==="directory"?folderEntries(output,typeLine.next):null;
+  return read?read.text+output.slice(read.after):output;
+}
+// The line that starts at `start`: where its text ends (before its line break, "\n" or "\r\n") and where the next line starts, or -1
+// for the last line, which has no break (a "\r" at the very end of the output is part of its text).
+function lineAt(text,start){
+  const feed=text.indexOf("\n",start);
+  if(feed<0)return {start,end:text.length,next:-1};
+  return {start,end:feed>start&&text[feed-1]==="\r"?feed-1:feed,next:feed+1};
+}
+const textOf=(text,line)=>text.slice(line.start,line.end);
+const READ_KINDS=new Map([["<type>file</type>","file"],["<type>directory</type>","directory"]]);
+// "<path>", then a path of at least one character with no carriage return in it, then "</path>".
+const namesAPath=line=>line.length>"<path></path>".length&&line.startsWith("<path>")&&line.endsWith("</path>")&&!line.includes("\r");
+// The text from `from` to the line break before the first line after `first` that is exactly `closingTag`, and where the output
+// goes on after that tag; null when no line closes it.
+function upToClosingLine(text,first,from,closingTag){
+  for(let previous=first,start=first.next;start>=0;){
+    const line=lineAt(text,start);
+    if(textOf(text,line)===closingTag)return {text:text.slice(from,previous.end),after:line.start+closingTag.length};
+    previous=line;start=line.next;
+  }
+  return null;
+}
+// A folder: "<entries>" alone on its line, the entries on the lines after it, then "</entries>" on a line of its own.
+function folderEntries(text,start){
+  const opening=lineAt(text,start);
+  if(opening.next<0||textOf(text,opening)!=="<entries>")return null;
+  const first=lineAt(text,opening.next);
+  return upToClosingLine(text,first,first.start,"</entries>");
+}
+// A file: "<content>", the file's lines (from the next line when the tag stands alone, else right after the tag), then "</content>"
+// on a line of its own; a numbered line that holds the tag ("2: </content> literal") does not end the file. An empty file can close
+// on the line right after a lone "<content>".
+function fileLines(text,start){
+  const opening=lineAt(text,start),openingText=textOf(text,opening);
+  if(!openingText.startsWith("<content>"))return null;
+  if(openingText!=="<content>")return upToClosingLine(text,opening,opening.start+"<content>".length,"</content>");
+  if(opening.next<0)return null;
+  const first=lineAt(text,opening.next);
+  return upToClosingLine(text,first,first.start,"</content>")??(textOf(text,first)==="</content>"?{text:"",after:first.start+"</content>".length}:null);
 }
 
 // A path as a tool's row names it: from the thread's folder when it is in it (as OpenCode titles its reads), whole when it is not. A
@@ -644,22 +760,38 @@ export function openCodeRetryStop(status,{now=Date.now(),model=null,limits=OPENC
   const plan=wait>limits.waitMs?`OpenCode would retry${target} only in ${describeWait(wait)}`:`OpenCode kept retrying${target} (attempt ${attempt})`;
   return `${reason}. ${plan}, so Trebell stopped the turn. Try again later or choose another model.`;
 }
-// A retry Trebell waits for is the turn's retry row (an `error` with willRetry, which reads recovered once the turn goes on): what
-// failed, which model OpenCode sends the request to again, in how long, and which retry that is.
+// A retry Trebell waits for is the turn's retry row (an `error` with willRetry, which reads recovered once the turn goes on), in the
+// words of every harness that retries by itself (retry-notice.mjs): what failed, then the model OpenCode sends the request to again
+// (a subagent's request is named as the subagent's), in how long, and which retry that is.
 export function openCodeRetryNotice({message=null,model=null,retry=1,waitMs=0,subagent=false}={}){
-  const reason=String(openCodeErrorText(message)||"The model provider request failed").replace(/[\s.]+$/,"");
-  const seconds=Math.max(1,Math.round((Number(waitMs)||0)/1000)),count=Math.max(1,Math.floor(Number(retry)||1));
-  return subagent?`A subagent's model request failed: ${reason}. OpenCode retries it in ${seconds} s (retry ${count}).`:`${reason}. OpenCode retries ${model||"the model"} in ${seconds} s (retry ${count}).`;
+  const failed=openCodeErrorText(message)||"The model provider request failed";
+  const which=`retry ${Math.max(1,Math.floor(Number(retry)||1))}`,seconds=(Number(waitMs)||0)/1000;
+  if(subagent)return `A subagent's model request failed: ${retryNotice({reason:failed,sender:"OpenCode",what:"it",seconds,which})}`;
+  return retryNotice({reason:failed,sender:"OpenCode",what:`the request to ${model||"the model"}`,seconds,which});
 }
 
-// Events of a subagent's (child) session that hold this session's turn until Trebell answers or stops them.
-const SUBAGENT_EVENTS=new Set(["permission.asked","permission.updated","question.asked","session.status"]);
+// What Trebell does with an event of a subagent's (child) session that holds this session's turn until Trebell answers or stops it,
+// by OpenCode's event type (@opencode-ai/sdk's types.gen.d.ts): a permission it asks for (permission.asked, or permission.updated
+// before OpenCode 1.14), a question it asks, or a retry it schedules (a session.status whose status is of type retry).
+const CHILD_SESSION_HOLDS=new Map([
+  ["permission.asked","permission"],
+  ["permission.updated","permission"],
+  ["question.asked","question"],
+  ["session.status","retry"],
+]);
 const PROMPT_STOPPED=Symbol("opencode-prompt-stopped");
 // After Trebell stops a turn (cancel, close, or a retry it will not wait for), OpenCode normally answers the pending prompt at once with
 // an aborted message. If it does not, the turn still ends after this grace period.
 const OPENCODE_STOP_GRACE_MS=15_000;
 const REPORTED_ERROR_MS=60_000;
-const COMMAND_LIST_TIMEOUT_MS=10_000;
+// How long a command, skill or agent list may take: Trebell's own 12 s. OpenCode lists the prompts of every MCP server the project
+// configures among its commands, so the list waits on the slowest of those servers, and one that has to start or reach a remote
+// host first can take seconds. 2.1.2 waited 10 s; 12 s gives such a server a fifth more and never gives up sooner. It bounds:
+// - the command, skill and agent lists a status check reads (one that takes longer stays pending, and a later read fills it in);
+// - the agents a new OpenCode 1.x session waits for, whose rules name the session's trusted folders (agents that come later add
+//   none); its commands and skills reach the composer whenever OpenCode lists them;
+// - the command list a message starting with "/name" is looked up in before it is sent (a lookup that runs out sends it as text).
+const COMMAND_LIST_TIMEOUT_MS=12_000;
 
 export class OpenCodeAgentSession{
   constructor({command="opencode",cwd,env=process.env,serverUrl=null,permissionMode="supervised",onUpdate,onPermission,onQuestion,repositoryMcp=null,readStateFile=undefined}={}){
@@ -674,7 +806,7 @@ export class OpenCodeAgentSession{
     this.activePrompt=null;this.reportedErrors=[];this.serverExit=null;
     // Session ID -> whether it is a subagent (child) session of this one. The IDs of the assistant's text and reasoning parts, whose
     // deltas are streamed, and the subagent sessions that already have this session's rules.
-    this.subagentSessions=new Map();this.assistantTextParts=new Set();this.reasoningParts=new Set();this.childRules=new Set();
+    this.subagentSessions=new Map();this.assistantTextParts=new Set();this.reasoningParts=new Set();this.subagentsGivenRules=new Set();
   }
   async start({providerSessionId=null,model=null}={}){
     const [{createOpencodeClient},{createOpencodeClient:createOpencodeV2Client}]=await loadOpenCodeClients();
@@ -685,7 +817,8 @@ export class OpenCodeAgentSession{
     this.client=createOpencodeClient(openCodeClientOptions(this.server,this.cwd));
     this.v2Client=createOpencodeV2Client(openCodeClientOptions(this.server,this.cwd));
     if(this.repositoryMcp)this.repositoryMcpStatus=await configureOpenCodeMcpServers(this.client,{cwd:this.cwd,servers:[{name:this.repositoryMcp.name,config:this.repositoryMcp.openCode}]});
-    // The session's commands, skills and agents are read beside its setup. Only the agents hold its creation, for at most ten seconds:
+    // The session's commands, skills and agents are read beside its setup. Only the agents hold its creation, for at most
+    // COMMAND_LIST_TIMEOUT_MS:
     // their rules name the folders the session's rules keep allowed. The commands (OpenCode lists MCP prompts among them, which can take
     // long) and the skills reach the composer whenever OpenCode lists them.
     const reads=openCodeInventoryReads(this.client,this.v2Client,this.cwd,{listMs:null}),announce=openCodeListsAsListed(this,reads);
@@ -804,7 +937,7 @@ export class OpenCodeAgentSession{
     const turn=this.activePrompt,ended=()=>this.activePrompt!==turn||turn.done||turn.cancelled||turn.stopError;
     if(!turn||ended())throw new Error("OpenCode has no running turn to steer.");
     const bodyParts=openCodeBodyParts(Array.isArray(parts)?parts:[]);
-    if(!bodyParts.length)throw new Error("OpenCode steering needs text or an attachment.");
+    if(!bodyParts.length)throw new Error("There is nothing to add to OpenCode's running turn: the message has no text and no attachment.");
     // The turn's own message is sent first, so the steered one follows it.
     await turn.started;
     if(ended())throw new Error("The OpenCode turn ended before the message could join it.");
@@ -903,13 +1036,13 @@ export class OpenCodeAgentSession{
     return {messageIds:source.map((message,index)=>[String(message?.info?.id||""),String(copies[index]?.info?.id||"")]).filter(([from,to])=>from&&to),tailId:this.#nextMessageId()};
   }
   #useSession(info,rules=null){
-    if(this.sessionId&&this.sessionId!==info.id){this.messageRoles.clear();this.partText.clear();this.assistantTextParts.clear();this.reasoningParts.clear();this.subagentSessions.clear();this.childRules.clear()}
+    if(this.sessionId&&this.sessionId!==info.id){this.messageRoles.clear();this.partText.clear();this.assistantTextParts.clear();this.reasoningParts.clear();this.subagentSessions.clear();this.subagentsGivenRules.clear()}
     this.sessionId=info.id;
     this.sessionPermission=Array.isArray(info.permission)?info.permission:Array.isArray(rules)?rules:[];
     if(this.sessionSetup)this.sessionSetup.sessionId=info.id;
   }
   #permissionRules(){
-    return openCodePermissionRules(this.permissionMode,{allowedTools:this.repositoryMcp?.name?[`${this.repositoryMcp.name}_*`]:[],trustedDirectories:this.trustedDirectories});
+    return openCodeSessionRules(this.permissionMode,{allowedTools:this.repositoryMcp?.name?[`${this.repositoryMcp.name}_*`]:[],trustedDirectories:this.trustedDirectories});
   }
   // A session that has other rules (one Trebell resumes, forks or rewinds into, or one whose mode changed) gets this mode's rules after
   // them, which then decide. Rules that already end the session's list are not sent again.
@@ -921,28 +1054,29 @@ export class OpenCodeAgentSession{
   async #applyPermissionRules(){this.sessionPermission=await this.#updateRules(this.sessionId,this.sessionPermission)}
   // A subagent's session started with only the parent's deny and folder rules; it gets the whole policy for its later runs.
   async #applyChildRules(childId){
-    const id=String(childId||"");if(!id||id===this.sessionId||this.childRules.has(id)||!this.client)return;
-    this.childRules.add(id);
+    const id=String(childId||"");if(!id||id===this.sessionId||this.subagentsGivenRules.has(id)||!this.client)return;
+    this.subagentsGivenRules.add(id);
     try{
       const child=unwrap(await this.client.session.get({path:{id},query:{directory:this.cwd}}),"session get");
       if(String(child?.parentID||"")!==this.sessionId)return;
       this.subagentSessions.set(id,true);
-      await this.#updateRules(id,child.permission,openCodeChildPermissionRules(this.#permissionRules(),child.permission));
-    }catch{this.childRules.delete(id)}
+      await this.#updateRules(id,child.permission,openCodeSubagentRules(this.#permissionRules(),child.permission));
+    }catch{this.subagentsGivenRules.delete(id)}
   }
-  // A message starting with "/name" runs OpenCode's command of that name; a
-  // name OpenCode does not list stays a message. Only the user's own text counts, not the working context Trebell adds before it.
+  // A message starting with "/name" runs OpenCode's command of that name, looked up in a list read fresh within
+  // COMMAND_LIST_TIMEOUT_MS; a name OpenCode does not list, or a list that did not come in time, stays a message. Only the user's
+  // own text counts, not the working context Trebell adds before it.
   async #slashCommand(parts){
     const own=parts.filter(part=>part?.[NATIVE_PROMPT_PROVENANCE]?.kind!=="working_context");
-    const text=own.filter(part=>part?.type==="text").map(part=>String(part.text||"")).join("\n").trim();
-    const match=text.match(/^\/([^\s/]+)(?:\s+([\s\S]*))?$/);if(!match)return null;
+    const asked=openCodeSlashCommand(own.filter(part=>part?.type==="text").map(part=>String(part.text||"")).join("\n").trim());
+    if(!asked)return null;
     let timer;
     const commands=await Promise.race([
       Promise.resolve(this.client.command.list({query:{directory:this.cwd}})).then(result=>unwrap(result,"command list")||[]),
       new Promise(resolve=>{timer=setTimeout(()=>resolve([]),COMMAND_LIST_TIMEOUT_MS);timer.unref?.()}),
     ]).catch(()=>[]).finally(()=>clearTimeout(timer));
-    const command=(Array.isArray(commands)?commands:[]).find(entry=>entry?.name===match[1]);
-    return command?{name:command.name,arguments:match[2]??""}:null;
+    const command=(Array.isArray(commands)?commands:[]).find(entry=>entry?.name===asked.name);
+    return command?{name:command.name,arguments:asked.arguments}:null;
   }
   // Without an error the turn was cancelled (by the user or a close); with one, Trebell stopped it and reports why.
   #stopPrompt(turn,{error=null,graceMs=OPENCODE_STOP_GRACE_MS}={}){
@@ -1048,10 +1182,11 @@ export class OpenCodeAgentSession{
   }
   async #event(event){
     const p=event?.properties||{};
-    if(p.sessionID&&p.sessionID!==this.sessionId&&SUBAGENT_EVENTS.has(event.type)&&(event.type!=="session.status"||p.status?.type==="retry")){
+    const held=p.sessionID&&p.sessionID!==this.sessionId?CHILD_SESSION_HOLDS.get(event.type):undefined;
+    if(held&&(held!=="retry"||p.status?.type==="retry")){
       if(!(await this.#isSubagentSession(p.sessionID)))return;
-      if(event.type==="question.asked")return await this.#question(p);
-      if(event.type==="session.status")return this.#retryScheduled(p.status,p.sessionID);
+      if(held==="question")return await this.#question(p);
+      if(held==="retry")return this.#retryScheduled(p.status,p.sessionID);
       return await this.#permission(event.type,p);
     }
     if(p.sessionID&&p.sessionID!==this.sessionId&&p.info?.sessionID!==this.sessionId)return;
@@ -1093,7 +1228,7 @@ export class OpenCodeAgentSession{
         // A read's row opens to what it read, and a question's to what was asked and answered (textOutput), not to the item's JSON.
         const state=part.state||{},input=state.input||{},read=part.tool==="read",question=part.tool==="question"&&Array.isArray(input.questions);
         const answers=Array.isArray(state.metadata?.answers)?state.metadata.answers:null;
-        const output=read?openCodeReadOutput(state.output):question?openCodeQuestionText(input.questions,answers,state.status==="error"?state.error:answers?"":state.output):state.output;
+        const output=read?unwrapOpenCodeRead(state.output):question?openCodeQuestionText(input.questions,answers,state.status==="error"?state.error:answers?"":state.output):state.output;
         const update={sessionUpdate:state.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:openCodeToolTitle(part.tool,{title:state.title,input,cwd:this.cwd}),kind:toolKind(part.tool),status,rawInput:input,rawOutput:output||state.error||null,...(read||question?{textOutput:true}:{})};
         this.onUpdate?.({sessionId:this.sessionId,update});
         // The task tool names the subagent's session once it has created it.

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { CheckpointService } from "../src/checkpoint-service.mjs";
-import { discoverEditors, listEditors } from "../desktop/editor-discovery.mjs";
+import { discoverEditors, editorCommandNames, listEditors } from "../desktop/editor-discovery.mjs";
 import { git, gitInfo } from "../src/git-service.mjs";
 
 // Process budgets for the child processes Trebell starts while it sits idle (goal.md section 6; perf plan budgets B6-B8). Each one
@@ -379,7 +379,9 @@ test("M8: one editor discovery starts one where launch, and the kept list none",
   const exec=(file,args,_options,callback)=>{launches.push([file,...args]);callback(Object.assign(new Error("not found"),{code:1}),"","INFO: Could not find files for the given pattern(s).\r\n")};
   const editors=await discoverEditors({platform:"win32",env:{LOCALAPPDATA:"C:\\Users\\dev\\AppData\\Local"},exec,exists:()=>false,readDirectory:()=>[]});
   assert.deepEqual(editors,[]);
-  assert.equal(launches.length,1);assert.equal(launches[0].length,23,"where gets all 22 commands at once");
+  // That one launch gets every command the editor list names (22 when this budget was set), each once.
+  assert.equal(launches.length,1);assert.deepEqual(launches[0].slice(1),editorCommandNames(),"where gets every editor command at once");
+  assert.equal(new Set(launches[0].slice(1)).size,launches[0].length-1);
   let clock=1_000_000;launches.length=0;
   const discover=()=>discoverEditors({platform:"win32",env:{},exec,exists:()=>false,readDirectory:()=>[]});
   await listEditors({refresh:true,now:()=>clock,discover});clock+=5*60_000;await listEditors({now:()=>clock,discover});

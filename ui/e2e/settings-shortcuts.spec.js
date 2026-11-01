@@ -58,8 +58,8 @@ test.describe("Typing a shortcut",()=>{
     await open(page,request,{mode});
     const saves=keybindingSaves(page);
     await openShortcuts(page);
-    const sidebarRow=row(page,"Toggle main sidebar");
-    const field=keyField(page,"Toggle main sidebar");
+    const sidebarRow=row(page,"Toggle sidebar");
+    const field=keyField(page,"Toggle sidebar");
     // Ctrl+B toggles the sidebar before anything is changed.
     await sidebarRow.locator("strong").click();
     await page.keyboard.press("Control+B");
@@ -145,7 +145,7 @@ test.describe("Typing a shortcut",()=>{
     await open(page,request);
     const saves=keybindingSaves(page);
     await openShortcuts(page);
-    const sidebarRow=row(page,"Toggle main sidebar"),field=keyField(page,"Toggle main sidebar"),message=sidebarRow.getByRole("alert");
+    const sidebarRow=row(page,"Toggle sidebar"),field=keyField(page,"Toggle sidebar"),message=sidebarRow.getByRole("alert");
     await retype(field,"Ctrl+Up");
     await field.press("Tab");
     await expect(message).toHaveText("“Up” is not a key name. Use ArrowUp. Until then the shortcut stays Ctrl+B.");
@@ -190,8 +190,8 @@ test.describe("Typing a shortcut",()=>{
     await open(page,request,{mode});
     const saves=keybindingSaves(page);
     await openShortcuts(page);
-    const sidebarRow=row(page,"Toggle main sidebar");
-    const field=whenField(page,"Toggle main sidebar");
+    const sidebarRow=row(page,"Toggle sidebar");
+    const field=whenField(page,"Toggle sidebar");
     await retype(field,"!modalOpen &&");
     await field.press("Tab");
     const message=sidebarRow.getByRole("alert");
@@ -226,7 +226,7 @@ test.describe("Typing a shortcut",()=>{
     await open(page,request);
     const saves=keybindingSaves(page);
     await openShortcuts(page);
-    const sidebarRow=row(page,"Toggle main sidebar"),field=whenField(page,"Toggle main sidebar"),message=sidebarRow.getByRole("alert");
+    const sidebarRow=row(page,"Toggle sidebar"),field=whenField(page,"Toggle sidebar"),message=sidebarRow.getByRole("alert");
     await expect(whenField(page,"Command palette")).toHaveAttribute("placeholder","Always");
     await retype(field,"Always");
     await field.press("Tab");
@@ -276,7 +276,7 @@ test.describe("Typing a shortcut",()=>{
     await expect(page.getByTestId("composer")).toBeVisible();
     const saves=keybindingSaves(page);
     await openShortcuts(page);
-    const sidebarRow=row(page,"Toggle main sidebar"),key=keyField(page,"Toggle main sidebar"),keyMessage=sidebarRow.getByRole("alert");
+    const sidebarRow=row(page,"Toggle sidebar"),key=keyField(page,"Toggle sidebar"),keyMessage=sidebarRow.getByRole("alert");
     const terminalRow=row(page,"Toggle terminal"),when=whenField(page,"Toggle terminal"),whenMessage=terminalRow.getByRole("alert");
     const keyText="“Up” is not a key name. Use ArrowUp. Until then the saved shortcut does not work.";
     const whenText="“Always” is not a context. Leave When empty to use the shortcut everywhere. Until then the saved condition does not work.";
@@ -288,7 +288,7 @@ test.describe("Typing a shortcut",()=>{
     await expect(when).toHaveValue("Always");
     await expect(when).toHaveAttribute("aria-invalid","true");
     await expect(when).toHaveAccessibleDescription(whenText);
-    await expect(whenField(page,"Toggle main sidebar")).not.toHaveAttribute("aria-invalid","true");
+    await expect(whenField(page,"Toggle sidebar")).not.toHaveAttribute("aria-invalid","true");
     await expect(page.locator(".keybindings-settings").getByRole("alert"),"only the two that cannot work are flagged").toHaveCount(2);
     await sidebarRow.scrollIntoViewIfNeeded();
     for(const width of [1280,900]){
@@ -341,7 +341,7 @@ test.describe("Typing a shortcut",()=>{
     await page.reload();
     await expect(page.getByTestId("composer")).toBeVisible();
     await openShortcuts(page);
-    const sidebarRow=row(page,"Toggle main sidebar"),terminalRow=row(page,"Toggle terminal");
+    const sidebarRow=row(page,"Toggle sidebar"),terminalRow=row(page,"Toggle terminal");
     await expect(sidebarRow.getByRole("alert")).toHaveText("“Ctlr” is not a modifier key. Use Ctrl, Alt, Shift or Mod. Until then the saved shortcut does not work.");
     await expect(terminalRow.getByRole("alert")).toHaveText("“Always” is not a context. Leave When empty to use the shortcut everywhere. Until then the saved condition does not work.");
     for(const width of [1280,900]){

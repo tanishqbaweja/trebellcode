@@ -54,6 +54,79 @@ test("Copies of a Codex update that other windows get count once, in any order, 
   assert.deepEqual(odd.update({threadId:"t",turnId:"turn-1",tokenUsage:update(bad,bad),running:true}),{totalTokens:150,inputTokens:100,cachedInputTokens:100,cacheWriteInputTokens:100,outputTokens:50,reasoningOutputTokens:50});
 });
 
+test("Codex updates with no thread, no turn or no total are passed over and leave nothing behind",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage(),r1=request(4_000,200),r2=request(4_400,350);
+  for(const message of [undefined,{},{threadId:"t",turnId:"turn-1",running:true},{threadId:"t",turnId:"turn-1",tokenUsage:{last:r1},running:true},{threadId:"",turnId:"turn-1",tokenUsage:update(r1,r1),running:true},{threadId:"t",turnId:0,tokenUsage:update(r1,r1),running:true},{threadId:"t",turnId:"turn-1",tokenUsage:null,running:true}])
+    assert.equal(usage.update(message),null);
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(r1,r1),running:true}),r1,"the turn's first total is no copy of one passed over, and counts its request");
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(add(r1,r2),r2),running:true}),add(r1,r2));
+});
+
+test("Codex counters given as text count, odd ones read as zero, and a first update with no request usage leaves the growth to the next",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage();
+  const text={totalTokens:"1200",inputTokens:"1000",cachedInputTokens:"600",cacheWriteInputTokens:"0",outputTokens:"200",reasoningOutputTokens:"50"};
+  assert.deepEqual(usage.update({threadId:"text",turnId:"turn-1",tokenUsage:update(text,text),running:true}),request(1_000,200,{cached:600,reasoning:50}));
+  const odd={totalTokens:-5,inputTokens:"many",cachedInputTokens:null,outputTokens:Number.NaN,reasoningOutputTokens:{}};
+  assert.equal(usage.update({threadId:"odd",turnId:"turn-1",tokenUsage:update(odd,odd),running:true}),null,"every counter reads 0: nothing to record yet");
+  const r1=request(3_000,100),r2=request(3_200,150),stray=request(10,1);
+  assert.equal(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:{total:r1},running:true}),null,"no request usage: nothing yet");
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(add(r1,r2),stray),running:true}),r2,"the growth from the turn's first total, not the request usage given");
+});
+
+test("A late Codex update of another turn moves the thread's total along, and a turn found running again counts from its own late update",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage();
+  const r1=request(5_000,300),late=request(900,90),r2=request(5_600,420);
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-2",tokenUsage:update(r1,r1),running:true}),r1);
+  assert.equal(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(add(r1,late),late),running:false}),null);
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-2",tokenUsage:update(add(r1,late,r2),r2),running:true}),add(r1,r2),"turn-1's late request is not turn-2's");
+  // The relay ended turn-2 (a read found the thread idle), and then finds it running again: its count starts over.
+  const again=createCodexTurnUsage(),q1=request(4_000,200),lateOwn=request(700,60),q2=request(4_300,380);
+  again.update({threadId:"t",turnId:"turn-2",tokenUsage:update(q1,q1),running:true});
+  assert.equal(again.update({threadId:"t",turnId:"turn-2",tokenUsage:update(add(q1,lateOwn),lateOwn),running:false}),null);
+  assert.deepEqual(again.update({threadId:"t",turnId:"turn-2",tokenUsage:update(add(q1,lateOwn,q2),q2),running:true}),q2);
+});
+
+test("A Codex turn's parts are held to their wholes in the usage given back, while its sum keeps them as counted",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage();
+  const first={totalTokens:150,inputTokens:100,cachedInputTokens:180,cacheWriteInputTokens:0,outputTokens:50,reasoningOutputTokens:70},more=request(300,40);
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(first,first),running:true}),{totalTokens:150,inputTokens:100,cachedInputTokens:100,cacheWriteInputTokens:0,outputTokens:50,reasoningOutputTokens:50});
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(add(first,more),more),running:true}),{totalTokens:490,inputTokens:400,cachedInputTokens:180,cacheWriteInputTokens:0,outputTokens:90,reasoningOutputTokens:70});
+});
+
+test("Codex usage keeps the 500 threads updated most lately, and a thread forgotten starts over",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage(),r1=request(2_000,100),r2=request(2_300,140);
+  for(let index=0;index<500;index++)usage.update({threadId:"thread-"+index,turnId:"turn-1",tokenUsage:update(r1,r1),running:true});
+  // A copy still makes thread-0 the most lately updated, so thread-1 is the one a 501st thread pushes out.
+  assert.equal(usage.update({threadId:"thread-0",turnId:"turn-1",tokenUsage:update(r1,r1),running:true}),null);
+  usage.update({threadId:"thread-500",turnId:"turn-1",tokenUsage:update(r1,r1),running:true});
+  assert.deepEqual(usage.update({threadId:"thread-0",turnId:"turn-1",tokenUsage:update(add(r1,r2),r2),running:true}),add(r1,r2),"kept: its sum goes on");
+  assert.deepEqual(usage.update({threadId:"thread-1",turnId:"turn-1",tokenUsage:update(add(r1,r2),r2),running:true}),r2,"forgotten: it counts its newest request only");
+});
+
+test("A Codex turn's first update counts its own request, though the thread's total moved by turns the server never saw",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage();
+  const r1=request(6_000,300),unseen=request(20_000,2_500,{cached:15_000}),q1=request(7_000,450),q2=request(7_400,500);
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(r1,r1),running:true}),r1);
+  // Every window closed: turn-1's other requests and its end reached no one. Then turn-2 starts with a window open again.
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-2",tokenUsage:update(add(r1,unseen,q1),q1),running:true}),q1,"not the requests of the turn before");
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-2",tokenUsage:update(add(r1,unseen,q1,q2),q2),running:true}),add(q1,q2));
+});
+
+test("A Codex thread knows copies among its 64 newest totals, and takes a copy of an older one in again",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage(),step=request(1_000,50),totals=[];
+  for(let index=0;index<65;index++){totals.push(add(...Array(index+1).fill(step)));usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(totals[index],step),running:true})}
+  assert.equal(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(totals[1],step),running:true}),null,"the 64th newest total is still a copy");
+  assert.deepEqual(usage.update({threadId:"t",turnId:"turn-1",tokenUsage:update(totals[0],step),running:true}),add(...Array(66).fill(step)),"the 65th newest is forgotten: a total lower than the newest, so its request counts");
+});
+
+test("Two Codex threads' updates, interleaved, each count their own requests, and one thread's total is no copy for another",async()=>{
+  const {createCodexTurnUsage}=await usageModule(),usage=createCodexTurnUsage(),a1=request(3_000,100),a2=request(3_300,160),b2=request(7_400,280);
+  assert.deepEqual(usage.update({threadId:"a",turnId:"turn-1",tokenUsage:update(a1,a1),running:true}),a1);
+  assert.deepEqual(usage.update({threadId:"b",turnId:"turn-1",tokenUsage:update(a1,a1),running:true}),a1);
+  assert.deepEqual(usage.update({threadId:"a",turnId:"turn-1",tokenUsage:update(add(a1,a2),a2),running:true}),add(a1,a2));
+  assert.deepEqual(usage.update({threadId:"b",turnId:"turn-1",tokenUsage:update(add(a1,b2),b2),running:true}),add(a1,b2));
+});
+
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 async function connect(url){const ws=new WebSocket(url);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});return ws}
 function rpcClient(ws){

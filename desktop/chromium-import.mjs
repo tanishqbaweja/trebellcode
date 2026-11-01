@@ -4,8 +4,6 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 
-const WEBKIT_EPOCH_OFFSET_SECONDS=11_644_473_600;
-
 function safeProfileName(value){const text=String(value||"");return Boolean(text)&&text!=="."&&text!==".."&&!text.includes("/")&&!text.includes("\\")&&!text.includes(sep)}
 
 export function chromiumCookieDatabase(profileDirectory){
@@ -28,21 +26,6 @@ export function discoverHeliumProfiles(root){
   const profiles=[];
   for(const [directory,name] of declared){const absolute=join(root,directory);if(chromiumCookieDatabase(absolute))profiles.push({id:absolute,name,directory:absolute,profileDirectory:directory})}
   return profiles;
-}
-
-export function windowsChromiumSameSite(value){if(Number(value)===0)return "no_restriction";if(Number(value)===1)return "lax";if(Number(value)===2)return "strict";return "unspecified"}
-export function webkitExpirySeconds(value){const seconds=Number(value||0);if(!(seconds>0))return undefined;const unix=seconds-WEBKIT_EPOCH_OFFSET_SECONDS;return unix>0?unix:undefined}
-
-export function decryptWindowsChromiumValue(encrypted,key,domain,schemaVersion=23){
-  const buffer=Buffer.from(encrypted||[]);if(!buffer.length)return "";
-  if(buffer.subarray(0,3).toString("latin1")!=="v10")return null;
-  const payload=buffer.subarray(3);if(payload.length<28||!Buffer.isBuffer(key)||key.length!==32)return null;
-  try{
-    const nonce=payload.subarray(0,12),ciphertext=payload.subarray(12,-16),tag=payload.subarray(-16);const decipher=createDecipheriv("aes-256-gcm",key,nonce);decipher.setAuthTag(tag);
-    let plaintext=Buffer.concat([decipher.update(ciphertext),decipher.final()]);
-    if(Number(schemaVersion)>=24){const expected=createHash("sha256").update(String(domain)).digest();if(plaintext.length<32||!plaintext.subarray(0,32).equals(expected))return null;plaintext=plaintext.subarray(32)}
-    return plaintext.toString("utf8");
-  }catch{return null}
 }
 
 export async function windowsDpapiUnprotect(data,{execFileImpl=execFile}={}){
@@ -88,29 +71,142 @@ export async function readWindowsChromiumKey(localStatePath,{unprotect=windowsDp
   const key=Buffer.from(await unprotect(wrapped.subarray(5)));if(key.length!==32)throw new Error("Helium cookie key has an unexpected length");return key;
 }
 
-export async function readChromiumCookieDatabase(database,key){
-  if(!existsSync(database))throw new Error("Chromium Cookies database was not found for that profile");
-  const temp=mkdtempSync(join(tmpdir(),"trebell-chromium-"));const snapshot=join(temp,"Cookies");
+// A profile's cookie store: the "Cookies" SQLite file Chromium keeps in the profile, read the way Chromium writes it on Windows.
+
+// Chromium counts time from 1601-01-01 UTC (the Windows FILETIME epoch), Unix from 1970-01-01 UTC: 11,644,473,600 s apart.
+const SECONDS_1601_TO_1970=-Date.UTC(1601,0,1)/1000;
+// Electron's names for Chromium's same-site codes 0, 1 and 2; Chromium's -1 and anything else are "unspecified".
+const SAME_SITE_NAMES=Object.freeze(["no_restriction","lax","strict"]);
+// A "v10" value is AES-256-GCM under the profile key: the prefix, a 12-byte nonce, the ciphertext, a 16-byte tag.
+const V10_PREFIX=Buffer.from("v10","latin1"),V10_NONCE_BYTES=12,V10_TAG_BYTES=16,PROFILE_KEY_BYTES=32;
+// From this database version, a value's plaintext starts with the SHA-256 digest of its host_key, binding it to that host.
+const HOST_BOUND_SINCE_VERSION=24;
+const MAX_COOKIE_ROWS=10_000,MAX_SKIPPED_HOSTS_LISTED=20;
+
+// Seconds since 1601 (Chromium's expiry, already divided down from microseconds) as Unix seconds; undefined when not after 1970.
+export function webkitExpirySeconds(secondsSince1601){
+  const unixSeconds=Number(secondsSince1601)-SECONDS_1601_TO_1970;
+  return unixSeconds>0?unixSeconds:undefined;
+}
+
+export function windowsChromiumSameSite(code){
+  return SAME_SITE_NAMES[Number(code)]??"unspecified";
+}
+
+// The plaintext of a v10 value, or null when the bytes are not one, are cut short, or do not authenticate under the key.
+function openV10Value(sealed,key){
+  if(!Buffer.isBuffer(key)||key.length!==PROFILE_KEY_BYTES)return null;
+  if(!sealed.subarray(0,V10_PREFIX.length).equals(V10_PREFIX))return null;
+  const nonceEnd=V10_PREFIX.length+V10_NONCE_BYTES,tagStart=sealed.length-V10_TAG_BYTES;
+  if(tagStart<nonceEnd)return null;
   try{
-    copyFileSync(database,snapshot);for(const suffix of ["-wal","-shm"]){const source=database+suffix;if(existsSync(source))copyFileSync(source,snapshot+suffix)}
-    const {DatabaseSync}=await import("node:sqlite");const db=new DatabaseSync(snapshot,{readOnly:true});
-    try{
-      const schemaVersion=Number(db.prepare("select value from meta where key = 'version' limit 1").get()?.value||0);const columns=new Set(db.prepare("pragma table_info(cookies)").all().map(row=>String(row.name)));
-      const topFrame=columns.has("top_frame_site_key")?"top_frame_site_key":"'' as top_frame_site_key";const sameSite=columns.has("samesite")?"samesite":"-1 as samesite";
-      const rows=db.prepare(`select host_key,name,value,encrypted_value,path,expires_utc / 1000000 as expires_seconds,is_secure,is_httponly,${sameSite},${topFrame} from cookies`).all().slice(0,10000);
-      const cookies=[];let skipped=0;const skippedHosts=new Set();
-      for(const row of rows){
-        const host=String(row.host_key||"");if(String(row.top_frame_site_key||"")!==""){skipped++;skippedHosts.add(host.replace(/^\./,""));continue}
-        const encrypted=Buffer.from(row.encrypted_value||[]);const value=encrypted.length?decryptWindowsChromiumValue(encrypted,key,host,schemaVersion):String(row.value||"");
-        if(value==null){skipped++;skippedHosts.add(host.replace(/^\./,""));continue}
-        const bare=host.replace(/^\./,"");const pathValue=String(row.path||"/");const secure=Number(row.is_secure)===1;const expirationDate=webkitExpirySeconds(row.expires_seconds);
-        cookies.push({url:`${secure?"https":"http"}://${bare}${pathValue.startsWith("/")?pathValue:"/"+pathValue}`,name:String(row.name||""),value,...(host.startsWith(".")?{domain:host}:{}),path:pathValue,secure,httpOnly:Number(row.is_httponly)===1,sameSite:windowsChromiumSameSite(row.samesite),...(expirationDate?{expirationDate}:{})});
-      }
-      return {cookies,skipped,skippedHosts:[...skippedHosts].slice(0,20)};
-    }finally{db.close()}
-  }finally{rmSync(temp,{recursive:true,force:true})}
+    const decipher=createDecipheriv("aes-256-gcm",key,sealed.subarray(V10_PREFIX.length,nonceEnd),{authTagLength:V10_TAG_BYTES});
+    decipher.setAuthTag(sealed.subarray(tagStart));
+    return Buffer.concat([decipher.update(sealed.subarray(nonceEnd,tagStart)),decipher.final()]);
+  }catch{
+    return null;
+  }
+}
+
+// The plaintext after the digest of the host it is bound to, or null when it does not start with that digest.
+function afterHostDigest(plaintext,host){
+  const digest=createHash("sha256").update(String(host)).digest();
+  const lead=plaintext.subarray(0,digest.length);
+  return lead.length===digest.length&&lead.equals(digest)?plaintext.subarray(digest.length):null;
+}
+
+function readSealedValue(sealed,key,host,hostBound){
+  const opened=openV10Value(sealed,key);
+  const clear=opened&&hostBound?afterHostDigest(opened,host):opened;
+  return clear?clear.toString("utf8"):null;
+}
+
+// A cookie's encrypted_value as text: "" when there is none, null when it cannot be read with this key for this host.
+export function decryptWindowsChromiumValue(encrypted,key,domain,schemaVersion=23){
+  const sealed=Buffer.from(encrypted||[]);
+  return sealed.length?readSealedValue(sealed,key,domain,Number(schemaVersion)>=HOST_BOUND_SINCE_VERSION):"";
+}
+
+// Copies the store, and its write-ahead log and shared-memory files when present, into a new private folder, so the browser's
+// own files are never opened and changes it has not yet folded into the main file are still read.
+function copyCookieStore(database){
+  const folder=mkdtempSync(join(tmpdir(),"trebell-chromium-"));
+  const removeCopy=()=>rmSync(folder,{recursive:true,force:true});
+  const copy=join(folder,"Cookies");
+  try{
+    copyFileSync(database,copy);
+    for(const companion of ["-wal","-shm"].filter(suffix=>existsSync(database+suffix)))copyFileSync(database+companion,copy+companion);
+  }catch(error){
+    removeCopy();
+    throw error;
+  }
+  return {copy,removeCopy};
+}
+
+// The cookie columns this store has. Older stores lack samesite and top_frame_site_key, read as -1 and ''. expires_utc counts
+// microseconds (about 1.3e16, past what node:sqlite returns as a number), so SQLite divides it down to seconds.
+function cookieColumnsSql(db){
+  const present=new Set(db.prepare("PRAGMA table_info(cookies)").all().map(column=>String(column.name)));
+  const orDefault=(column,fallback)=>present.has(column)?column:`${fallback} AS ${column}`;
+  return [
+    "host_key","name","value","encrypted_value","path","is_secure","is_httponly",
+    "expires_utc / 1000000 AS expiry_since_1601",orDefault("samesite","-1"),orDefault("top_frame_site_key","''"),
+  ].join(", ");
+}
+
+async function readCookieStoreRows(copy){
+  const {DatabaseSync}=await import("node:sqlite");
+  const db=new DatabaseSync(copy,{readOnly:true});
+  try{
+    const version=Number(db.prepare("SELECT value FROM meta WHERE key = ?").get("version")?.value||0);
+    const rows=db.prepare(`SELECT ${cookieColumnsSql(db)} FROM cookies LIMIT ?`).all(MAX_COOKIE_ROWS);
+    return {version,rows};
+  }finally{
+    db.close();
+  }
+}
+
+const withoutLeadingDot=host=>host.replace(/^\./,"");
+
+// The cookie Electron is given for a row, or null when the row is skipped: a partitioned cookie, or a value that does not decrypt.
+function electronCookieFromRow(row,key,version){
+  if(String(row.top_frame_site_key||"")!=="")return null;
+  const host=String(row.host_key||"");
+  const sealed=Buffer.from(row.encrypted_value||[]);
+  const value=sealed.length>0?decryptWindowsChromiumValue(sealed,key,host,version):String(row.value||"");
+  if(value===null)return null;
+  const path=String(row.path||"/"),secure=Number(row.is_secure)===1;
+  const cookie={
+    url:`${secure?"https":"http"}://${withoutLeadingDot(host)}${path.startsWith("/")?"":"/"}${path}`,
+    name:String(row.name||""),value,path,secure,httpOnly:Number(row.is_httponly)===1,sameSite:windowsChromiumSameSite(row.samesite),
+  };
+  // A domain cookie keeps its dotted host as its domain; a host-only cookie has none, so Electron keeps it host-only.
+  if(host.startsWith("."))cookie.domain=host;
+  // A session cookie has no expiry, so Electron keeps it a session cookie.
+  const expirationDate=webkitExpirySeconds(row.expiry_since_1601);
+  if(expirationDate!==undefined)cookie.expirationDate=expirationDate;
+  return cookie;
+}
+
+// Reads a copy of a profile's cookie store with the profile key: the cookies Electron can set, how many rows were skipped, and
+// up to 20 of the hosts they belong to.
+export async function readChromiumCookieFile(database,key){
+  if(!existsSync(database))throw new Error("Chromium Cookies database was not found for that profile");
+  const {copy,removeCopy}=copyCookieStore(database);
+  try{
+    const {version,rows}=await readCookieStoreRows(copy);
+    const cookies=[],skippedHosts=new Set();let skipped=0;
+    for(const row of rows){
+      const cookie=electronCookieFromRow(row,key,version);
+      if(cookie){cookies.push(cookie);continue}
+      skipped+=1;skippedHosts.add(withoutLeadingDot(String(row.host_key||"")));
+    }
+    return {cookies,skipped,skippedHosts:[...skippedHosts].slice(0,MAX_SKIPPED_HOSTS_LISTED)};
+  }finally{
+    removeCopy();
+  }
 }
 
 export async function readHeliumProfileCookies(profileDirectory,userDataRoot,options={}){
-  const database=chromiumCookieDatabase(profileDirectory);if(!database)throw new Error("Helium Cookies database was not found for that profile");const key=await readWindowsChromiumKey(join(userDataRoot,"Local State"),options);return readChromiumCookieDatabase(database,key);
+  const database=chromiumCookieDatabase(profileDirectory);if(!database)throw new Error("Helium Cookies database was not found for that profile");const key=await readWindowsChromiumKey(join(userDataRoot,"Local State"),options);return readChromiumCookieFile(database,key);
 }

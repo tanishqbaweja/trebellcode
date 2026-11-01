@@ -793,7 +793,7 @@ const pasteImage=(page,name)=>composer(page).evaluate(async(node,name)=>{
 },name);
 // The files a request asks Codex to read, as codexTurnInput names them: a line after the text with the file's path, and an image
 // item for an image.
-const sentFiles=params=>{const input=params?.input||[];return [...String(input[0]?.text||"").matchAll(/\[Attached (image|file) "([^"]+)" is saved at: ([^\n]+)\]/g)].map(([,kind,name,path])=>kind+" "+name+(input.some(part=>part.type==="localImage"&&part.path===path)?" with its image item":"")+(path.endsWith(name)?"":" at "+path))};
+const sentFiles=params=>{const input=params?.input||[];return [...String(input[0]?.text||"").matchAll(/\[(Image|File|Audio) attachment "([^"]+)" at ([^\n]+)\]/g)].map(([,kind,name,path])=>kind.toLowerCase()+" "+name+(input.some(part=>part.type==="localImage"&&part.path===path)?" with its image item":"")+(path.endsWith(name)?"":" at "+path))};
 
 // A follow-up's files go with it, as those of a message sent at once do: the one Send now steers into the running turn and the one
 // the queue starts when the turn ends each name their files under their message, and Codex is asked with them, in Trebell's queue
@@ -912,7 +912,7 @@ test("a follow-up Trebell Native's queue starts as the turn ends shows its messa
   }finally{holds.forEach(item=>item.open());await fixture.close()}
 });
 
-// With Follow-up behavior set to steer, a message sent while a turn runs is steered into it with its pasted screenshot: the message
+// With Messages sent during a turn set to steer, a message sent while a turn runs is steered into it with its pasted screenshot: the message
 // names its file under it, and the steer asks Codex with the file.
 test("a message steered into the running turn by Enter, with the steer setting, takes its pasted screenshot with it",async({page})=>{
   test.setTimeout(60_000);

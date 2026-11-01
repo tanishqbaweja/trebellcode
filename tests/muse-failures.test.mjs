@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as muse from "../src/muse-agent-session.mjs";
+import * as quota from "../src/muse-quota.mjs";
 import { itemFrame, settle, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 import { historyFromItemEntries } from "../ui/src/thread-history.js";
 
 // Muse Code's turn failures, usage limits and host recovery: a turn the subscription
-// quota stopped says the usage limit was reached and when it resets, a retry Muse schedules is the turn's retry row, a delivery gap or
+// quota stopped says Muse Code is out of usage until its allowance resets, a retry Muse schedules is the turn's retry row, a delivery gap or
 // a host that exits ends the turn once and takes its cards with it (the reply Muse wrote before stays), a host that died between turns
 // says so as no turn's and comes back on the next message, a message whose host fails is refused once in Muse's own words, and a notice
 // Trebell cannot read is skipped with a log line.
@@ -20,8 +21,8 @@ const USAGE={observedAtMs:1793610930250,tier:"tier-1",window:{usedPercent:3,wind
 const NOW=USAGE.observedAtMs;
 const REAL_REFUSAL="API error 429: muse-spark-1.3 is past this plan's quota until the window resets at 2026-11-03T06:30:00Z (3 retries spent)";
 const QUOTA_MESSAGE="API error 429: this plan's quota is spent; the window opens again later today. (limit_reached)";
-const limited=(error,message)=>muse.museUsageLimited?.(error,message);
-const resetAt=(...args)=>muse.museUsageLimitResetAt?.(...args);
+const limited=(error,message)=>quota.museQuotaStop?.(error,message);
+const resetAt=(...args)=>quota.museLimitLiftsAt?.(...args);
 
 async function runningTurn(fixture){
   const running=fixture.session.prompt([{type:"text",text:"go"}]);
@@ -30,9 +31,14 @@ async function runningTurn(fixture){
 }
 const complete=(fixture,turnId,terminal="completed",extra={})=>fixture.muse.notify("turn/completed",{sessionId:fixture.session.sessionId,viewCursor:"v",terminal,turnId,...extra});
 const shellApproval=(sessionId,turnId,approvalId="ap-1",extra={})=>({sessionId,approvalId,turnId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:"bash",viewCursor:"v",sourceRange:{},subject:{kind:"shell",command:"touch build-done.txt",stages:[]},currentRequirementId:{approvalId,sourceIndex:0},availableChoices:[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once"}],...extra});
-const question=(sessionId,turnId)=>({sessionId,userInputId:"q-1",turnId,itemId:"q-1",toolCallId:"call_q",toolName:"request_user_input",viewCursor:"v",questions:[{id:"approach",header:"Approach",question:"How wide should the change be?",options:[{label:"Narrow"},{label:"Broad"}],selection:{mode:"single"}}]});
+// A question Muse asks (userInput/requested): one choice of two, its options made from their labels.
+const question=(sessionId,turnId)=>({sessionId,turnId,userInputId:"q-1",itemId:"q-1",toolCallId:"call_q",toolName:"request_user_input",viewCursor:"v",
+  questions:[{id:"approach",header:"Approach",question:"How wide should the change be?",selection:{mode:"single"},options:["Narrow","Broad"].map(label=>({label}))}]});
 const failure=async promise=>{try{await promise}catch(error){return error}assert.fail("the turn did not fail")};
-const local=iso=>new Date(iso).toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
+// A reset time as the person reads it: their own zone and locale, with weekday, date and year, hour and minute.
+const local=iso=>new Date(iso).toLocaleString(undefined,{weekday:"short",year:"numeric",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+const OUT_OF_USAGE="Muse Code is out of usage for now. Wait for its allowance to reset, then try the message again.";
+const outUntil=iso=>`Muse Code is out of usage until its allowance resets on ${local(iso)}. Try the message again after that.`;
 
 test("Meta's quota refusal is a usage limit, and no other failure is",()=>{
   assert.equal(limited({},QUOTA_MESSAGE),true);
@@ -43,7 +49,7 @@ test("Meta's quota refusal is a usage limit, and no other failure is",()=>{
   assert.equal(limited({kind:"modelError",message:"The model call was declined.",quota:{limitKind:"tierLimit",resetsAtMs:USAGE.window.resetsAtMs}},"The model call was declined."),true,"one Muse types as quota");
 });
 
-test("a usage limit lifts once every used-up window has reset, at the reset a refusal names or types when no report has one, and has no reset otherwise",()=>{
+test("a usage limit lifts at the latest reset Trebell knows of, from the report's used-up windows and the time Muse typed on the quota or wrote into its refusal; one already past, or none at all, leaves it without a reset",()=>{
   const windowUsedUp={...USAGE,window:{...USAGE.window,usedPercent:104}};
   assert.equal(resetAt(windowUsedUp,NOW),"2026-11-02T13:40:00.000Z");
   const bothUsedUp={...windowUsedUp,weekly:{...USAGE.weekly,usedPercent:100}};
@@ -58,7 +64,14 @@ test("a usage limit lifts once every used-up window has reset, at the reset a re
   assert.equal(resetAt(undefined,Date.parse("2026-11-04T00:00:00Z"),{message:REAL_REFUSAL}),null);
 });
 
-test("a turn the quota stopped says the Muse Code usage limit was reached and when it resets, the later of two used-up windows, with Muse's own words kept; a plain 429 stays Muse's own failure",async()=>{
+test("the out-of-usage message names the reset in the person's own time when there is one Date can read, and otherwise says to wait for the reset",()=>{
+  assert.equal(muse.museOutOfUsageMessage("2026-11-09T00:00:00.000Z"),outUntil("2026-11-09T00:00:00.000Z"));
+  assert.match(muse.museOutOfUsageMessage("2031-03-14T07:20:00Z"),/2031/,"the year is shown");
+  for(const none of [null,undefined,"","soon","2031-02-30T25:00:00Z",0])assert.equal(muse.museOutOfUsageMessage(none),OUT_OF_USAGE,String(none));
+  assert.equal(muse.museOutOfUsageMessage(),OUT_OF_USAGE);
+});
+
+test("a turn the quota stopped says Muse Code is out of usage until its allowance resets, at the later of two used-up windows, with Muse's own words kept; a plain 429 stays Muse's own failure",async()=>{
   const fixture=await startSession();
   const hours=hours=>Date.now()+hours*3_600_000,windowReset=hours(2),weekReset=hours(50);
   fixture.muse.notify("usage/changed",{observedAtMs:Date.now(),tier:"tier-1",window:{usedPercent:104,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:100,resetsAtMs:weekReset}});
@@ -67,7 +80,7 @@ test("a turn the quota stopped says the Muse Code usage limit was reached and wh
   let error=await failure(turn.running);
   assert.equal(error.usageLimit,true);
   assert.equal(error.resetAt,new Date(weekReset).toISOString(),"usage/changed names no session, and the later reset wins");
-  assert.equal(error.message,`Muse Code usage limit reached. Send the message again after it resets at ${local(error.resetAt)}.`);
+  assert.equal(error.message,outUntil(error.resetAt));
   assert.equal(error.detail,QUOTA_MESSAGE);
   // A refusal relayed without error.quota names its own reset.
   const named=new Date(hours(30)).toISOString().replace(/\.\d{3}Z$/,"Z");
@@ -81,7 +94,7 @@ test("a turn the quota stopped says the Muse Code usage limit was reached and wh
   turn=await runningTurn(fixture);
   complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:"The model call was declined.",quota:{limitKind:"tierLimit",resetsAtMs:Date.now()-1000},retryable:true}});
   error=await failure(turn.running);
-  assert.deepEqual([error.usageLimit,error.resetAt,error.message],[true,null,"Muse Code usage limit reached. Send the message again once it resets."]);
+  assert.deepEqual([error.usageLimit,error.resetAt,error.message],[true,null,OUT_OF_USAGE]);
   // A plain rate limit is Muse's own failure.
   turn=await runningTurn(fixture);
   complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:"API error 429: Too many requests for now. (rate_limit_error)",retryable:true}});
@@ -99,7 +112,7 @@ test("a usage report Trebell cannot read is skipped with a log line and the sess
   complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:QUOTA_MESSAGE,retryable:false}});
   const error=await failure(turn.running);
   assert.deepEqual([error.usageLimit,error.resetAt],[true,null]);
-  const skipped=fixture.updates.filter(update=>update.sessionUpdate==="protocol_warning"&&update.dropped===true);
+  const skipped=fixture.updates.filter(({sessionUpdate,dropped})=>sessionUpdate==="protocol_warning"&&dropped===true);
   assert.deepEqual(skipped.map(update=>[update.method,update.message]),[["usage/changed","Trebell skipped Muse Code's usage/changed: it names no readable usage windows."],["usage/changed","Trebell skipped Muse Code's usage/changed: it names no readable usage windows."]]);
   assert.equal(fixture.session.dead,false);assert.equal(fixture.muse.stdinEnded,false,"the host is kept");
   await fixture.session.close();
@@ -124,7 +137,9 @@ test("turn/retryScheduled is the turn's retry row, and the turn goes on; one Tre
   fixture.muse.write(itemFrame("item/completed",sid,{itemId:"say",kind:"agentMessage",turnId,revision:1,status:"completed",text:"Done after a retry."}));
   complete(fixture,turnId);
   assert.equal((await running).stopReason,"end_turn","the retry did not end the turn");
-  assert.deepEqual(fixture.updates.filter(update=>update.sessionUpdate==="runtime_error"),[{sessionUpdate:"runtime_error",willRetry:true,message:"Muse Code is trying again in 2 s (attempt 2 of 3): 429 Too Many Requests"}]);
+  // Re-pinned: the row read "Muse Code is trying again in 2 s (attempt 2 of 3): <reason>"; it now reads as every harness's own retry
+  // row does (src/retry-notice.mjs), with the same facts.
+  assert.deepEqual(fixture.updates.filter(update=>update.sessionUpdate==="runtime_error"),[{sessionUpdate:"runtime_error",willRetry:true,message:"429 Too Many Requests. Muse Code sends the request again in 2 s, as try 2 of 3."}]);
   assert.deepEqual(fixture.updates.filter(update=>update.dropped).map(update=>update.message),["Trebell skipped Muse Code's turn/retryScheduled: it names no readable attempt, delay or reason."]);
   assert.equal(fixture.session.dead,false);
   await fixture.session.close();
@@ -278,14 +293,14 @@ test("through the relay, Muse retrying the turn's request is the turn's retry ro
     const {turn}=await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please retry once"}]});
     await relay.completed(thread.id,1);
     const errors=relay.notifications.filter(item=>item.method==="error"&&item.params.threadId===thread.id);
-    assert.deepEqual(errors.map(item=>item.params),[{threadId:thread.id,turnId:turn.id,willRetry:true,message:"Muse Code is trying again in 2 s (attempt 2 of 3): 429 Too Many Requests"}]);
+    assert.deepEqual(errors.map(item=>item.params),[{threadId:thread.id,turnId:turn.id,willRetry:true,message:"429 Too Many Requests. Muse Code sends the request again in 2 s, as try 2 of 3."}]);
     assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"completed");
     assert.equal(relay.reply(thread.id),"Muse fixture reply after a retry.");
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"This one hits the quota"}]});
     await relay.completed(thread.id,2);
     const failed=relay.threadStore.get(thread.id).turns.at(-1);
     assert.equal(failed.status,"failed");
-    assert.match(failed.error.message,new RegExp("^Muse Code usage limit reached\\. Send the message again after it resets at "+local("2031-03-14T07:20:00Z").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\."));
+    assert.equal(failed.error.message,outUntil("2031-03-14T07:20:00Z"));
   }finally{await relay.close()}
 });
 

@@ -1377,7 +1377,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Context",exact:true}).click();
     const inspector=panel.locator(".context-inspector");
     await expect(inspector).toContainText("3 selected files");
-    await expect(inspector).toContainText("Codex additional context");
+    await expect(inspector).toContainText("Extra context sent to Codex");
     await expect(inspector).toContainText("src/auth/session.js");
     await expect(inspector).toContainText("defines task-related symbol: RefreshSession");
     await expect(inspector).toContainText("138");
@@ -2802,7 +2802,7 @@ test("settings page visual audit",async({page,request})=>{
   }));
   expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth+1);
   await expect(page.getByRole("button",{name:/General/})).toHaveAttribute("aria-current","page");
-  await expect(page.getByRole("heading",{name:"Follow-up behavior"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Messages sent during a turn"})).toBeVisible();
   await expect(page.getByRole("heading",{name:"Context management"})).toBeVisible();
   const typeScale=await page.evaluate(()=>{
     const px=selector=>parseFloat(getComputedStyle(document.querySelector(selector)).fontSize)||0;
@@ -2843,7 +2843,7 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("heading",{name:"Model provider"})).toHaveCount(0);
   await expect(page.getByLabel("Model ID")).toHaveCount(0);
   await page.screenshot({animations:"disabled",path:auditDir+"settings-agents-1600x980.png",fullPage:true});
-  await page.getByRole("button",{name:"Add custom model",exact:true}).click();
+  await page.getByRole("button",{name:"Add a model by ID",exact:true}).click();
   await expect(page.getByLabel("Model ID")).toBeVisible();
   await page.screenshot({animations:"disabled",path:auditDir+"settings-agents-add-model-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Cancel",exact:true}).click();
@@ -2853,7 +2853,7 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("heading",{name:"Storage cleanup"})).toBeVisible();
   const scopeSentence=page.getByTestId("settings-scope-sentence");
   await expect(scopeSentence).toBeVisible();
-  await expect(scopeSentence).toContainText("Applying settings for");
+  await expect(scopeSentence).toContainText("Settings below are for");
   await expect(scopeSentence.getByLabel("Project scope")).toHaveValue("");
   await expect(page.locator(".scoped-settings-targets")).toHaveCount(0);
   // The two cleanups do different things, and each button says which.
@@ -3067,7 +3067,7 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await page.getByRole("button",{name:"Add profile",exact:true}).click();
   const editor=page.locator(".runtime-profile-editor");
   await expect(editor).toBeVisible();
-  const threshold=editor.getByLabel("Auto-compact after");
+  const threshold=editor.getByLabel("Compaction threshold");
   await expect(threshold).toBeVisible();
   await threshold.fill("300000");
   await expect(threshold).toHaveValue("300000");
@@ -3353,7 +3353,7 @@ test("custom model edits refresh the catalog without refreshing bootstrap",async
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
   const addBefore={...requests};
-  await page.getByRole("button",{name:"Add custom model",exact:true}).click();
+  await page.getByRole("button",{name:"Add a model by ID",exact:true}).click();
   await page.getByLabel("Model ID").fill("codex/custom-fast");
   await page.getByLabel("Display name").fill("Custom Fast");
   await page.getByRole("button",{name:"Save custom model",exact:true}).click();
@@ -3718,6 +3718,8 @@ test("project and environment configuration forms stay readable when expanded",a
   await expect(projectCard.locator(".project-identity-editor")).toBeVisible();
   await projectCard.getByRole("button",{name:"Add action"}).click();
   await expect(projectCard.locator(".project-action-editor")).toBeVisible();
+  await expect(projectCard.locator(".project-actions-head").first()).toContainText("Saved actions");
+  await expect(projectCard.getByLabel("Show the preview each time this action runs")).toBeDisabled();
   const projectMetrics=await projectCard.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(projectMetrics.scroll).toBeLessThanOrEqual(projectMetrics.client+1);
   await page.screenshot({animations:"disabled",path:auditDir+"projects-expanded-1600x980.png",fullPage:true});
@@ -3735,6 +3737,7 @@ test("project and environment configuration forms stay readable when expanded",a
   await page.getByRole("button",{name:"Environments",exact:true}).click();
   const addCard=page.locator(".environment-create");
   await expect(addCard).toBeVisible();
+  await expect(page.getByText("No remote environment is saved. Agents run on this computer.",{exact:true})).toBeVisible();
   await addCard.getByLabel("Type").selectOption("ssh");
   await expect(addCard.getByLabel("Host")).toBeVisible();
   await addCard.getByLabel("Name").fill("Production sandbox");
@@ -6411,13 +6414,15 @@ test("populated source control and pull request detail stay usable",async({page,
   await expect(panel.getByText("The new resize behavior feels much better.")).toBeVisible();
   await expect(panel.getByRole("button",{name:"Approve",exact:true})).toHaveCount(0);
   await panel.getByRole("button",{name:"Comment / review",exact:true}).click();
+  // Re-pinned: a review's box and its picker go by GitHub's names, Review comment and Review type (they were Review summary and
+  // Review verdict).
   const composer=panel.getByTestId("pr-composer");
   await expect(composer).toBeVisible();
   const commentDraft=composer.getByLabel("Pull request comment");
   await commentDraft.fill("Looks good overall; leaving one note.");
   await composer.getByRole("tab",{name:"Review",exact:true}).click();
-  await composer.getByLabel("Review verdict").selectOption("REQUEST_CHANGES");
-  const reviewDraft=composer.getByLabel("Review summary");
+  await composer.getByLabel("Review type").selectOption("REQUEST_CHANGES");
+  const reviewDraft=composer.getByLabel("Review comment");
   await reviewDraft.fill("Please address the remaining resize edge case.");
   await composer.getByRole("tab",{name:"Comment",exact:true}).click();
   await expect(commentDraft).toHaveValue("Looks good overall; leaving one note.");
@@ -6429,8 +6434,8 @@ test("populated source control and pull request detail stay usable",async({page,
   await panel.getByRole("button",{name:"Comment / review",exact:true}).click();
   const reopened=panel.getByTestId("pr-composer");
   await reopened.getByRole("tab",{name:"Review",exact:true}).click();
-  await expect(reopened.getByLabel("Review summary")).toHaveValue("Please address the remaining resize edge case.");
-  await expect(reopened.getByLabel("Review verdict")).toHaveValue("REQUEST_CHANGES");
+  await expect(reopened.getByLabel("Review comment")).toHaveValue("Please address the remaining resize edge case.");
+  await expect(reopened.getByLabel("Review type")).toHaveValue("REQUEST_CHANGES");
   await page.screenshot({animations:"disabled",path:auditDir+"source-control-pr-composer-review-1600x980.png",fullPage:true});
   await reopened.locator(".pr-composer-submit button").click();
   await expect.poll(()=>prActions.length).toBe(2);
@@ -6444,7 +6449,7 @@ test("populated source control and pull request detail stay usable",async({page,
   await panel.getByRole("button",{name:"Comment / review",exact:true}).click();
   const compactComposer=panel.getByTestId("pr-composer");
   await compactComposer.getByRole("tab",{name:"Review",exact:true}).click();
-  await compactComposer.getByLabel("Review summary").fill("Compact-width review draft.");
+  await compactComposer.getByLabel("Review comment").fill("Compact-width review draft.");
   const compactComposerBox=await box(compactComposer),panelBodyBox=await box(panel.locator(".context-panel-body"));
   expect(compactComposerBox.x).toBeGreaterThanOrEqual(panelBodyBox.x);
   expect(compactComposerBox.x+compactComposerBox.width).toBeLessThanOrEqual(panelBodyBox.x+panelBodyBox.width+1);

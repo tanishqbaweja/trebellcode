@@ -1,10 +1,13 @@
 import { resolve } from "node:path";
 import { acpToolFrame } from "./acp-tool-state.mjs";
-import { fileUriPath } from "./file-uri.mjs";
-import { textExtractedTo } from "./prompt-attachments.mjs";
+import { linkedFileLine } from "./prompt-attachments.mjs";
+import { retryNotice, retryReason } from "./retry-notice.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
-import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museLaunchPlan, museServeArgs, museSessionPolicy, museWorkspaceRoot } from "./muse-host.mjs";
+import { museAnswerPayload, museCardButtons, museDecisionChoices, museDecisionToSend, museDialogQuestions } from "./muse-asking.mjs";
+import { MuseHost, MUSE_HOST_BOUNDS, loadMuseSdk, museLaunchPlan, museServeArgs, museSessionSettings, museWorkspaceRoot } from "./muse-host.mjs";
 import { resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
+import { MUSE_LAST_DATE_MS, museLimitLiftsAt, museQuotaStop } from "./muse-quota.mjs";
+import { museItemRow, museLabel, museShowsNoRow, museTodoPlan, museWorkProgress, museWorkflowAgentRows } from "./muse-rows.mjs";
 import { MUSE_REASONING_EFFORTS } from "./model-reasoning-effort.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
@@ -18,8 +21,6 @@ import { SessionRefusalError } from "./session-refusal.mjs";
 
 export const MUSE_REQUEST_TIMEOUT_MS=30_000;
 export const MUSE_INTERRUPT_TIMEOUT_MS=30_000;
-// Muse takes at most this many characters of a person's own words in an answer (userInput/answer's freeText and note).
-export const MUSE_FREE_TEXT_LIMIT=500;
 // How often Trebell asks the person again about one approval or question whose answer Muse would not take.
 const MUSE_ASK_ATTEMPTS=3;
 // How many settled approvals and questions a session remembers, so a late copy of one is not asked again.
@@ -29,24 +30,23 @@ export const MUSE_SIGNED_OUT_MESSAGE="Muse Code is signed out. Sign in with muse
 // Muse Code: after the host's own reason, an "it" would read as the last thing that reason names (another Muse process, a file).
 const MUSE_NEXT_MESSAGE="The next message starts Muse Code again.";
 export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. "+MUSE_NEXT_MESSAGE;
-// A host that did not grant session MCP servers is refused when Trebell has servers for the session.
-export const MUSE_SESSION_MCP_MESSAGE="This Muse Code build cannot take Trebell's MCP servers into its sessions. Update Muse Code to a version that supports session MCP servers.";
+// Why a session with MCP servers to hand over did not start: its host never granted sessionMcp (#mcpConfig).
+export const MUSE_MCP_UNSUPPORTED="Trebell could not hand its tools and your MCP servers to Muse Code: this Muse Code build does not accept MCP servers for a session. Install a newer Muse Code release.";
 const ITEM_EVENTS=new Set(["item/started","item/updated","item/completed"]);
 // Work that runs on past the turn that started it: Muse's subagents and workflows.
 const WORK_KINDS=new Set(["subagent","workflow"]);
 // How many ended Muse turns a session remembers, so a late copy of one's turn/started starts no turn of its own.
 const MUSE_ENDED_TURNS_LIMIT=200;
-// Work that has said nothing for this long holds the host no more:
-// a workflow gone silent, or one whose end never reached Trebell.
-export const MUSE_MAX_IDLE_PIN_MS=4*60*60_000;
+// Work that has said nothing for this long holds the host no more: a workflow gone silent, or one whose end never reached Trebell.
+// Trebell's own choice, eight hours, the same as Claude Code's hold (claude-agent-session CLAUDE_MAX_IDLE_PIN_MS). Once the hold
+// ends, the relay's next idle sweep closes the session, which stops any of that work still running, so the hold outlasts a working
+// day's quiet build, training run or download, and the four hours 2.1.2 gave, so nothing 2.1.2 kept running stops sooner now. The
+// cost: a host whose work's end never reached Trebell keeps its process and memory that long.
+export const MUSE_MAX_IDLE_PIN_MS=8*60*60_000;
 // Meta's provider refuses "none"; the rest are MSP's efforts.
 const MUSE_EFFORTS=new Set(MUSE_REASONING_EFFORTS);
 // The model choice that lets Muse pick: the catalog's default row; the word itself never goes to Muse.
 const MUSE_DEFAULT_MODEL="default";
-// Items with rows of their own elsewhere (todo lists, questions, workflows) unless they failed, and Muse's housekeeping: the user's
-// own message, the reminder children every model step runs, and compactions, whose end settles /compact (compact).
-const OWN_ROW_TOOLS=new Set(["write_todos","request_user_input","workflow"]);
-const SKIPPED_KINDS=new Set(["userMessage","reminderChild","compaction"]);
 const ACTIONS=Object.freeze({
   "session/start":"start the session","session/resume":"resume this conversation","session/setApprovalMode":"set the session's approval mode",
   "session/setModel":"switch to the thread's model",
@@ -75,21 +75,34 @@ function compactionFailure(reason){const words=text(reason).trim().replaceAll("_
 function text(value){return typeof value==="string"?value:value==null?"":String(value)}
 function wait(ms){let timer;const promise=new Promise(resolve=>{timer=setTimeout(resolve,ms);timer?.unref?.()});return {promise,cancel:()=>clearTimeout(timer)}}
 async function within(promise,ms){const timer=wait(ms);try{return await Promise.race([Promise.resolve(promise).then(()=>true,()=>true),timer.promise.then(()=>false)])}finally{timer.cancel()}}
-// Whether a Muse turn's events are the turn's: its own, or a turn it took in.
-const owns=(turn,turnId)=>turnId===turn.turnId||turn.joined.has(turnId);
+// Whether an event naming a Muse turn is another turn's: one it names that is neither this turn's own nor a turn this one took in
+// (joined). An event that names no turn is the running turn's.
+function elsewhere(turn,turnId){
+  if(!turnId)return false;
+  return turnId!==turn.turnId&&!turn.joined.has(turnId);
+}
 
-// Prompt parts for turn/start and turn/steer: text as it is, images as base64 with their media type, and any other attachment as
-// a line naming the file it was saved to, and the file a document's text was extracted to. An input with neither text nor an image
-// is refused.
+// What a message with neither words nor a picture is told: MSP takes no turn input that is empty.
+export const MUSE_EMPTY_PROMPT="This message has no text and no image, so there is nothing to send to Muse Code.";
+// One prompt part as MSP turn input (TurnInputPart), by the part's type, or null when it carries nothing to send: text as it is, an
+// image as base64 with its media type, and any other attachment as Trebell's attachment line for it (linkedFileLine): the file it
+// was saved to, and the file a document's text was extracted to. A type not named here is left out.
+const TURN_INPUT={
+  text:part=>{const words=text(part.text);return words?{type:"text",text:words}:null},
+  image:part=>part.data?{type:"image",base64Data:text(part.data),mediaType:text(part.mimeType||part.mime_type)||"image/png"}:null,
+  resource_link:part=>part.uri?{type:"text",text:linkedFileLine(part)}:null,
+};
+function turnInput(part){
+  const convert=typeof part?.type==="string"&&Object.hasOwn(TURN_INPUT,part.type)?TURN_INPUT[part.type]:null;
+  return convert?convert(part):null;
+}
+// Input that gives Muse something to read: an image, or text that is more than white space.
+const hasContent=input=>input.type!=="text"||/\S/.test(input.text);
+// The input of turn/start and turn/steer, in the parts' own order; one with no content at all is refused (MUSE_EMPTY_PROMPT).
 export function museInputParts(parts=[]){
-  const out=[];
-  for(const part of Array.isArray(parts)?parts:[]){
-    if(part?.type==="text"){const value=text(part.text);if(value)out.push({type:"text",text:value})}
-    else if(part?.type==="image"&&part.data)out.push({type:"image",base64Data:text(part.data),mediaType:text(part.mimeType||part.mime_type)||"image/png"});
-    else if(part?.type==="resource_link"&&part.uri)out.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??text(part.uri)}${textExtractedTo(part)}`});
-  }
-  if(!out.some(part=>part.type==="image"||part.text.trim()))throw new Error("Muse Code needs text or an image to start a turn.");
-  return out;
+  const input=(Array.isArray(parts)?parts:[]).map(part=>turnInput(part)).filter(Boolean);
+  if(!input.some(hasContent))throw new Error(MUSE_EMPTY_PROMPT);
+  return input;
 }
 
 // What Muse's transcript shows for the turn: the person's own words, without Trebell's working context or runtime notes.
@@ -100,47 +113,11 @@ export function museDisplayText(parts=[]){
   return words||(list.some(part=>part?.type==="image")?"Attached image":"");
 }
 
-export function museToolStatus(item={}){
-  if(item.status==="inProgress")return "in_progress";
-  if(item.status==="completed"&&!(item.kind==="compaction"&&item.outcome&&item.outcome!=="compacted"))return "completed";
-  return "failed";
-}
-// A row's status as Trebell reads Muse's work: a subagent whose result is ready is done, though Muse's item still runs.
-export function museWorkStatus(item={}){
-  return item.kind==="subagent"&&item.status==="inProgress"&&item.controlStatus==="resultReady"?"completed":museToolStatus(item);
-}
 // Work of a turn that holds Muse's host while it runs, its turn ended or not: a subagent or a workflow still running, or a command
 // Muse sent to the background (background), whose tool call may settle as it goes there: MSP tells its end apart, as an item of its own
 // (backgroundTerminalCompletion) naming the call, and until that end the command runs (endedCalls: the calls whose end came). Closing
 // the host ends it all.
-function runningWork(item,endedCalls=null){return WORK_KINDS.has(item?.kind)?museWorkStatus(item)==="in_progress":item?.kind==="toolCall"&&item.background===true&&!endedCalls?.has(text(item.callId))}
-// A title's first line, at most 72 characters.
-function clip(value){const line=text(value).trim().split(/\r?\n/)[0].trim();return line.length>72?line.slice(0,71)+"…":line}
-function failureDetail(item,status){return status==="failed"?text(item.failureReason)||`Muse Code reported ${item.status||"a failure"}.`:""}
-export function museWorkflowTitle(item={}){const name=clip(item.entryId);return name?`Workflow ${name}`:"Workflow"}
-
-// A workflow's agents: a row each, after the workflow's own, by child id, as Muse re-sends every child
-// with its latest attempt on each change. Scheduled is pending; a completed attempt is done unless it names a failure kind; any other
-// end fails it; one with no end of its own ends as its workflow did. labels: each child's last label, which later revisions leave out.
-export function museWorkflowAgentUpdates(item={},labels=new Map()){
-  const workflow=museWorkflowTitle(item),ended=museToolStatus(item);
-  const children=new Map((Array.isArray(item.children)?item.children:[]).filter(child=>child&&typeof child.childId==="string"&&child.childId).map(child=>[child.childId,child]));
-  return [...children.values()].map((child,index)=>{
-    const id=`${text(item.itemId)}:agent:${child.childId}`,label=clip(child.label);if(label)labels.set(id,label);
-    const terminal=text(child.terminal),reason=text(child.failureReason)||text(child.failureKind);
-    const status=terminal?(terminal==="completed"&&!text(child.failureKind)?"completed":"failed"):ended!=="in_progress"?ended:child.status==="scheduled"?"pending":"in_progress";
-    const detail=status!=="failed"?"":reason||(terminal?`Muse Code reported ${terminal}.`:"The workflow ended before this agent finished.");
-    const name=`${workflow} · ${labels.get(id)||`agent ${index+1}`}`;
-    return {toolCallId:id,status,kind:"other",title:detail?`${name}: ${detail}`:name,rawInput:{workflow:text(item.entryId),agent:labels.get(id)||null,attempt:Number.isInteger(child.attempt)?child.attempt:null},rawOutput:reason};
-  });
-}
-
-// Muse's todo list (session/todoListChanged, replaced whole each time) as the turn's plan: its steps in order, pending, in
-// progress or done, without the ones Muse cancelled or left blank. An empty list clears the plan.
-export function musePlanEntries(items=[]){
-  return (Array.isArray(items)?items:[]).filter(item=>item&&typeof item.text==="string"&&item.text.trim()&&item.status!=="cancelled")
-    .map(item=>({content:item.text.trim(),status:item.status==="completed"?"completed":item.status==="inProgress"?"in_progress":"pending"}));
-}
+function runningWork(item,endedCalls=null){return WORK_KINDS.has(item?.kind)?museWorkProgress(item)==="in_progress":item?.kind==="toolCall"&&item.background===true&&!endedCalls?.has(text(item.callId))}
 
 // Muse's token counts as Trebell keeps OpenAI-style usage (Muse's cache counters are subsets of input, reasoning of
 // output): input the counted-once prompt tokens with cache reads and writes inside it, reasoning inside output, and the total input
@@ -185,101 +162,6 @@ export function museMcpServers(servers=[]){
   return out;
 }
 
-function jsonObject(value){
-  if(typeof value!=="string"||!value.trim())return null;
-  try{const parsed=JSON.parse(value);return parsed&&typeof parsed==="object"&&!Array.isArray(parsed)?parsed:null}catch{return null}
-}
-function webHits(value){
-  const results=jsonObject(value)?.results;if(!Array.isArray(results))return null;
-  return results.filter(hit=>hit&&typeof hit==="object").map(({url,title,snippet})=>({
-    ...(typeof url==="string"&&url.trim()?{url:url.trim()}:{}),...(typeof title==="string"&&title.trim()?{title:title.trim()}:{}),...(typeof snippet==="string"&&snippet?{snippet}:{}),
-  }));
-}
-function hitsText(results){return results.map(hit=>[hit.title&&hit.url?`${hit.title} (${hit.url})`:hit.title||hit.url||"",hit.snippet||""].filter(Boolean).join("\n")).filter(Boolean).join("\n\n")}
-
-// One Muse item as an ACP tool update: Muse's shell and the person's own shell commands run
-// as commands with their output and exit code; a write, edit or patch with a file is a file edit with its exact old and new text
-// (an ACP diff) or Muse's patch; a web search lists its hits and a fetched page its text; anything else is a tool row with its
-// arguments. Muse's tool arguments are model-written JSON, which may not parse while they stream. running: a command Muse sent to the
-// background still runs (runningWork), though Muse may settle its call as it goes there: its row runs on until Muse tells its end.
-export function museToolUpdate(item={},{running=false}={}){
-  // A subagent's row: titled by its role, else its objective, which is its prompt, with its result. A
-  // workflow's: titled by its entry, with its final summary.
-  if(WORK_KINDS.has(item.kind)){
-    const status=museWorkStatus(item),detail=failureDetail(item,status),subagent=item.kind==="subagent";
-    const name=subagent?`Subagent · ${clip(item.role)||clip(item.objective)||"Muse Code agent"}`:museWorkflowTitle(item);
-    const result=subagent?text(item.result?.text??item.result?.summary):text(item.finalSummary??(status==="in_progress"?item.fallbackText:""));
-    const rawInput=subagent?{...(item.objective?{objective:text(item.objective)}:{}),...(item.role?{role:text(item.role)}:{})}:item.entryId?{workflow:text(item.entryId)}:{};
-    return {toolCallId:text(item.itemId),status,kind:"other",title:detail?`${name}: ${detail}`:name,rawInput,rawOutput:[detail,result].filter(Boolean).join("\n")};
-  }
-  const args=jsonObject(item.args),arg=(...keys)=>{for(const key of keys)if(typeof args?.[key]==="string")return args[key];return undefined};
-  const tool=text(item.tool||item.kind)||"tool",settled=museToolStatus(item),status=running&&settled==="completed"?"in_progress":settled,name=tool;
-  const detail=failureDetail(item,status);
-  const body=item.visibleOutput??item.result?.summary??item.text??(Array.isArray(item.summary)?item.summary.join("\n"):undefined)??item.finalSummary??item.fallbackText??item.objective??"";
-  const output=detail?[detail,text(body)].filter(Boolean).join("\n"):text(body);
-  const base={toolCallId:text(item.itemId),status};
-  if(item.kind==="userShell"||/shell|bash|exec_command/i.test(text(item.tool))){
-    const command=item.commandText??arg("command","cmd")??item.args??"";
-    // Muse's own shell answers with a record of the run ({command, exit_code, output, ...}), which carries the output and exit code.
-    const record=jsonObject(item.visibleOutput),run=record&&typeof record.output==="string"?{...record,output:detail?[detail,record.output].filter(Boolean).join("\n"):record.output}:null;
-    return {...base,kind:"execute",title:text(command)||tool,rawInput:args||{command:text(command)},rawOutput:run||output,...(Number.isInteger(item.exitCode)?{exitCode:item.exitCode}:{})};
-  }
-  if(item.kind==="toolCall"&&/write|edit|patch/i.test(tool)){
-    const path=arg("file_path","path","filePath")?.trim();
-    if(path){
-      const oldText=arg("old_string","old_str","oldStr","oldText"),newText=arg("new_string","new_str","newStr","newText","content"),patch=arg("diff","patch","diffStr");
-      return {
-        ...base,kind:"edit",title:detail?`${tool}: ${detail}`:tool,rawInput:args,rawOutput:output,locations:[{path}],
-        content:newText!==undefined?[{type:"diff",path,...(oldText!==undefined?{oldText}:{}),newText}]:[],
-        ...(newText===undefined&&patch!==undefined?{changes:[{path,kind:"update",diff:patch}]}:{}),
-      };
-    }
-  }
-  if(item.kind==="toolCall"&&/web|browse|fetch/i.test(tool)){
-    const query=arg("query","url","pattern")?.trim(),url=arg("url")?.trim();
-    const hits=item.tool==="web_search"&&!detail?webHits(text(body)):null;
-    const results=hits??(output?[{...(url?{url}:{}),snippet:output}]:[]);
-    return {...base,kind:"fetch",title:query?`${tool}: ${query}`:tool,rawInput:args||{},rawOutput:{...(query?{query}:{}),results},content:results.length?[{type:"content",content:{type:"text",text:hitsText(results)}}]:[]};
-  }
-  return {...base,kind:"other",title:detail?`${name}: ${detail}`:name,rawInput:args||(item.args?{args:text(item.args)}:{}),rawOutput:output};
-}
-
-// The decision a Muse approval choice applies: approved once is Allow once, approvedForSession (or a rule for the session) Allow
-// for this session, a rule saved for the workspace Always allow, denied Reject, and abort Cancel. A rule that
-// keeps the action out, for the session or saved for the workspace, is a decision of its own, as Always allow is: only the person
-// takes it, on the card that shows its words, and the declines Trebell makes itself (its policy's, a window that never answered, a
-// stop) save no rule (as group M1's did). A decision Muse adds later has none, and is never offered.
-export function museApprovalDecision(choice={}){
-  switch(text(choice?.decision)){
-    case "approved":return "accept";
-    case "approvedForSession":return "acceptForSession";
-    case "approvedPolicyAmendment":return choice.scope==="session"?"acceptForSession":choice.scope==="localPersistent"?"acceptAlways":null;
-    case "denied":return choice.scope==="localPersistent"?"declineAlways":"decline";
-    case "deniedPolicyAmendment":return choice.scope==="session"?"declineForSession":choice.scope==="localPersistent"?"declineAlways":null;
-    case "abort":return "cancel";
-    default:return null;
-  }
-}
-const MUSE_DECISIONS=new Set(["accept","acceptForSession","acceptAlways","decline","declineForSession","declineAlways","cancel"]);
-// Muse's choice for each decision, the narrowest grant first: once, then the session, then saved, and a choice without a rule before
-// one that saves a rule. Shell approvals offer abort as their Reject, so abort also declines one that has
-// no denied choice.
-export function museApprovalChoices(choices=[]){
-  const chosen=new Map(),rank=choice=>(choice.scope==="once"?0:choice.scope==="session"?2:4)+(/PolicyAmendment$/.test(text(choice.decision))?1:0);
-  for(const choice of Array.isArray(choices)?choices:[]){
-    if(!choice||typeof choice.choiceId!=="string"||!choice.choiceId)continue;
-    const decision=museApprovalDecision(choice),previous=decision?chosen.get(decision):null;
-    if(decision&&(!previous||rank(choice)<rank(previous)))chosen.set(decision,choice);
-  }
-  if(!chosen.has("decline")&&chosen.has("cancel"))chosen.set("decline",chosen.get("cancel"));
-  return chosen;
-}
-// The approval card's buttons: Muse's own choices in its order and words (Allow once, Always allow in this workspace: touch ...,
-// Reject); an abort that is also the Reject shows once.
-export function museApprovalOptions(choices=[]){
-  const chosen=museApprovalChoices(choices),decline=chosen.get("decline")?.choiceId;
-  return [...chosen].filter(([decision,choice])=>decision!=="cancel"||choice.choiceId!==decline).map(([decision,choice])=>({decision,label:text(choice.label).trim()||decision}));
-}
 // The subjects Muse names (an approval's subject.kind); Trebell's policy answers no other kind for the person.
 const MUSE_SUBJECTS=new Set(["shell","fileAccess","network","unixSocket","process","tool"]);
 // An approval only the person answers: a protected write, and a subject Trebell does not know, which Muse says clients never approve.
@@ -315,88 +197,57 @@ export function museApprovalCard(params={},{agent="",runsPast=false}={}){
   const reason=[asker,staged].filter(Boolean).join(" ");
   return {...(title?{title}:{}),reason:reason||asked,...(reason?{command:asked}:{}),...(asker?{notice:staged||asked}:{})};
 }
-// Muse's questions as the relay's question dialog asks them: the header, question and options, several choices
-// for a multiple-selection question, and the person's own words for every one, as Muse takes a free-text answer to any question.
-// notes: what an answer to a question lacked, said beside it when Trebell asks again.
-export function museQuestions(questions=[],notes={}){
-  return (Array.isArray(questions)?questions:[]).filter(question=>question&&typeof question.id==="string"&&question.id).map(question=>{
-    const asked=text(question.question).trim()||text(question.header).trim()||"Muse Code asks a question.",note=text(notes?.[question.id]).trim();
-    return {id:question.id,header:text(question.header).trim()||"Question",question:note?`${asked} (${note})`:asked,multiSelect:question.selection?.mode==="multiple",allowCustomAnswer:true,
-      options:(Array.isArray(question.options)?question.options:[]).filter(option=>typeof option?.label==="string"&&option.label).map(option=>({label:option.label,description:text(option.description)}))};
-  });
+// How a reset time reads: in the person's own zone and locale, with its weekday, its date and year, and the hour and minute.
+const RESET_SHOWN=Object.freeze({weekday:"short",year:"numeric",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+// The reset a quota stop names (museLimitLiftsAt's ISO time) as a Date, or null for none or one Date cannot read.
+function readableReset(resetAt){
+  if(!resetAt)return null;
+  const when=new Date(resetAt);
+  return Number.isNaN(when.getTime())?null:when;
 }
-// The person's answers as userInput/answer takes them: the options chosen, by their exact labels, one
-// for a single-selection question and within its bounds for a multiple one, and the person's own words as the free-text answer, or
-// as a note beside the choices, of at most 500 characters. An answer Muse would refuse says why, by its question.
-export function museUserInputAnswers(questions=[],answers={}){
-  const out=[];
-  for(const question of Array.isArray(questions)?questions:[]){
-    if(!question||typeof question.id!=="string"||!question.id)continue;
-    const raw=answers?.[question.id],values=[...new Set((Array.isArray(raw)?raw:raw==null?[]:[raw]).map(value=>text(value).trim()).filter(Boolean))];
-    const labels=new Set((Array.isArray(question.options)?question.options:[]).map(option=>option?.label).filter(label=>typeof label==="string"));
-    const selected=values.filter(value=>labels.has(value)),own=values.filter(value=>!labels.has(value)).join("\n"),multiple=question.selection?.mode==="multiple";
-    const refuse=message=>({error:{questionId:question.id,message}});
-    if(!selected.length&&!own)return refuse("Answer this question to go on.");
-    if(own.length>MUSE_FREE_TEXT_LIMIT)return refuse(`Muse Code takes at most ${MUSE_FREE_TEXT_LIMIT} characters of your own words; the last answer had ${own.length}.`);
-    const min=Number.isInteger(question.selection?.minSelections)?question.selection.minSelections:1,max=Number.isInteger(question.selection?.maxSelections)?question.selection.maxSelections:Infinity;
-    if(!multiple&&selected.length>1)return refuse("Choose one option.");
-    if(multiple&&selected.length&&selected.length<min)return refuse(`Choose at least ${min} options.`);
-    if(multiple&&selected.length>max)return refuse(`Choose at most ${max} ${max===1?"option":"options"}.`);
-    out.push({questionId:question.id,...(selected.length?multiple?{selectedLabels:selected}:{selectedLabel:selected[0]}:{}),...(own?selected.length?{note:own}:{freeText:own}:{})});
-  }
-  return {answers:out};
-}
-// A turn the subscription quota stopped: Muse types it with error.quota, and a refusal relayed without
-// one is a 429 that names the quota or a usage limit. A plain 429 rate limit stays an ordinary failure.
-export function museUsageLimited(error={},message=""){
-  return Boolean(error?.quota&&typeof error.quota==="object")||(/\b429\b/.test(text(message))&&/quota|usage limit/i.test(text(message)));
-}
-const MUSE_NAMED_RESET=/\bresets at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))/i;
-// The latest instant a JavaScript Date holds.
-const LATEST_DATE_MS=8.64e15;
-// When the limit lifts: the latest future reset among the used-up windows of Muse's last usage report (the 5-hour window and the
-// week, at 100% or more), the quota's own reset, and a "resets at <time>" in the refusal; null when none is known.
-export function museUsageLimitResetAt(usage,nowMs=Date.now(),{quota=null,message=""}={}){
-  const named=text(message).match(MUSE_NAMED_RESET)?.[1];
-  const resets=[...[usage?.window,usage?.weekly].map(window=>window&&window.usedPercent>=100?window.resetsAtMs:undefined),quota?.resetsAtMs,named===undefined?undefined:Date.parse(named)]
-    .filter(ms=>typeof ms==="number"&&Number.isFinite(ms)&&ms>nowMs&&ms<=LATEST_DATE_MS);
-  return resets.length?new Date(Math.max(...resets)).toISOString():null;
-}
-// What a turn the limit stopped says, with the reset in the person's own time when Muse gave one.
-export function museUsageLimitMessage(resetAt=null){
-  const at=resetAt?new Date(resetAt):null;
-  return at&&!Number.isNaN(at.getTime())
-    ?`Muse Code usage limit reached. Send the message again after it resets at ${at.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"})}.`
-    :"Muse Code usage limit reached. Send the message again once it resets.";
+// What a turn the subscription quota stopped says: Muse Code waits for its allowance to reset, and when that is, if Muse said.
+export function museOutOfUsageMessage(resetAt=null){
+  const when=readableReset(resetAt);
+  if(!when)return "Muse Code is out of usage for now. Wait for its allowance to reset, then try the message again.";
+  return `Muse Code is out of usage until its allowance resets on ${when.toLocaleString(undefined,RESET_SHOWN)}. Try the message again after that.`;
 }
 // Muse's usage report (usage/changed, account-wide): when the host saw it, the tier, and the current window's and the week's
 // verbatim percentages (over 100 past the quota) with their resets; null for a report Trebell cannot read.
 export function museSubscriptionUsage(params={}){
-  const number=value=>typeof value==="number"&&Number.isFinite(value)&&value>=0,stamp=value=>number(value)&&value>0&&value<=LATEST_DATE_MS;
+  const number=value=>typeof value==="number"&&Number.isFinite(value)&&value>=0,stamp=value=>number(value)&&value>0&&value<=MUSE_LAST_DATE_MS;
   const window=params?.window,weekly=params?.weekly;
   if(!stamp(params?.observedAtMs)||typeof params?.tier!=="string")return null;
   if(!window||typeof window!=="object"||!number(window.usedPercent)||!(number(window.windowDurationMins)&&window.windowDurationMins>0)||!stamp(window.resetsAtMs))return null;
   if(!weekly||typeof weekly!=="object"||!number(weekly.usedPercent)||!stamp(weekly.resetsAtMs))return null;
   return {observedAtMs:params.observedAtMs,tier:params.tier,window:{usedPercent:window.usedPercent,windowDurationMins:window.windowDurationMins,resetsAtMs:window.resetsAtMs},weekly:{usedPercent:weekly.usedPercent,resetsAtMs:weekly.resetsAtMs}};
 }
-// turn/retryScheduled: Muse retries the turn's model request itself and the turn goes on, so its retry row says so in Trebell's
-// words; null for a notice Trebell cannot read.
+// turn/retryScheduled: Muse sends the turn's failed model request again by itself and the turn goes on, so the retry row says what
+// failed and which of Muse's tries comes next (retry-notice.mjs). null for a notice Trebell cannot read: no turn, no reason, a try
+// that is not a whole number of 1 or more, or a wait that is not a number of 0 ms or more.
 export function museRetryNotice(params={}){
-  const whole=value=>Number.isInteger(value)&&value>=1,delay=params?.retryDelayMs,reason=text(params?.reason).replace(/\s+/g," ").trim();
-  if(!text(params?.turnId)||!whole(params?.nextAttempt)||!whole(params?.maxAttempts)||!reason||!(typeof delay==="number"&&Number.isFinite(delay)&&delay>=0))return null;
-  return `Muse Code is trying again in ${Math.max(1,Math.round(delay/1000))} s (attempt ${params.nextAttempt} of ${params.maxAttempts}): ${reason}`;
+  const {turnId,nextAttempt,maxAttempts,retryDelayMs,reason}=params||{};
+  const counted=[nextAttempt,maxAttempts].every(value=>Number.isInteger(value)&&value>=1);
+  const waits=typeof retryDelayMs==="number"&&Number.isFinite(retryDelayMs)&&retryDelayMs>=0;
+  if(!text(turnId)||!counted||!waits||!retryReason(text(reason)))return null;
+  return retryNotice({reason:text(reason),sender:"Muse Code",seconds:retryDelayMs/1000,which:`try ${nextAttempt} of ${maxAttempts}`});
 }
 const requirementKey=requirement=>JSON.stringify(requirement??null);
 // What an approval's card shows: its stage and Muse's choices for it.
 const shownKey=params=>JSON.stringify([params?.currentRequirementId??null,params?.availableChoices??null]);
+// What became of an answer Trebell sent for an approval stage (#sendAnswer): Muse took it; the stage has no such choice, so nothing
+// went; the approval was settled already or is gone; Muse had moved past the stage; or Muse refused it, or the command failed.
+const ANSWER_TAKEN="taken",ANSWER_NOT_OFFERED="not offered",ANSWER_SETTLED="settled",ANSWER_MOVED_ON="moved on",ANSWER_REFUSED="refused";
+// The approval/decide refusals that say where the approval stands rather than what was wrong with the answer: settled already or
+// gone, or past the stage the answer named. Any other failure is a refusal of the answer itself.
+const DECIDE_REFUSALS=new Map([["approvalAlreadyResolved",ANSWER_SETTLED],["approvalNotFound",ANSWER_SETTLED],["approvalRequirementStale",ANSWER_MOVED_ON]]);
 
 export class MuseAgentSession{
   // modelCatalog: the list Muse Code's status check read ({models, metadata, preferred}, museModelCatalog), or null, which the
   // thread's model and Thinking level are resolved against before each turn. env: the profile's (AgentRuntimeManager.childEnv), and
-  // authMethod how its profile signs in (a META_API_KEY reaches Muse only on "api-key", museEnvironment).
+  // authMethod how its profile signs in (a META_API_KEY reaches Muse only on "api-key", museHostEnvironment).
   // onWakeTurn: told of a turn Muse starts itself, with the promise its end settles (the relay's startWakeTurn). mcpServers: the MCP
   // servers the session gets, as the ACP harnesses get them (the relay's trebell_repository and the person's own, museMcpServers).
-  constructor({command="muse",cwd,env=undefined,authMethod="sign-in",permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,onWakeTurn=null,mcpServers=[],version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS,now=()=>Date.now()}={}){
+  constructor({command="muse",cwd,env=undefined,authMethod="sign-in",permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,onWakeTurn=null,mcpServers=[],version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_HOST_BOUNDS.answerMs,shutdownTimeoutMs=MUSE_HOST_BOUNDS.exitMs,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS,now=()=>Date.now()}={}){
     this.command=command;this.cwd=resolve(cwd||process.cwd());this.env=env;this.permissionMode=normalizePermissionMode(permissionMode||"supervised");
     this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.onWakeTurn=onWakeTurn;this.version=version;this.modelCatalog=modelCatalog;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers:[];
@@ -487,10 +338,7 @@ export class MuseAgentSession{
     connection.onProtocolError(error=>{if(this.host===host)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",message:`Muse Code sent a frame Trebell could not read: ${error?.message||error}`}})});
     this.#watch(host);
     try{
-      // Trebell's MCP servers ride the session's config, which the host must have granted: one that did not is refused before any
-      // session opens.
-      const mcpServers=museMcpServers(this.mcpServers),config=Object.keys(mcpServers).length?{config:{mcpServers}}:{};
-      if(config.config&&!(Array.isArray(this.initializeResult?.grantedCapabilities)&&this.initializeResult.grantedCapabilities.includes("sessionMcp")))throw new Error(MUSE_SESSION_MCP_MESSAGE);
+      const config=this.#mcpConfig();
       const [workspaceRoot,turnRoot]=await Promise.all([museWorkspaceRoot(this.cwd,{platform:this.platform,verbatim:false}),museWorkspaceRoot(this.cwd,{platform:this.platform})]);
       this.turnRoot=turnRoot;
       const modelId=this.#resolveModel(model);this.wantedModel=modelId;
@@ -510,11 +358,22 @@ export class MuseAgentSession{
     }
   }
 
+  // The config part of session/start and session/resume: {} when Trebell has no MCP servers for the session, else the servers under
+  // config.mcpServers. MSP lets a session carry them only on a connection whose initialize answer listed sessionMcp among its
+  // grantedCapabilities, so a host without that grant fails the start here, before any session is opened on it.
+  #mcpConfig(){
+    const mcpServers=museMcpServers(this.mcpServers);
+    if(!Object.keys(mcpServers).length)return {};
+    const granted=this.initializeResult?.grantedCapabilities;
+    if(!Array.isArray(granted)||!granted.includes("sessionMcp"))throw new Error(MUSE_MCP_UNSUPPORTED);
+    return {config:{mcpServers}};
+  }
+
   // A saved conversation is resumed with its mode's profile asked for again, then its approval mode set (a resume replays the mode
   // it had); one Muse no longer has is a lost session, which the relay continues in a fresh one with the thread's earlier messages
   // handed over.
   async #resume(sessionId,config={}){
-    const {permissionProfile,approvalMode}=this.launched?.plan||museSessionPolicy(this.permissionMode);
+    const {permissionProfile,approvalMode}=this.launched?.plan||museSessionSettings(this.permissionMode);
     try{
       const result=await this.#command("session/resume",{sessionId,excludeItems:true,...config,permissionProfile});
       await this.#command("session/setApprovalMode",{sessionId,mode:approvalMode});
@@ -660,7 +519,7 @@ export class MuseAgentSession{
         if(how==="completed"||!runningWork(item))continue;
         this.observed.delete(item.itemId);
         this.#publish(turn,{...item,status:"failed",failureReason:text(item.failureReason)||(how==="cancelled"?"Stopped with its turn.":"The turn ended before this finished.")});
-      }else if(how==="failed"&&item.status==="inProgress"&&item.background!==true&&turn.tools.has(item.itemId))this.#row(turn,museToolUpdate({...item,status:"failed",failureReason:text(item.failureReason)||"The turn ended before this finished."}));
+      }else if(how==="failed"&&item.status==="inProgress"&&item.background!==true&&turn.tools.has(item.itemId))this.#row(turn,museItemRow({...item,status:"failed",failureReason:text(item.failureReason)||"The turn ended before this finished."}));
     }
     this.#withdrawRequests(entry=>!entry.child);
   }
@@ -815,7 +674,7 @@ export class MuseAgentSession{
       return void this.#approve(known);
     }
     if(method!=="approval/requested")return;
-    const entry={key,kind:"approval",id,params:{...params},child:Boolean(params.subagentOrigin),ask:null,shown:null,deciding:false,decided:null,automatic:null,terminal:false,attempts:0};
+    const entry={key,kind:"approval",id,params:{...params},child:Boolean(params.subagentOrigin),ask:null,shown:null,answer:null,automatic:null,attempts:0};
     this.requests.set(key,entry);void this.#approve(entry);
   }
   // Who answers the approval's current stage: nobody once it is decided, while Muse settles it or moves it to its next stage. In Full
@@ -825,14 +684,14 @@ export class MuseAgentSession{
   async #approve(entry){
     // A decision Muse acknowledged as closing the whole approval (terminal) leaves no later stage to ask, though a trailing update
     // may still name one (Meta's SDK).
-    if(this.requests.get(entry.key)!==entry||entry.ask||entry.deciding||entry.terminal)return;
+    if(this.requests.get(entry.key)!==entry||entry.ask||entry.answer?.pending||entry.answer?.closesApproval)return;
     const stage=requirementKey(entry.params.currentRequirementId);
-    if(entry.decided===stage)return;
+    if(entry.answer?.stage===stage)return;
     if(entry.child&&this.launched?.plan.approvalMode==="allowAll"&&entry.automatic!==stage&&!personOnly(entry.params)){
       entry.automatic=stage;
-      const outcome=await this.#decide(entry,"accept");
-      if(outcome==="taken")return this.#approve(entry);
-      if(outcome==="settled"||this.requests.get(entry.key)!==entry)return;
+      const outcome=await this.#sendAnswer(entry,"accept");
+      if(outcome===ANSWER_TAKEN)return this.#approve(entry);
+      if(outcome===ANSWER_SETTLED||this.requests.get(entry.key)!==entry)return;
     }
     return this.#askApproval(entry,{askUser:entry.automatic===stage});
   }
@@ -844,7 +703,7 @@ export class MuseAgentSession{
   // rather than to the workspace boundary that refuses what a harness does unasked (outsideReadsAsk). A card Muse settles
   // meanwhile is withdrawn (signal); a window that never answers declines, rather than leave Muse waiting.
   async #askApproval(entry,{askUser=false}={}){
-    const params=entry.params,choices=museApprovalChoices(params.availableChoices),read=params.subject?.kind==="fileAccess"&&params.subject?.access==="read";
+    const params=entry.params,choices=museDecisionChoices(params.availableChoices),read=params.subject?.kind==="fileAccess"&&params.subject?.access==="read";
     // The stage and choices asked about, which the answer decides.
     const shown={requirementId:params.currentRequirementId,availableChoices:params.availableChoices};
     if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline",shown);
@@ -858,7 +717,7 @@ export class MuseAgentSession{
         method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},card:museApprovalCard(params,{agent:agent?.name||"",runsPast}),
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
         askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept")||read,
-        approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),
+        approvalOptions:museCardButtons(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),
         // A workflow child's approval belongs to no turn of Trebell's: Stop leaves its card waiting.
         ...(entry.child?{runless:true}:{}),
       });
@@ -872,32 +731,37 @@ export class MuseAgentSession{
   // times at most; one for a stage Muse has moved past goes nowhere, and the stage Muse asks now is asked in turn, here or by the
   // update that moves it; a stage that cannot be declined stops the turn rather than leave it waiting.
   async #answerApproval(entry,decision,shown=null){
-    const choices=museApprovalChoices(shown?shown.availableChoices:entry.params.availableChoices);
-    const wanted=decision==="cancel"&&!choices.has("cancel")?"decline":MUSE_DECISIONS.has(decision)?decision:"decline";
-    const outcome=await this.#decide(entry,wanted,shown);
-    if(outcome==="taken")return this.#approve(entry);
-    if(outcome==="settled"||this.requests.get(entry.key)!==entry)return;
-    if(outcome==="stale")return requirementKey(entry.params.currentRequirementId)===requirementKey(shown?.requirementId)?undefined:this.#approve(entry);
-    if(outcome==="missing"&&(wanted==="decline"||wanted==="cancel"))return void this.cancel();
+    const wanted=museDecisionToSend(decision,museDecisionChoices(shown?shown.availableChoices:entry.params.availableChoices));
+    const outcome=await this.#sendAnswer(entry,wanted,shown);
+    if(outcome===ANSWER_TAKEN)return this.#approve(entry);
+    if(outcome===ANSWER_SETTLED||this.requests.get(entry.key)!==entry)return;
+    if(outcome===ANSWER_MOVED_ON)return requirementKey(entry.params.currentRequirementId)===requirementKey(shown?.requirementId)?undefined:this.#approve(entry);
+    if(outcome===ANSWER_NOT_OFFERED&&(wanted==="decline"||wanted==="cancel"))return void this.cancel();
     if(++entry.attempts>=MUSE_ASK_ATTEMPTS)return;
     return this.#askApproval(entry,{askUser:true});
   }
-  // Sends the decision for the stage asked about (approval/decide names that stage's requirement, Meta's race guard: Muse refuses a
-  // stale one, -32053), recorded first: Muse can settle the approval before it acknowledges the command. taken:
-  // Muse took it; missing: Muse does not offer it; settled: Muse had settled the approval already; stale: Muse had moved past that
-  // stage; refused: Muse refused it.
-  async #decide(entry,decision,shown=null){
-    const requirement=shown?shown.requirementId:entry.params.currentRequirementId,choice=museApprovalChoices(shown?shown.availableChoices:entry.params.availableChoices).get(decision);
-    if(!choice)return "missing";
-    const stage=requirementKey(requirement);entry.decided=stage;entry.deciding=true;
-    try{
-      const ack=await this.#command("approval/decide",{sessionId:this.sessionId,approvalId:entry.id,requirementId:requirement,choiceId:choice.choiceId});
-      if(ack?.terminal===true)entry.terminal=true;
-      return "taken";
-    }catch(error){
-      if(entry.decided===stage)entry.decided=null;
-      return error?.kind==="approvalAlreadyResolved"||error?.kind==="approvalNotFound"?"settled":error?.kind==="approvalRequirementStale"?"stale":"refused";
-    }finally{entry.deciding=false}
+  // Sends Trebell's answer for one stage as approval/decide: the stage and choices a card showed (shown), else the approval's current
+  // ones. The command names the stage's requirement, so Muse can tell an answer meant for a stage it has left (approvalRequirementStale).
+  // Its reply only admits the command, and the approval/resolved or approval/updated that says what the answer did can come first, so
+  // the answer goes on the approval's record (entry.answer: the stage it is for, and whether Muse has yet to reply) before the command
+  // leaves: an update that comes meanwhile asks nothing, nor one naming the same stage afterwards. An answer that does not get through
+  // comes off the record again, so its stage can be asked again. Returns one of the ANSWER_ outcomes.
+  async #sendAnswer(entry,decision,shown=null){
+    const asked=shown||{requirementId:entry.params.currentRequirementId,availableChoices:entry.params.availableChoices};
+    const choice=museDecisionChoices(asked.availableChoices).get(decision);
+    if(!choice)return ANSWER_NOT_OFFERED;
+    const answer={stage:requirementKey(asked.requirementId),pending:true,closesApproval:false};
+    entry.answer=answer;
+    const sent=await this.#command("approval/decide",{sessionId:this.sessionId,approvalId:entry.id,requirementId:asked.requirementId,choiceId:choice.choiceId})
+      .then(reply=>({ok:true,reply}),error=>({ok:false,error}));
+    answer.pending=false;
+    if(!sent.ok){
+      if(entry.answer===answer)entry.answer=null;
+      return DECIDE_REFUSALS.get(sent.error?.kind)??ANSWER_REFUSED;
+    }
+    // A terminal answer closed the whole approval: a trailing update naming a later stage asks nothing (#approve).
+    answer.closesApproval=sent.reply?.terminal===true;
+    return ANSWER_TAKEN;
   }
 
   // A question: asked once in Trebell's question dialog however many copies of it come, and withdrawn when Muse
@@ -913,7 +777,7 @@ export class MuseAgentSession{
   // The answers go back as userInput/answer, a dialog the person closes as userInput/cancel. An answer
   // Muse would refuse, or refuses, is asked again saying what it lacked, a few times at most.
   async #askQuestion(entry,notes={}){
-    const params=entry.params,questions=museQuestions(params.questions,notes);
+    const params=entry.params,questions=museDialogQuestions(params.questions,notes);
     if(!questions.length||typeof this.onQuestion!=="function")return this.#cancelQuestion(entry,questions.length?"Trebell Code had no window to ask the user in. Continue without the answer.":"The question had nothing to ask.");
     const ask=new AbortController();entry.ask=ask;
     let answers=null;
@@ -921,7 +785,7 @@ export class MuseAgentSession{
     finally{if(entry.ask===ask)entry.ask=null}
     if(ask.signal.aborted||this.requests.get(entry.key)!==entry)return;
     if(!answers||typeof answers!=="object"||!Object.keys(answers).length)return this.#cancelQuestion(entry,"The user closed the question without answering. Continue without the answer.");
-    const built=museUserInputAnswers(params.questions,answers);
+    const built=museAnswerPayload(params.questions,answers);
     if(built.error)return ++entry.attempts>=MUSE_ASK_ATTEMPTS?this.#cancelQuestion(entry,`The user's answer could not be sent: ${built.error.message} Continue without the answer.`):this.#askQuestion(entry,{[built.error.questionId]:built.error.message});
     try{await this.#command("userInput/answer",{sessionId:this.sessionId,userInputId:entry.id,answers:built.answers})}
     catch(error){
@@ -947,8 +811,8 @@ export class MuseAgentSession{
   // child session, and a workflow agent's, by its child id, as their rows name them; a workflow's later revisions leave labels out.
   // Each with the item of the work it is (itemId: the subagent's, or its workflow's), which says whether it runs on past its turn.
   #nameAgents(item){
-    if(item?.kind==="subagent"){const name=clip(item.role)||clip(item.objective);if(name)for(const id of [item.subagentId,item.childSessionId])if(text(id))this.agentNames.set(text(id),{name:"subagent "+name,itemId:text(item.itemId)})}
-    if(item?.kind==="workflow")for(const child of Array.isArray(item.children)?item.children:[])if(clip(child?.label)&&text(child.childId))this.agentNames.set(text(child.childId),{name:"workflow agent "+clip(child.label),itemId:text(item.itemId)});
+    if(item?.kind==="subagent"){const name=museLabel(item.role)||museLabel(item.objective);if(name)for(const id of [item.subagentId,item.childSessionId])if(text(id))this.agentNames.set(text(id),{name:"subagent "+name,itemId:text(item.itemId)})}
+    if(item?.kind==="workflow")for(const child of Array.isArray(item.children)?item.children:[])if(museLabel(child?.label)&&text(child.childId))this.agentNames.set(text(child.childId),{name:"workflow agent "+museLabel(child.label),itemId:text(item.itemId)});
     while(this.agentNames.size>MUSE_SETTLED_LIMIT)this.agentNames.delete(this.agentNames.keys().next().value);
   }
 
@@ -976,7 +840,7 @@ export class MuseAgentSession{
     const turn=this.activePrompt;if(!turn||turn.settled)return;
     if(ITEM_EVENTS.has(method))return this.#item(turn,params.item);
     if(method==="item/delta")return this.#delta(turn,params);
-    const turnId=text(params.turnId),ours=!turnId||owns(turn,turnId);
+    const turnId=text(params.turnId),ours=!elsewhere(turn,turnId);
     if(method==="session/tokenUsage"&&ours)return void this.#tokenUsage(turn,params);
     if(method==="session/todoListChanged")return void this.#todos(turn,params);
     if(method==="turn/retryScheduled"&&ours)return void this.#retryScheduled(params);
@@ -992,7 +856,7 @@ export class MuseAgentSession{
   #turnStarted(turnId){
     if(!turnId||this.endedTurns.has(turnId))return;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
-    if(running){if(!owns(running,turnId))running.joined.add(turnId);return}
+    if(running){if(elsewhere(running,turnId))running.joined.add(turnId);return}
     if(!this.ready||this.closed||this.dead||typeof this.onWakeTurn!=="function")return;
     const turn=this.#newTurn(turnId,{wake:true});turn.admit(true);this.activePrompt=turn;this.lastTurn=turn;
     turn.done.then(()=>{},()=>{}).then(()=>{if(this.activePrompt===turn)this.activePrompt=null});
@@ -1046,10 +910,10 @@ export class MuseAgentSession{
     this.#emit(turn,{sessionUpdate:"usage_update",usage:{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,cache_read_input_tokens:usage.cachedInputTokens,cache_write_input_tokens:usage.cacheWriteInputTokens,reasoning_tokens:usage.reasoningOutputTokens},
       used:usage.totalTokens,size:context?.windowTokens||0,...(context?{contextTokens:context.usedTokens}:{})});
   }
-  // Muse's todo list as the turn's plan (musePlanEntries).
+  // Muse's todo list as the turn's plan (museTodoPlan).
   #todos(turn,params){
     if(!Array.isArray(params.items))return this.#skipped("session/todoListChanged","it names no todo list");
-    this.#emit(turn,{sessionUpdate:"plan",entries:musePlanEntries(params.items)});
+    this.#emit(turn,{sessionUpdate:"plan",entries:museTodoPlan(params.items)});
   }
   // Muse retrying the turn's model request: the turn's retry row, as Native's wait for the network shows, and the turn goes on.
   #retryScheduled(params){
@@ -1064,7 +928,7 @@ export class MuseAgentSession{
   // a turn it took in are. Work that runs on past its turn is followed until it ends (observed).
   #item(turn,item){
     if(!item||typeof item!=="object"||!item.itemId)return;
-    if(item.turnId&&!owns(turn,item.turnId))return;
+    if(elsewhere(turn,item.turnId))return;
     const previous=turn.items.get(item.itemId);
     if(previous&&Number(previous.revision)>=Number(item.revision))return;
     const current={...item,...(Array.isArray(item.summary)?{summary:[...item.summary]}:{})};
@@ -1101,8 +965,7 @@ export class MuseAgentSession{
     this.#publish(turn,item);
   }
   #publish(turn,item){
-    if(SKIPPED_KINDS.has(item.kind))return;
-    if(item.kind==="toolCall"&&OWN_ROW_TOOLS.has(item.tool)&&museToolStatus(item)!=="failed")return;
+    if(museShowsNoRow(item))return;
     if(item.kind==="agentMessage")return this.#stream(turn,item,"agent_message_chunk",text(item.text));
     // A reasoning item's summary parts, or the provider's own reasoning text where it sends that instead.
     if(item.kind==="reasoning")return this.#stream(turn,item,"agent_thought_chunk",(Array.isArray(item.summary)?item.summary:[]).map(text).filter(Boolean).join("\n\n")||text(item.text));
@@ -1110,9 +973,9 @@ export class MuseAgentSession{
     // (runsPastTurn): its turn's end leaves the row as it is in the window, for the work's own later rows to settle.
     if(this.observed.get(item.itemId)===turn)turn.followed.add(item.itemId);
     const past=turn.followed.has(item.itemId);
-    this.#row(turn,museToolUpdate(item,{running:runningWork(item,this.endedCalls)}),{work:WORK_KINDS.has(item.kind),past});
+    this.#row(turn,museItemRow(item,{running:runningWork(item,this.endedCalls)}),{work:WORK_KINDS.has(item.kind),past});
     // A workflow's agents follow its own row.
-    if(item.kind==="workflow")for(const update of museWorkflowAgentUpdates(item,turn.labels))this.#row(turn,update,{work:true,past});
+    if(item.kind==="workflow")for(const update of museWorkflowAgentRows(item,turn.labels))this.#row(turn,update,{work:true,past});
   }
   // One row's update: tool_call the first time, tool_call_update after. A subagent's or a workflow's goes only when it shows something
   // new, as Muse re-sends them whole on each change, and one that settled keeps the end it had.
@@ -1136,18 +999,18 @@ export class MuseAgentSession{
     this.#emit(turn,{sessionUpdate:type,content:{type:"text",text:value},messageId:item.itemId});
   }
   // turn/completed settles the prompt: completed ends the turn, cancelled is a stop (interrupted when the person asked for it), and
-  // failed fails it with Muse's own error. A stop the subscription quota made says the Muse Code usage limit was reached and when it
-  // resets (usageLimit, resetAt), as Claude Code's and Grok's limits do, Muse's own words kept as its detail; a turn Muse could not
-  // run signed out says how to sign in.
+  // failed fails it with Muse's own error. A stop the subscription quota made is a usage limit (usageLimit, resetAt), as Claude Code's
+  // and Grok's are: its message says Muse Code is out of usage until its allowance resets (museOutOfUsageMessage), with Muse's own
+  // words kept as its detail; a turn Muse could not run signed out says how to sign in.
   #completed(turn,params){
     this.#finalUsage(turn,params);
     const terminal=text(params.terminal),raw=this.#result(turn,params);
     if(terminal==="completed")return turn.settle({stopReason:"end_turn",providerMessageId:null,raw});
     if(terminal==="cancelled")return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw});
     const error=params.error&&typeof params.error==="object"?params.error:{},detail=text(error.message)||text(params.reason),code=text(error.kind)||"MUSE_TURN_FAILED";
-    if(museUsageLimited(error,detail)){
-      const resetAt=museUsageLimitResetAt(this.subscriptionUsage,Date.now(),{quota:error.quota,message:detail});
-      return turn.fail(Object.assign(new Error(museUsageLimitMessage(resetAt)),{code,usageLimit:true,resetAt,detail,raw}));
+    if(museQuotaStop(error,detail)){
+      const resetAt=museLimitLiftsAt(this.subscriptionUsage,Date.now(),{quota:error.quota,message:detail});
+      return turn.fail(Object.assign(new Error(museOutOfUsageMessage(resetAt)),{code,usageLimit:true,resetAt,detail,raw}));
     }
     // signedOut: the message says how to sign in, so the relay's check after it adds no second sign-in advice.
     if(code==="authRequired")return turn.fail(Object.assign(new Error(MUSE_SIGNED_OUT_MESSAGE),{code,detail,raw,signedOut:true}));

@@ -24,17 +24,17 @@ async function folder(t){
 
 test("a Codex prompt at the composer's limit still names every attachment after its text, and the draft gets them all back",()=>{
   const name=path=>path.split("/").pop();
-  // What follows the typed text, compared on its own so a failure does not print 120,000 characters.
+  // What follows the typed text, compared on its own so a failure does not print 200,000 characters.
   const after=(input,long)=>{assert.ok(input.text.startsWith(long),"the typed text comes first, whole");return input.text.slice(long.length)};
   for(const long of ["x".repeat(CODEX_MAX_INPUT_CHARS-10),"y".repeat(CODEX_MAX_INPUT_CHARS)]){
     const [text,...media]=codexTurnInput(long,["H:/a/spec.pdf","H:/a/notes.md"],{displayName:name});
-    assert.equal(after(text,long),'\n\n[Attached file "spec.pdf" is saved at: H:/a/spec.pdf]\n\n[Attached file "notes.md" is saved at: H:/a/notes.md]',`${long.length} characters`);
+    assert.equal(after(text,long),'\n\n[File attachment "spec.pdf" at H:/a/spec.pdf]\n[File attachment "notes.md" at H:/a/notes.md]',`${long.length} characters`);
     assert.deepEqual(media,[],"files have no item of their own: the line is how Codex finds them");
     const split=splitCodexAttachmentText(text.text);
     assert.equal(split.text.length,long.length);assert.deepEqual(split.paths,["H:/a/spec.pdf","H:/a/notes.md"]);
   }
   const long="z".repeat(CODEX_MAX_INPUT_CHARS-10),[text,image]=codexTurnInput(long,["H:/a/big.png"],{displayName:name});
-  assert.equal(after(text,long),'\n\n[Attached image "big.png" is saved at: H:/a/big.png]',"an image is named too, besides its own item");
+  assert.equal(after(text,long),'\n\n[Image attachment "big.png" at H:/a/big.png]',"an image is named too, besides its own item");
   assert.deepEqual(image,{type:"localImage",path:"H:/a/big.png"});
 });
 
@@ -56,8 +56,9 @@ test("Muse Code's turn input names every attachment of a long message, and an im
   await writeFile(shot,Buffer.from([137,80,78,71]));await writeFile(notes,"# Notes\n","utf8");
   const files=[{type:"localImage",path:shot},{type:"mention",name:"notes.md",path:notes},{type:"localAudio",path:join(root,"memo.mp3")}];
   const input=museInputParts(await contextualAgentPrompt([{type:"text",text:long},...files]));
+  // Re-pinned: the linked file's line is Trebell's attachment line (linkedFileLine), not "Attached file: <path>".
   assert.deepEqual(input.map(part=>part.type==="image"?["image",part.mediaType]:["text",part.text.length>200?part.text.length:part.text]),[
-    ["text",long.length],["image","image/png"],["text",`Attached file: ${notes}`],["text",`[Attached audio "memo.mp3" is saved at: ${join(root,"memo.mp3")}]`],
+    ["text",long.length],["image","image/png"],["text",`[File attachment "notes.md" at ${notes}]`],["text",`[Audio attachment "memo.mp3" at ${join(root,"memo.mp3")}]`],
   ],"no text budget leaves one out");
   await assert.rejects(contextualAgentPrompt([{type:"text",text:"What is this?"},{type:"localImage",path:join(root,"gone.png")}]).then(museInputParts),{message:'The attached image "gone.png" could not be read (ENOENT). Attach it again.'});
 });

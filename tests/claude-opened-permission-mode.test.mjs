@@ -7,7 +7,7 @@ import { ClaudeAgentSession } from "../src/claude-agent-session.mjs";
 import { isSessionRefusal } from "../src/session-refusal.mjs";
 import { claudeResult, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
 
-const BACKGROUND_WORK="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
+const BACKGROUND_WORK="Changing the model or settings now would restart Claude Code and end the background agents and commands Claude is still running. Let them finish or ask Claude to stop them, or keep the current model and settings, then send the message again.";
 const STUCK_IN_PLAN="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again. To end them now, choose Edit from here on this message and send it again.";
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const modes=call=>call.log.filter(entry=>entry[0]==="setPermissionMode").map(entry=>entry[1]);

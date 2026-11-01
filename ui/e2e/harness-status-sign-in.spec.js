@@ -64,7 +64,7 @@ readline.createInterface({input:process.stdin}).on("line",line=>{const m=JSON.pa
     await openHarnessSettings(page);
     const codex=harnessRow(page,"Codex");
     // Its account read found no sign-in: Not ready, why, and Sign in.
-    await expect(said(codex)).toHaveText("Codex CLI is signed out. Sign in with codex login and try again.");
+    await expect(said(codex)).toHaveText("Codex has no account signed in. Run codex login, then try again.");
     await expect(action(codex)).toHaveText("Not ready");
     await expect(signIn(codex)).toBeVisible();
     await expect(signIn(codex)).toBeEnabled();
@@ -122,7 +122,7 @@ test("the Profiles list under the active Claude Code offers no Sign in for a pro
     await page.goto("/");
     await expect(page.getByTestId("composer")).toBeVisible();
     await openHarnessSettings(page);
-    const ENDPOINT="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts.";
+    const ENDPOINT="Claude Code sends its requests to this profile's own API endpoint, which holds the credentials. A session checks them when it starts.";
     // The Claude Code row says what its active profile's check found, with no Sign in, as `claude auth login` has nothing to do with
     // the gateway's credentials.
     const claude=harnessRow(page,"Claude Code");
@@ -134,12 +134,12 @@ test("the Profiles list under the active Claude Code offers no Sign in for a pro
     await expect(said(gateway)).toHaveText(ENDPOINT);
     await expect(action(gateway)).toHaveText("Active");
     await expect(signIn(gateway)).toHaveCount(0);
-    await expect(said(slow)).toHaveText("Claude Code is installed but did not answer claude --version within 20 seconds.");
+    await expect(said(slow)).toHaveText("Claude Code is installed but did not answer claude --version within 30 seconds.");
     await expect(said(slow).locator("code.run-command"),"the command it ran reads as code").toHaveText("claude --version");
     await expect(action(slow)).toHaveText("Use");
     await expect(signIn(slow)).toHaveCount(0);
     // One whose `claude auth status` says it is signed out is offered Sign in, as before.
-    await expect(said(signedOut)).toHaveText("Claude Code is signed out. Sign in with claude auth login and try again.");
+    await expect(said(signedOut)).toHaveText("Claude Code has no account signed in. Run claude auth login, then try again.");
     await expect(said(signedOut).locator("code.run-command"),"the command it names reads as code").toHaveText("claude auth login");
     await expect(signIn(signedOut)).toBeVisible();
     await expect(signIn(signedOut)).toBeEnabled();

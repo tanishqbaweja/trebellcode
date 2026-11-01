@@ -18,18 +18,48 @@ export function normalizeRuntimeModelServiceTier(runtime,value){
   return CODEX_TIER.test(tier)?tier:null;
 }
 
-// The tiers a model offers: the catalog's serviceTiers, or the older additionalSpeedTiers list.
-export function codexServiceTierOptions(metadata={}){
-  const listed=Array.isArray(metadata?.serviceTiers)&&metadata.serviceTiers.length
-    ?metadata.serviceTiers
-    :(Array.isArray(metadata?.additionalSpeedTiers)?metadata.additionalSpeedTiers:[]).map(id=>({id,name:id==="fast"?"Fast":id,description:""}));
-  const out=[];
-  for(const item of listed){
-    const id=normalizeRuntimeModelServiceTier("codex",typeof item==="string"?item:item?.id);
-    if(!id||id===CODEX_STANDARD_SERVICE_TIER||out.some(option=>option.id===id))continue;
-    out.push({id,label:String((typeof item==="object"&&item?.name)||id),description:String((typeof item==="object"&&item?.description)||"")});
+// Speed options of one Codex model, from its model/list row. A newer Codex describes each tier in `serviceTiers`
+// ({id, name, description}, or just the id); an older one lists bare ids in `additionalSpeedTiers`, and only its "fast"
+// has a display name. Every option is {id, label, description}. Standard ("default") never appears here: the Speed picker
+// offers it on its own.
+const codexTierId=value=>normalizeRuntimeModelServiceTier("codex",value);
+const OLDER_CATALOG_TIER_NAMES=new Map([["fast","Fast"]]);
+
+function describedTier(entry){
+  switch(typeof entry){
+    case "string":{
+      const id=codexTierId(entry);
+      return id?{id,label:id,description:""}:null;
+    }
+    case "object":{
+      const id=entry&&codexTierId(entry.id);
+      if(!id)return null;
+      return {id,label:entry.name?String(entry.name):id,description:entry.description?String(entry.description):""};
+    }
+    default:return null;
   }
-  return out;
+}
+
+function olderCatalogTier(entry){
+  const id=codexTierId(entry);
+  if(!id)return null;
+  return {id,label:OLDER_CATALOG_TIER_NAMES.get(entry)??String(entry),description:""};
+}
+
+// A non-empty serviceTiers is the whole answer; additionalSpeedTiers counts only without it.
+function tiersInRow(row){
+  const described=row?.serviceTiers,older=row?.additionalSpeedTiers;
+  if(Array.isArray(described)&&described.length>0)return described.map(describedTier);
+  return Array.isArray(older)?older.map(olderCatalogTier):[];
+}
+
+export function codexServiceTierOptions(row={}){
+  const offered=new Set();
+  return tiersInRow(row).filter(tier=>{
+    const fresh=Boolean(tier)&&tier.id!==CODEX_STANDARD_SERVICE_TIER&&!offered.has(tier.id);
+    if(fresh)offered.add(tier.id);
+    return fresh;
+  });
 }
 
 // The tier a Codex turn sends: the explicit pick (matched by id or by name, so an older saved "fast" still selects
@@ -52,13 +82,23 @@ export function codexDefaultServiceTier(metadata={}){
   return wanted&&codexServiceTierOptions(metadata).some(option=>option.id===wanted)?wanted:CODEX_STANDARD_SERVICE_TIER;
 }
 
-// The tier of this model that the person's Codex config runs new threads at (config/read's service_tier; Codex's "fast" is the
-// model's "priority" tier), or null when the model lists none such.
-// The catalog gives it as the model's default tier, so the Speed picker shows it while nothing is picked, and no turn sends it.
-export function codexConfiguredServiceTier(metadata={},serviceTier=null){
-  const wanted=normalizeRuntimeModelServiceTier("codex",serviceTier);if(!wanted)return null;
-  if(wanted===CODEX_STANDARD_SERVICE_TIER)return CODEX_STANDARD_SERVICE_TIER;
-  return codexServiceTierOptions(metadata).find(option=>option.id===wanted||(wanted==="fast"&&option.id==="priority"))?.id||null;
+// Which of a model's tiers the person's Codex config runs new threads at (config/read's service_tier), or null when the model
+// lists none it names. Standard is every model's. Codex's config calls its fast tier "fast" while a newer catalog lists that
+// tier as "priority", so "fast" names either, and the one listed first answers.
+// The catalog gives the answer as the model's default tier: the Speed picker shows it while nothing is picked, and no turn sends it.
+function tierIdsForConfigValue(value){
+  return value==="fast"?["fast","priority"]:[value];
+}
+
+export function codexConfiguredServiceTier(row={},configTier=null){
+  const value=codexTierId(configTier);
+  if(!value)return null;
+  if(value===CODEX_STANDARD_SERVICE_TIER)return value;
+  const names=tierIdsForConfigValue(value);
+  for(const tier of codexServiceTierOptions(row)){
+    if(names.includes(tier.id))return tier.id;
+  }
+  return null;
 }
 
 // The Speed picker shows the tier the turn sends, else the tier Codex runs without one.

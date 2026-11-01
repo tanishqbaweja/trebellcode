@@ -47,7 +47,7 @@ import { StorageCleanupService } from "./storage-cleanup-service.mjs";
 import { ensureDocumentText, extractedDocumentText } from "./document-text.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
-import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
+import { planCodexHomes, prepareCodexHome } from "./codex-home-layout.mjs";
 import { localHomePath } from "./local-home-path.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { plainTerminalStream } from "./terminal-log-text.mjs";
@@ -60,7 +60,7 @@ import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
 import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
 import { EventJournal, NOISY_METHOD } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
-import { preferredCodexDefaultModel, withConfiguredCodexServiceTier } from "./codex-model-catalog.mjs";
+import { codexStartingModel, withConfiguredCodexServiceTier } from "./codex-model-catalog.mjs";
 import { codexGoalRecord, codexGoalSetParams, codexGoalStatus } from "./codex-goal.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
@@ -80,12 +80,13 @@ import { cleanupDelegationWorktree, createDelegationWorktree } from "./delegatio
 import { codexFileChanges, resolveCodexApprovalByPolicy, workspaceFilePath } from "./codex-policy-adapter.mjs";
 import { allowsSession, approvalThreadId, createCodexSessionApprovals, sessionApprovalKind, sessionApprovalResult } from "./codex-session-approvals.mjs";
 import { CODEX_GOAL_CONTINUATION_GRACE_MS, createCodexGoalContinuations } from "./codex-goal-continuation.mjs";
-import { withoutCodexGoalStart } from "./codex-goal-start.mjs";
+import { codexMessageAsTyped } from "./codex-goal-start.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 import { generateTextWithHarness, HARNESS_TEXT_TIMEOUT_MS } from "./harness-text-generation.mjs";
+import { gitTextStyleNote } from "./git-text-style.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -105,6 +106,7 @@ import {
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
 import { buildPullRequestLink, linkedPullRequestTerminalStatus, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestForBranch, pullRequestIdentityKey } from "./pr-link-utils.mjs";
 import { createBranchPullRequestSweep } from "./branch-pull-request-sweep.mjs";
+import { commitSubjectIn } from "./commit-subject.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -339,8 +341,8 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
   }
   // The same Codex the status probe checked (AgentRuntimeManager.executable): the profile binary, else the user's installed CLI.
   const command=runtimeCommand||runtimeInstance?.binaryPath?.trim()||codexBin(env);
-  const homeLayout=await prepareCodexHome(homeConfig||codexHomeConfig(runtimeInstance,env));
-  const runtimeHome=homeLayout.effectiveHomePath||null;
+  const homes=await prepareCodexHome(homeConfig||codexHomeConfig(runtimeInstance,env));
+  const runtimeHome=homes.effectiveHomePath||null;
   if(runtimeHome)await mkdir(runtimeHome,{recursive:true});
   await beforeSpawn?.();
   const runtimeEnv=codexAppServerEnvironment({env,runtimeInstance,runtimeHome});
@@ -369,7 +371,7 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
   child.stderr?.on("data",chunk=>pushLog(chunk,"stderr"));
   child.on("error",error=>{pushLog(error.stack||error.message,"stderr");void auth.release()});
   child.on("exit",(code,signal)=>{pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr");void auth.release()});
-  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey,wsToken:auth.token };
+  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homes.sharedHomePath,continuationKey:homes.continuationKey,wsToken:auth.token };
 }
 
 // Why an app-server did not become ready: once it has exited, the last thing it wrote (codex says why it could not listen).
@@ -566,16 +568,20 @@ async function projectActionSuggestions(projectPath){
     stat(join(root,"bun.lock")).then(()=>true).catch(()=>false),
     stat(join(root,"bun.lockb")).then(()=>true).catch(()=>false),
   ]);
-  const fileScripts=Array.isArray(projectFile?.scripts)?projectFile.scripts.slice(0,50).map((script,index)=>({
-    id:`file-${index}-${String(script?.name||"action").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,32)}`,
+  // trebell.json's own words (actions[] with label, run, preview, openPreview and onNewWorktree "wait" or "start"; workspace;
+  // submodules "all", "first-level" or "none"), read into the saved action and setting values the Projects page keeps.
+  const fileScripts=Array.isArray(projectFile?.actions)?projectFile.actions.slice(0,50).map((action,index)=>({
+    id:`file-${index}-${String(action?.label||"action").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,32)}`,
     source:"trebell.json",
-    name:String(script?.name||`Action ${index+1}`).trim().slice(0,80),
-    command:String(script?.command||"").trim().slice(0,8000),
-    previewUrl:script?.previewUrl?String(script.previewUrl).trim().slice(0,1000):null,
-    autoOpenPreview:Boolean(script?.autoOpenPreview),
-    runOnWorktreeCreate:Boolean(script?.runOnWorktreeCreate),
-    waitForSetup:script?.runOnWorktreeCreate===true&&script?.async===false,
+    name:String(action?.label||`Action ${index+1}`).trim().slice(0,80),
+    command:String(action?.run||"").trim().slice(0,8000),
+    previewUrl:action?.preview?String(action.preview).trim().slice(0,1000):null,
+    autoOpenPreview:action?.openPreview===true,
+    runOnWorktreeCreate:action?.onNewWorktree==="wait"||action?.onNewWorktree==="start",
+    waitForSetup:action?.onNewWorktree==="wait",
   })).filter(script=>script.command):[];
+  const fileWorkspace=new Map([["worktree","worktree"],["current","current"]]).get(projectFile?.workspace)??null;
+  const fileSubmodules=new Map([["all","recursive"],["first-level","top-level"],["none","none"]]).get(projectFile?.submodules)??null;
   const packageManager=pnpmLock?"pnpm":(yarnLock?"yarn":((bunLock||bunLockb)?"bun":"npm"));
   const packageScripts=Object.entries(pkg?.scripts||{}).slice(0,80).map(([name,command])=>({
     id:`package-${name}`,
@@ -589,7 +595,8 @@ async function projectActionSuggestions(projectPath){
     waitForSetup:false,
   }));
   return {
-    projectFile:{present:Boolean(projectFile),defaultThreadEnvMode:projectFile?.defaultThreadEnvMode==="worktree"?"worktree":projectFile?.defaultThreadEnvMode==="local"?"current":null,worktreeSubmodules:["recursive","top-level","none"].includes(projectFile?.worktreeSubmodules)?projectFile.worktreeSubmodules:null},
+    // actions: how many actions it gave, so the Projects page can say when the file is there but gives nothing this release reads.
+    projectFile:{present:Boolean(projectFile),workspaceMode:fileWorkspace,submodules:fileSubmodules,actions:fileScripts.length},
     packageManager,
     scripts:[...fileScripts,...packageScripts],
   };
@@ -1203,7 +1210,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   function catalogCodexHomes(){
     if(!appServer.idle)return [appServer.runtimeHome,appServer.sharedRuntimeHome].filter(Boolean);
     const instance=codexInstance(catalogInstanceId());if(!instance||catalogEnvironment())return [];
-    const layout=resolveCodexHomeLayout(agentRuntimes.codexHomeConfig(instance));
+    const layout=planCodexHomes(agentRuntimes.codexHomeConfig(instance));
     return [layout.effectiveHomePath,layout.sharedHomePath].filter(Boolean);
   }
 
@@ -1864,7 +1871,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         reasoningEfforts:Array.isArray(row.supportedReasoningEfforts)?row.supportedReasoningEfforts:undefined,
         defaultReasoningEffort:row.defaultReasoningEffort||null,
       }));
-      return {models,defaultModel:preferredCodexDefaultModel(rows),metadata:{provider:"codex",agentRuntime:"codex",source:"codex-model-list",models:metadata}};
+      return {models,defaultModel:codexStartingModel(rows),metadata:{provider:"codex",agentRuntime:"codex",source:"codex-model-list",models:metadata}};
     }finally{client.close()}
   }
 
@@ -1942,15 +1949,6 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     // context, and a draft's stream observer passed as options only.
     return sharedNativeProviderTurn(providers,request,{provider});
   }
-  function sourceControlStyleInstruction(style,kind,customInstructions=""){
-    if(style==="conventional")return kind==="review"
-      ?"Keep the pull request title concise and specific. Do not force Conventional Commit syntax into the pull request title."
-      :"Use Conventional Commits for the commit subject. Prefer the narrowest accurate type and include a scope only when it is obvious from the diff.";
-    if(style==="custom")return customInstructions?"Follow these source-control writing instructions exactly:\n"+customInstructions:"Use a clear, specific engineering style and avoid filler.";
-    return kind==="review"
-      ?"Match the title and body style of the repository's own pull requests, when it has any to go by."
-      :"Match the style of the repository's own recent commit messages, when it has any to go by.";
-  }
   async function sourceControlWritingContext(cwd,environmentId,{includeRepositoryInstructions=false,includeReviewTemplate=false}={}){
     const subjects=includeRepositoryInstructions?await inSourceControlEnvironment(environmentId,()=>sourceControlRecentCommitSubjects(cwd,{limit:10})).catch(()=>[]):[];
     const instructions=[];const paths=[];
@@ -1988,11 +1986,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const recent=context.subjects.length?"Recent commit subjects:\n"+context.subjects.map(subject=>"- "+subject).join("\n")+"\n\n":"";
     const instructions=context.instructions.length?"Repository guidance:\n"+context.instructions.map(item=>"### "+item.path+"\n"+item.content.slice(0,6000)).join("\n\n")+"\n\n":"";
     const template=context.reviewTemplate?"Repository pull request template:\n"+String(context.reviewTemplate).slice(0,8000)+"\n\n":"";
-    const styleInstruction=sourceControlStyleInstruction(style,kind,customInstructions);
+    // The project's Git text style, as a note right after the prompt's first line (git-text-style.mjs).
+    const styleNote=gitTextStyleNote({style,kind,customInstructions});
     const prompt=kind==="review"
       ?[
         "Generate a pull request title and description for the current change.",
-        styleInstruction,
+        styleNote,
         "Return strict JSON only with this shape: {\"title\":\"...\",\"body\":\"...\"}.",
         "Keep the title under 100 characters. The body should summarize the change and validation without inventing tests or results.",
         recent,instructions,template,
@@ -2003,7 +2002,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       ].filter(Boolean).join("\n\n")
       :[
         "Write one Git commit subject for the current change.",
-        styleInstruction,
+        styleNote,
         "Keep the subject under 100 characters. Return only the subject with no quotes or markdown.",
         recent,instructions,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
       ].filter(Boolean).join("\n\n");
@@ -2023,10 +2022,6 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     const answer=await providers.directChat(selectedProvider,{prompt,model:selectedModel});
     return {text:String(answer.text||"").trim(),style,model:selectedModel,prompt,...generator};
-  }
-  function generatedCommitSubject(text){
-    const lines=String(text||"").replace(/```[\w-]*/g,"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
-    return String(lines[0]||"").replace(/^["'`]+|["'`]+$/g,"").trim();
   }
   function sourceControlTextStatus(error){return error?.code==="HARNESS_TEXT_TIMEOUT"?504:400}
 
@@ -2702,7 +2697,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             const sourceProject=state.project(resolve(cwd),null);
             const projectConfig=await projectActionSuggestions(cwd).catch(()=>({projectFile:{}}));
             const scoped=sourceProject?state.projectSettings(sourceProject.path,null):{defaults:state.environmentDefaults(null),overrides:{}};
-            const submodules=scoped.overrides.worktreeSubmodules||projectConfig?.projectFile?.worktreeSubmodules||scoped.defaults.worktreeSubmodules||"recursive";
+            const submodules=scoped.overrides.worktreeSubmodules||projectConfig?.projectFile?.submodules||scoped.defaults.worktreeSubmodules||"recursive";
             result=await tracedSourceControlMutation("git.worktree-create",{cwd},()=>createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null,submodules}));
             const inherited=sourceProject?{
               defaultModel:sourceProject.defaultModel??null,
@@ -2884,7 +2879,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
         const generated=await sourceControlTextRequest({cwd,environmentId,kind:"commit",model:body.model||null,signal:cancellation.signal});
-        const message=generatedCommitSubject(generated.text);if(!message)throw new Error("The model did not return a commit subject");
+        const message=commitSubjectIn(generated.text);if(!message)throw new Error("The model did not return a commit subject");
         return json(res,200,{message,style:generated.style,model:generated.model,runtime:generated.runtime,generatedWith:generated.generatedWith});
       }catch(error){
         if(cancellation.signal.aborted)return;
@@ -3527,8 +3522,15 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   }
 
   const terminalWs=terminals?.attachWebSocket(server);
-  // A Codex thread as the windows list it: one whose first message began a goal shows the objective, as its message does.
-  const codexListedThread=thread=>{const preview=thread&&typeof thread.preview==="string"?withoutCodexGoalStart(thread.preview):null;return preview!=null&&preview!==thread.preview?{...thread,preview}:thread};
+  // A Codex thread as the windows list it: one whose first message began a goal shows the objective, as its message does. A thread
+  // whose preview stays as it was is passed on as the same object. The goal Trebell keeps for the thread says where an earlier
+  // release's instruction ends; its record is read only for a preview that could hold one (codex-goal-start.mjs).
+  const codexListedThread=thread=>{
+    if(!thread||typeof thread.preview!=="string")return thread;
+    const goalObjective=thread.id==null?null:()=>{try{return state.threadMeta(String(thread.id))?.goal?.objective}catch{return null}};
+    const preview=codexMessageAsTyped(thread.preview,goalObjective);
+    return preview!==thread.preview?{...thread,preview}:thread;
+  };
   const relay=attachCodexRelay(server,{
     // A mock server runs no Codex: its requests go to the app-server port it was given, where a test's stand-in answers. A real one
     // has no such fallback, since a program on a fixed port is not this Trebell's Codex.

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createClaudeCapabilitiesCache, probeClaudeCapabilities } from "../src/claude-capabilities.mjs";
+import { createClaudeCapabilitiesCache, readClaudeCodeCapabilities } from "../src/claude-capabilities.mjs";
 import { readClaudeUsageLimits } from "../src/agent-usage-limits.mjs";
 
 // Claude Code as the SDK's query() starts it for the capability probe, scripted: answer(index) gives each probe's account and
@@ -25,11 +25,11 @@ const NO_PLAN={session:{},rate_limits_available:false,rate_limits:null};
 // What the Usage card says of a Claude Code that answered signed out: that it is, and how to sign in, not that it has no limits.
 const SIGNED_OUT_USAGE={reason:"signedOut",message:"Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login, then press Refresh."};
 // The machine-wide probe the model list and the Usage card share (AgentRuntimeManager claudeCapabilities).
-const MACHINE={command:"claude",cwd:null,env:{CLAUDE_CONFIG_DIR:"/home/person/.claude"},spawnProcess:null,scope:"",includeUsage:true};
+const MACHINE={command:"claude",cwd:null,env:{CLAUDE_CONFIG_DIR:"/home/person/.claude"},spawnProcess:null,scope:"",withPlanUsage:true};
 function usageCard(answers){
   let clock=0;
   const claude=scriptedClaude(index=>answers[Math.min(index,answers.length-1)]);
-  const cache=createClaudeCapabilitiesCache({now:()=>clock,probe:input=>probeClaudeCapabilities({...input,query:claude.query,managedMcpExists:()=>false})});
+  const cache=createClaudeCapabilitiesCache({now:()=>clock,probe:input=>readClaudeCodeCapabilities({...input,query:claude.query,managedMcpExists:()=>false})});
   // Each read is the Usage card's Refresh a second after the last one, well inside the five minutes a kept probe is reused.
   const read=(input=MACHINE)=>{clock+=1000;return readClaudeUsageLimits({readCapabilities:()=>cache.load(input)})};
   return {cache,claude,read};
@@ -89,7 +89,7 @@ test("an account Claude Code signs in some other way is kept: an API key, anothe
 });
 
 test("a folder's probe that did not ask for usage is kept for its commands and agents, unless Claude Code answered it signed out",async()=>{
-  const folder={...MACHINE,cwd:"/repo",includeUsage:false};
+  const folder={...MACHINE,cwd:"/repo",withPlanUsage:false};
   const signedIn=usageCard([{account:SIGNED_IN}]);
   await signedIn.cache.load(folder);await signedIn.cache.load(folder);
   assert.equal(signedIn.claude.probes.length,1);

@@ -33,7 +33,7 @@ async function freePort(){
 // git repository whose checkpoint is real and restored as the server restores it (CheckpointService), with the turn's work on its files
 // after it; files() reads them. failRestoreMidway has git restore write the files and then fail, as on a file another program holds.
 // restoreRefusal answers the restore with the server's 409 for a turn that started after the app read the thread.
-async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true,holdNotices=null,realFiles=false,failRestoreMidway=false,restoreRefusal=null}={}){
+async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,worktree=true,holdNotices=null,realFiles=false,failRestoreMidway=false,restoreRefusal=null,sharedWith=null}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-rewind-")),home=join(root,"home"),repo=join(root,worktree?"managed-worktree":"native-project");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -56,6 +56,8 @@ async function rewindFixture(page,{restoreError=null,revertError=null,hold=null,
     checkpoint=state.updateCheckpoint(created.id,{turnId:turn.id});
     // The turn's work after its checkpoint: one file changed, one added.
     await writeFile(join(repo,"notes.txt"),"the turn's work\n");await writeFile(join(repo,"added.txt"),"added by the turn\n");
+    // sharedWith: another thread that works in the same worktree.
+    if(sharedWith)state.updateThreadMeta(sharedWith,{cwd:repo,runtime:"native"});
   }
   const files=async()=>({notes:await readFile(join(repo,"notes.txt"),"utf8").catch(()=>null),added:await readFile(join(repo,"added.txt"),"utf8").catch(()=>null),status:(await git(repo,["status","--porcelain=v1","--untracked-files=all"])).stdout});
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
@@ -369,6 +371,23 @@ test("a file restore that fails part-way leaves every file and the conversation 
     await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
     expect(fixture.undoBody).toBeNull();
     await page.screenshot({animations:"disabled",path:SHOTS+"R1-restore-failed-part-way-files-as-they-were.png"});
+  }finally{await fixture.close()}
+});
+
+// Another thread that works in the same worktree holds its files back: the server refuses the restore before it touches a file, and
+// the window says why and what can be done instead, after the action's own words. The files and the conversation stay as they were.
+test("a file restore refused because another thread works in the worktree says why and what to do instead, and changes nothing",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const fixture=await rewindFixture(page,{realFiles:true,sharedWith:"native-rewind-neighbour"});
+  try{
+    const before=await fixture.files();
+    await editFromHere(page);
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not restore the files, so the conversation was not changed: Another thread also works in this folder, so putting the files back could undo its changes. Go back in the conversation only, and leave the files as they are.",{timeout:20_000});
+    expect(await fixture.files(),"every file is as it was before Edit from here").toEqual(before);
+    await expect(page.locator(".user-row")).toHaveCount(1);expect(fixture.threadStore.get(fixture.thread.id).turns).toHaveLength(1);
+    expect(fixture.undoBody).toBeNull();
+    await page.screenshot({animations:"disabled",path:SHOTS+"R2-restore-refused-another-thread-in-the-worktree.png"});
   }finally{await fixture.close()}
 });
 

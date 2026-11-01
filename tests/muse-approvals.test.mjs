@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as host from "../src/muse-host.mjs";
 import * as muse from "../src/muse-agent-session.mjs";
+import * as asking from "../src/muse-asking.mjs";
 import { FakeMuse, ReplayMuse, chunks, mspError, settle, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
@@ -83,7 +84,7 @@ test("a mode is fixed when its host launches: one with other flags or another se
 test("the recorded permission session: Allow once sends Muse's allow_once, the stage update after it asks nothing more, and Reject in the next turn sends its abort",async()=>{
   let count=0;
   const fixture=await startSession({muse:child=>new ReplayMuse(child,"permission-approved"),approve:()=>++count===1?"accept":"decline"});
-  assert.equal((await fixture.session.prompt([{type:"text",text:"Run the shell command `touch trebell-approved.txt` once with your shell tool, then reply DONE."}])).stopReason,"end_turn");
+  assert.equal((await fixture.session.prompt([{type:"text",text:"Use the shell to run `touch trebell-approved.txt` one time. When it has run, answer with the single word DONE."}])).stopReason,"end_turn");
   assert.equal(chunks(fixture.updates),"DONE");
   fixture.updates.length=0;
   assert.equal((await fixture.session.prompt([{type:"text",text:"Now run `touch trebell-second.txt` the same way."}])).stopReason,"end_turn");
@@ -106,9 +107,9 @@ test("Always allow in this workspace answers with Muse's own rule, and each choi
   fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
   assert.equal((await fixture.muse.next("approval/decide")).params.choiceId,"allow_local_prefix");
   complete(fixture,turnId);await running;await fixture.session.close();
-  assert.deepEqual(muse.museApprovalOptions?.([{choiceId:"y",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"s",label:"Allow for this session",decision:"approvedForSession",scope:"session"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"x",label:"Stop",decision:"abort",scope:"once"}]),
+  assert.deepEqual(asking.museCardButtons?.([{choiceId:"y",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"s",label:"Allow for this session",decision:"approvedForSession",scope:"session"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"x",label:"Stop",decision:"abort",scope:"once"}]),
     [{decision:"accept",label:"Allow once"},{decision:"acceptForSession",label:"Allow for this session"},{decision:"decline",label:"Deny"},{decision:"cancel",label:"Stop"}],"an abort beside a denied choice is its own button");
-  assert.deepEqual(muse.museApprovalOptions([{choiceId:"keep",label:"Keep out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"later",label:"Later",decision:"approvedSomeday",scope:"once"}]),[{decision:"declineAlways",label:"Keep out"},{decision:"decline",label:"Deny"}],"a rule that keeps it out is a button of its own beside Reject, and no choice of a decision Trebell does not know shows");
+  assert.deepEqual(asking.museCardButtons([{choiceId:"keep",label:"Keep out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"later",label:"Later",decision:"approvedSomeday",scope:"once"}]),[{decision:"declineAlways",label:"Keep out"},{decision:"decline",label:"Deny"}],"a rule that keeps it out is a button of its own beside Reject, and no choice of a decision Trebell does not know shows");
 });
 
 // Muse's own choices of a shell stage that offers a saved rule keeping the command out and no plain Reject but abort.
@@ -121,11 +122,11 @@ test("a decline Trebell makes itself never saves a rule that keeps the command o
     assert.equal((await fixture.muse.next("approval/decide")).params.choiceId,"abort",label);
     complete(fixture,turnId);await running;await fixture.session.close();
   }
-  const choices=muse.museApprovalChoices(KEEP_OUT_CHOICES);
+  const choices=asking.museDecisionChoices(KEEP_OUT_CHOICES);
   assert.deepEqual([choices.get("decline")?.choiceId,choices.get("declineAlways")?.choiceId],["abort","deny_local_prefix"]);
-  assert.equal(muse.museApprovalChoices([RECORDED_CHOICES[0],KEEP_OUT_CHOICES[1]]).has("decline"),false,"a rule is never a plain Reject");
-  assert.equal(muse.museApprovalChoices([{choiceId:"s",label:"Keep it out this session",decision:"deniedPolicyAmendment",scope:"session"}]).get("declineForSession")?.choiceId,"s");
-  assert.deepEqual(muse.museApprovalOptions(KEEP_OUT_CHOICES),[{decision:"accept",label:"Allow once"},{decision:"declineAlways",label:"Always reject in this workspace: touch ..."},{decision:"decline",label:"Reject"}],"Muse's three choices in its order and words");
+  assert.equal(asking.museDecisionChoices([RECORDED_CHOICES[0],KEEP_OUT_CHOICES[1]]).has("decline"),false,"a rule is never a plain Reject");
+  assert.equal(asking.museDecisionChoices([{choiceId:"s",label:"Keep it out this session",decision:"deniedPolicyAmendment",scope:"session"}]).get("declineForSession")?.choiceId,"s");
+  assert.deepEqual(asking.museCardButtons(KEEP_OUT_CHOICES),[{decision:"accept",label:"Allow once"},{decision:"declineAlways",label:"Always reject in this workspace: touch ..."},{decision:"decline",label:"Reject"}],"Muse's three choices in its order and words");
   // With no Reject but the rule, Trebell's decline stops the turn rather than save the rule.
   const stuck=await startSession({approve:()=>"decline"});
   const held=await runningTurn(stuck);
@@ -211,9 +212,11 @@ test("a decision Muse acknowledges as closing the whole approval (terminal) asks
 });
 
 test("a resolve that arrives before Muse acknowledges the decision keeps it: one decision, no second card, and a late refusal of it asks nothing",async()=>{
-  for(const ack of ["accepted","already resolved"]){
+  // How Muse answers the command once it has settled the approval: it took the decision, or the approval is resolved already.
+  const replies={accepted:params=>accepted(params),"already resolved":()=>{throw mspError("approvalAlreadyResolved","approval is already resolved",-32051)}};
+  for(const [ack,reply] of Object.entries(replies)){
     let release;const held=new Promise(resolve=>{release=resolve});
-    const fixture=await startSession({approve:()=>"decline",muse:child=>new FakeMuse(child,{handlers:{"approval/decide":async params=>{await held;if(ack!=="accepted")throw mspError("approvalAlreadyResolved","approval is already resolved",-32051);return accepted(params)}}})});
+    const fixture=await startSession({approve:()=>"decline",muse:child=>new FakeMuse(child,{handlers:{"approval/decide":async params=>{await held;return reply(params)}}})});
     const {running,turnId,sid}=await runningTurn(fixture);
     fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
     const decide=await fixture.muse.next("approval/decide");
@@ -225,6 +228,52 @@ test("a resolve that arrives before Muse acknowledges the decision keeps it: one
     complete(fixture,turnId);await running;
     assert.equal(fixture.asks.length,1,ack);
     assert.equal(fixture.muse.sent("approval/decide").length,1,ack);
+    await fixture.session.close();
+  }
+});
+
+test("an answer is on the approval's record before approval/decide leaves: an update of the stage while Muse holds the command asks nothing, nor one after Muse took it, and the next stage is asked",async()=>{
+  let release;const held=new Promise(resolve=>{release=resolve});
+  const fixture=await startSession({approve:()=>"accept",muse:child=>new FakeMuse(child,{handlers:{"approval/decide":async params=>{await held;return staged(params)}}})});
+  const {running,turnId,sid}=await runningTurn(fixture);
+  fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
+  const decide=await fixture.muse.next("approval/decide");
+  assert.deepEqual([decide.params.choiceId,decide.params.requirementId],["allow_once",{approvalId:"ap-1",sourceIndex:0}]);
+  // While Muse holds the command, the same stage comes again (its request re-sent, then an update with new choices).
+  fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
+  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{availableChoices:[RECORDED_CHOICES[0],RECORDED_CHOICES[2]]}),change:{kind:"reviewCompleted"}});
+  await settle();await settle();await pause(50);
+  assert.equal(fixture.asks.length,1,"nothing more is asked while the answer is on its way");
+  release();
+  await until(()=>fixture.session.requests.get("approval:ap-1")?.answer?.pending===false,"Muse's answer to the command");
+  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId),change:{kind:"reviewCompleted"}});
+  await settle();await settle();await pause(50);
+  assert.equal(fixture.asks.length,1,"the stage Muse took the answer for is not asked again");
+  assert.equal(fixture.muse.sent("approval/decide").length,1);
+  // Muse moves on to the next stage: that one is asked.
+  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{sourceIndex:1}),change:{kind:"stageResolved"}});
+  await until(()=>fixture.asks.length===2,"the next stage's card");
+  assert.deepEqual((await fixture.muse.next("approval/decide")).params.requirementId,{approvalId:"ap-1",sourceIndex:1});
+  fixture.muse.notify("approval/resolved",resolved(sid,turnId));
+  complete(fixture,turnId);await running;
+  await fixture.session.close();
+});
+
+test("an answer that does not get through leaves its stage off the record: refused, it is asked again a few times at most, and Muse asking the same stage again later asks it once more",async()=>{
+  for(const failure of [()=>mspError("approvalChoiceInvalid","choice rejected",-32052),()=>new Error("Muse could not apply the decision")]){
+    const fixture=await startSession({approve:()=>"accept",muse:child=>new FakeMuse(child,{handlers:{"approval/decide":async()=>{throw failure()}}})});
+    const {running,turnId,sid}=await runningTurn(fixture);
+    fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
+    await until(()=>fixture.muse.sent("approval/decide").length===3,"three answers");
+    await settle();await settle();await pause(50);
+    assert.deepEqual([fixture.asks.length,fixture.muse.sent("approval/decide").length],[3,3],"asked again after each refusal, three times at most");
+    const entry=fixture.session.requests.get("approval:ap-1");
+    assert.equal(entry.answer,null,"no answer is left on the approval's record");
+    // Muse asks the same stage again: it is asked, since no answer for it got through.
+    fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{availableChoices:[RECORDED_CHOICES[0],RECORDED_CHOICES[2]]}),change:{kind:"reviewCompleted"}});
+    await until(()=>fixture.asks.length===4,"the stage asked once more");
+    fixture.muse.notify("approval/resolved",resolved(sid,turnId));
+    complete(fixture,turnId);await running;
     await fixture.session.close();
   }
 });
@@ -426,8 +475,8 @@ test("Stop withdraws the turn's own open approval and question without answering
 });
 
 test("answers go back as Muse takes them: one choice by its label, several within their bounds, and the person's own words as a free-text answer or a note beside the choices",async()=>{
-  assert.deepEqual(muse.museUserInputAnswers?.(QUESTIONS,{approach:["Narrow","Leave the CLI alone"],checks:["Types","Format"]}),{answers:[{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"},{questionId:"checks",selectedLabels:["Types","Format"]}]});
-  assert.deepEqual(muse.museUserInputAnswers(QUESTIONS,{approach:["Ask me again after lunch"],checks:["Browser"]}),{answers:[{questionId:"approach",freeText:"Ask me again after lunch"},{questionId:"checks",selectedLabels:["Browser"]}]});
+  assert.deepEqual(asking.museAnswerPayload?.(QUESTIONS,{approach:["Narrow","Leave the CLI alone"],checks:["Types","Format"]}),{answers:[{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"},{questionId:"checks",selectedLabels:["Types","Format"]}]});
+  assert.deepEqual(asking.museAnswerPayload(QUESTIONS,{approach:["Ask me again after lunch"],checks:["Browser"]}),{answers:[{questionId:"approach",freeText:"Ask me again after lunch"},{questionId:"checks",selectedLabels:["Browser"]}]});
   const fixture=await startSession({reply:()=>({approach:["Broad"],checks:["Types","Browser","Types"]})});
   const {running,turnId,sid}=await runningTurn(fixture);
   fixture.muse.write({jsonrpc:"2.0",id:71,method:"userInput/request",params:question(sid,turnId)});
@@ -451,9 +500,9 @@ test("an answer Muse would refuse is asked again, saying what it lacked: over 50
     [{approach:["Narrow"],checks:["Types","Format","Browser"]},"checks",/^Choose at most 2 options\.$/],
     [{approach:["Narrow"],checks:[]},"checks",/^Answer this question to go on\.$/],
   ];
-  for(const [answers,questionId,message] of refusals){const {error}=muse.museUserInputAnswers?.(QUESTIONS,answers)||{};assert.equal(error?.questionId,questionId);assert.match(error?.message,message)}
-  assert.match(muse.museUserInputAnswers([{...QUESTIONS[1],selection:{mode:"multiple",minSelections:2}}],{checks:["Types"]}).error.message,/^Choose at least 2 options\.$/);
-  assert.equal(muse.museUserInputAnswers(QUESTIONS,{approach:["x".repeat(500)],checks:["Types"]}).answers[0].freeText.length,500,"500 characters go");
+  for(const [answers,questionId,message] of refusals){const {error}=asking.museAnswerPayload?.(QUESTIONS,answers)||{};assert.equal(error?.questionId,questionId);assert.match(error?.message,message)}
+  assert.match(asking.museAnswerPayload([{...QUESTIONS[1],selection:{mode:"multiple",minSelections:2}}],{checks:["Types"]}).error.message,/^Choose at least 2 options\.$/);
+  assert.equal(asking.museAnswerPayload(QUESTIONS,{approach:["x".repeat(500)],checks:["Types"]}).answers[0].freeText.length,500,"500 characters go");
   let count=0;
   const fixture=await startSession({reply:()=>++count===1?{approach:["x".repeat(501)],checks:["Types"]}:{approach:["Narrow"],checks:["Types"]}});
   const {running,turnId,sid}=await runningTurn(fixture);
@@ -553,8 +602,9 @@ test("through the relay, Muse's question opens Trebell's question dialog, and th
     const [dialog]=relay.requests;
     assert.equal(dialog.method,"item/tool/requestUserInput");
     assert.deepEqual(dialog.params.questions,[{id:"approach",header:"Approach",question:"Which approach should I take?",required:true,allowMultiple:false,options:[{label:"Narrow",description:"One file at a time"},{label:"Broad",description:"Everything at once"}]}]);
-    const [answer]=await relay.frames("userInput/answer");
-    assert.deepEqual(answer.params.answers,[{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"}]);
+    // Muse gets one answer: the chosen label, with the person's own words as its note.
+    const [{params:{answers:[sent,...more]}}]=await relay.frames("userInput/answer");
+    assert.deepEqual({sent,more},{sent:{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"},more:[]});
     assert.equal(relay.reply(thread.id),"ANSWERED: Narrow — Leave the CLI alone");
   }finally{await relay.close()}
 });

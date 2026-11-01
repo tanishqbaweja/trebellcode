@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const PROVIDERS=[
   {id:"xai",name:"xAI API",models:["grok-4.7","grok-4.6"],note:"Grok models from xAI. Models are loaded live from the official xAI /v1/language-models API for this key.",thinking:[]},
-  {id:"meta",name:"Meta Model API",models:["muse-spark-1.3","muse-wonder-1.0"],note:"Muse models from Meta. Models are loaded live from the official Meta Model API /v1/models for this key.",thinking:["Default","Minimal","Low","Medium","High","Extra High","Max"].map(level=>"Thinking · "+level)},
+  {id:"meta",name:"Meta Model API",models:["muse-spark-1.3","muse-wonder-1.0"],note:"Muse models from Meta. Models are loaded live from the official Meta Model API /v1/models for this key.",thinking:["Default","Minimal","Low","Medium","High","Extra high","Max"].map(level=>"Thinking · "+level)},
 ];
 
 // Waits for smooth scrolling (Settings reveals its target that way) to come to rest before a screenshot.

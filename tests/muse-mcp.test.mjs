@@ -60,12 +60,31 @@ test("session/start and session/resume carry Trebell's MCP servers in config.mcp
 test("a host that did not grant session MCP servers is refused with the update message before any session opens, and stopped; with no servers to pass it starts",async()=>{
   const without=child=>new FakeMuse(child,{handlers:{initialize:()=>({...INIT,grantedCapabilities:[]})}});
   let fake=null;
-  await assert.rejects(startSession({muse:child=>fake=without(child),options:{mcpServers:SERVERS}}),error=>error.message===muse.MUSE_SESSION_MCP_MESSAGE&&/Update Muse Code to a version that supports session MCP servers\./.test(error.message));
+  await assert.rejects(startSession({muse:child=>fake=without(child),options:{mcpServers:SERVERS}}),error=>error.message===muse.MUSE_MCP_UNSUPPORTED&&/Install a newer Muse Code release\.$/.test(error.message));
   assert.equal(fake.sent("session/start").length+fake.sent("session/resume").length,0,"no session was opened");
   assert.equal(fake.stdinEnded,true,"the host was stopped");
   const plain=await startSession({muse:without});
   assert.equal(plain.muse.sent("session/start").length,1);
   await plain.session.close();
+});
+
+test("only a grantedCapabilities list naming sessionMcp lets a session carry MCP servers: none at all, or the name alone outside a list, is no grant, also on a resume",async()=>{
+  const {grantedCapabilities:_,...noGrants}=INIT;
+  for(const [label,answer] of [["no grantedCapabilities",noGrants],["the name as a string",{...INIT,grantedCapabilities:"sessionMcp"}],["other grants only",{...INIT,grantedCapabilities:["userShell","feedback"]}]]){
+    for(const providerSessionId of [null,"01a17000-1111-7000-8000-000000000003"]){
+      let fake=null;
+      await assert.rejects(startSession({providerSessionId,muse:child=>fake=new FakeMuse(child,{handlers:{initialize:()=>answer}}),options:{mcpServers:SERVERS}}),{message:muse.MUSE_MCP_UNSUPPORTED},label);
+      assert.equal(fake.sent("session/start").length+fake.sent("session/resume").length,0,label);
+      assert.equal(fake.stdinEnded,true,label);
+    }
+  }
+  // Servers that all convert to nothing (an SSE one only) need no grant, and send no config.
+  const sseOnly=await startSession({muse:child=>new FakeMuse(child,{handlers:{initialize:()=>noGrants}}),options:{mcpServers:[SERVERS[3]]}});
+  assert.equal("config" in sseOnly.muse.sent("session/start")[0].params,false);
+  await sseOnly.session.close();
+  const granted=await startSession({muse:child=>new FakeMuse(child,{handlers:{initialize:()=>({...INIT,grantedCapabilities:["userShell","sessionMcp"]})}}),options:{mcpServers:SERVERS}});
+  assert.deepEqual(granted.muse.sent("session/start")[0].params.config,{mcpServers:MSP_SERVERS});
+  await granted.session.close();
 });
 
 test("through the relay, a Muse Code thread's session gets Trebell's repository tools and the person's own MCP server, on its start and on the resume a relaunch makes",{timeout:180_000},async()=>{

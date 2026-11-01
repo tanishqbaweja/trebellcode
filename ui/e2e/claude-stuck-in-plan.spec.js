@@ -57,7 +57,8 @@ test("a message to Claude Code stuck in the Plan mode Claude switched to, with a
     await send(page,"Now fix it");
     const refusal=page.locator(".agent-block .tool-event.kind-error").filter({hasText:"Plan mode"});
     await expect.soft(refusal,"the refusal names what holds the message back, and how to go on").toContainText(STUCK_IN_PLAN,{timeout:15_000});
-    await expect.soft(page.getByText("this model or setting change would end them"),"no change of the person's is blamed").toHaveCount(0);
+    // The refusal of a model or settings change (CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE) is not what the person sees.
+    await expect.soft(page.getByText("would restart Claude Code and end the background agents"),"no change of the person's is blamed").toHaveCount(0);
     // The watcher's row on the first turn's card agrees with the refusal: the watcher still runs.
     const card=page.locator(`[data-testid=activity-card][data-turn-id="${harness.threadStore.get(thread.id).turns[0].id}"]`);
     const watcherRow=card.locator(".tool-event").filter({has:page.locator("summary strong",{hasText:/^npm run watch/})});

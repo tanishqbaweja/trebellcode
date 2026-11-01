@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { AgentRuntimeManager, codexApiKeyHome, installEnvironment } from "../src/agent-runtime-manager.mjs";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { HARNESS_KEY_VARIABLES, harnessAuthMethod, normalizeHarnessAuthMethod } from "../src/harness-auth.mjs";
-import { museEnvironment } from "../src/muse-host.mjs";
+import { museHostEnvironment } from "../src/muse-host.mjs";
 import { migrateHarnessSecrets } from "../src/legacy-harness-key-migration.mjs";
 import { buildRuntimeEnvironment } from "../src/runtime-environment.mjs";
 
@@ -50,8 +50,8 @@ test("each harness on Sign in gets no key from Trebell's environment, its key st
     assert.deepEqual(manager.childEnvironmentKeys(profile).filter(name=>Object.hasOwn(KEYS,name)),[],kind);
   }
   // Muse Code's own environment filter keeps a META_API_KEY out whatever a launch held.
-  assert.equal(museEnvironment({META_API_KEY:"x",meta_api_key:"y",MODEL_API_KEY:"z",PATH:"/bin"}).PATH,"/bin");
-  assert.deepEqual(Object.keys(museEnvironment({META_API_KEY:"x",meta_api_key:"y",MODEL_API_KEY:"z",OPENAI_API_KEY:"o",MUSE_CUSTOM_HEADERS:"h"})),["MUSE_NO_AUTO_UPDATE"]);
+  assert.equal(museHostEnvironment({META_API_KEY:"x",meta_api_key:"y",MODEL_API_KEY:"z",PATH:"/bin"}).PATH,"/bin");
+  assert.deepEqual(Object.keys(museHostEnvironment({META_API_KEY:"x",meta_api_key:"y",MODEL_API_KEY:"z",OPENAI_API_KEY:"o",MUSE_CUSTOM_HEADERS:"h"})),["MUSE_NO_AUTO_UPDATE"]);
 });
 
 test("each harness on API key gets only its vendor's key: the one saved in Trebell, else the variable Native reads",t=>{

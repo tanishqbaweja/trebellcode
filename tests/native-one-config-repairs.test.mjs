@@ -310,21 +310,21 @@ test("a Codex thread whose first message asks for Git work starts with trebell_s
 });
 
 test("the source-control rule reads a message as long as the composer holds in linear time, with no spaces or with line after line",()=>{
-  // 120,000 characters, the composer's most (App.jsx MAX_COMPOSER_CHARS): the window runs the rule on its main thread for every new
-  // thread and every Native message. At 5ae45215 the link removal (\S*:\/\/\S*) and the sentence starts ([.!?;:\n]\s*) went back over
+  // 200,000 characters, the composer's most (App.jsx MAX_COMPOSER_CHARS): the window runs the rule on its main thread for every new
+  // thread and every Native message. Re-pinned note: sized to 200,000 since the composer's limit went up from 120,000. At 5ae45215 the link removal (\S*:\/\/\S*) and the sentence starts ([.!?;:\n]\s*) went back over
   // the rest of such a run from each of its characters: seconds each.
   const all={browser:true,computer:true,sourceControl:true,delegation:true};
-  for(const [name,text] of [["no spaces","a".repeat(120_000)],["base64",Buffer.from("x".repeat(90_000)).toString("base64")],["line breaks","\n".repeat(120_000)+"x"],["CRLF line breaks","\r\n".repeat(60_000)+"x"],["dots, then spaces",".".repeat(60_000)+" ".repeat(60_000)+"x"]]){
+  for(const [name,text] of [["no spaces","a".repeat(200_000)],["base64",Buffer.from("x".repeat(150_000)).toString("base64")],["line breaks","\n".repeat(200_000)+"x"],["CRLF line breaks","\r\n".repeat(100_000)+"x"],["dots, then spaces",".".repeat(100_000)+" ".repeat(100_000)+"x"]]){
     const started=performance.now(),selected=nativeConfiguration.nativeSpecializedSelection(text,all).sourceControl,ms=performance.now()-started;
     assert.equal(selected,false,name);assert.ok(ms<1_000,name+": "+ms.toFixed(0)+" ms");
   }
   // Every shape the earlier probes used (the second and third reviews' and repair 3's, then this repair's new words: a comma, you, ok,
-  // now, a line-ending ask, push to, link this to, version control), at the composer's 120,000 characters and at 400,000, each in well
+  // now, a line-ending ask, push to, link this to, version control), at the composer's 200,000 characters and at 400,000, each in well
   // under a second: a rule that goes back over a run from each of its characters takes about a minute at 400,000.
   const fill=(size,unit,lead)=>{const start=typeof lead==="function"?lead(size):lead||"",n=size-start.length-1;return start+unit.repeat(Math.ceil(n/unit.length)).slice(0,n)+"x"};
   const shapes=[["a"],["eHh4"],["QUJDRA=="],["\n"],["\r\n"],[" ",size=>".".repeat(size/2)],[" ","commit"],["\t","."],[". "],[".\n"],["& "],[" ","and"],["and "],["then "],["please "],["and then "],["commit "],["push "],["commit it "],[" it","push"],["it ","push "],["the ","open "],["the ","commit "],["the ","revert "],["the ","undo "],["the ","in "],["the ","show me "],["1 ","undo "],[" ","for"],["x/y.z-w ","create "],["https://a.b/c "],["https://a.b/c"],[":"],["; "],[" ","fix it and commit"],["2026-10-29 12:00:01 INFO commit offset 123 for partition 4 on branch predictor push notification\n"],[" ","."],["é中 "],
     [", "],[",\n"],["you "],["ok "],["now "],["just also so "],["commit\n"],["and commit\n"],[" ","and commit"],[" ",", commit"],["\t","and commit"],["\t\r","commit"],["commit now "],["commit these "],[", please"],["push to "],["push it to my "],["link this to "],["under version "],["version control "],["in version control x "],[", thanks "],["commit if "],[" ","commit, thanks"],["commit please\n"],["set up version control "],["version control to this "]];
-  for(const size of [120_000,400_000])for(const [unit,lead] of shapes){
+  for(const size of [200_000,400_000])for(const [unit,lead] of shapes){
     const text=fill(size,unit,lead),started=performance.now();nativeConfiguration.nativeSpecializedSelection(text,all);const ms=performance.now()-started;
     assert.equal(text.length,size);assert.ok(ms<1_000,JSON.stringify(unit)+" at "+size+": "+ms.toFixed(0)+" ms");
   }

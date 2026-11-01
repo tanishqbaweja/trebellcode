@@ -1,9 +1,9 @@
 // A harness's status check (AgentRuntimeManager probe) as Settings, a harness switch and a chat start read it:
-// - each CLI's --version gets its own time budget (Claude Code 20 s, OpenCode 10 s, the others 6 s), and on this machine one that runs
+// - each CLI's --version gets its own time budget (Claude Code 30 s, OpenCode 10 s, the others 6 s), and on this machine one that runs
 //   out of time or exits with an error reads installed, never "not installed" (only a command that is not there does);
 // - Claude Code, Cursor, Grok and Antigravity may then start; an OpenCode is not ready without its version, which picks the client
 //   that talks to it; each of these answers is kept for a minute, as a ready one is, so a hung CLI costs its wait once a minute; and
-//   Codex's account read, which has 20 s of its own, decides after a check that ran out of time (one that exited with an error is
+//   Codex's account read, which has 25 s of its own, decides after a check that ran out of time (one that exited with an error is
 //   not ready);
 // - Grok's checks run with its updater off, and its sessions keep their environment;
 // - a logged-out `grok models` is read once more, as Grok refreshes an expired token in the same process;
@@ -17,12 +17,13 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
-import { AgentRuntimeManager, withProbeAdvice } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, parseGrokModelsAuth, withProbeAdvice } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { generateTextWithHarness } from "../src/harness-text-generation.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
+import { GROK_MODELS_SIGNED_IN, GROK_MODELS_SIGNED_OUT } from "./fixtures/grok-cli-output.mjs";
 
 // What the manager's run() gives: an answer, a check it stopped at its timeout, and a command that exited with an error.
 const answered=stdout=>({ok:true,code:0,error:null,stdout,stderr:""});
@@ -65,18 +66,19 @@ function remoteHarness(executeArgv,spawnArgv=()=>{throw new Error("nothing is st
   return {manager,asked,profile};
 }
 
-test("Claude Code gets 20 s to answer --version: one that answers after 19 s reads ready",async t=>{
+// Re-pinned note: Claude Code's --version gets Trebell's own 30 s and Codex's account read 25 s now (they were 20 s each).
+test("Claude Code gets 30 s to answer --version: one that answers after 29 s reads ready",async t=>{
   const fx=await localHarness(t,"claude",(args,{timeoutMs})=>args[0]==="--version"
-    ?after(19_000,answered("2.1.310 (Claude Code)\n"),timeoutMs)
+    ?after(29_000,answered("2.1.310 (Claude Code)\n"),timeoutMs)
     :answered(JSON.stringify({loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty"})));
   const status=await fx.manager.probe("claude");
   assert.deepEqual([status.installed,status.available,status.authenticated,status.version],[true,true,true,"2.1.310 (Claude Code)"],status.message);
-  assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),[["--version",20_000],["auth status",8000]]);
+  assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),[["--version",30_000],["auth status",8000]]);
 });
 
 // What each harness's check waits for, and the name its message gives the command. OpenCode, whose version picks its client, is
 // in the test after these.
-const BUDGETS=[["claude","Claude Code","claude",20],["cursor","Cursor","cursor-agent",6],["grok","Grok Build","grok",6],["antigravity","Antigravity","agy",6]];
+const BUDGETS=[["claude","Claude Code","claude",30],["cursor","Cursor","cursor-agent",6],["grok","Grok Build","grok",6],["antigravity","Antigravity","agy",6]];
 for(const [kind,name,command,seconds] of BUDGETS){
   test(`${name} reads installed and may start when its --version never answers, says how long it waited, and costs that wait once a minute`,async t=>{
     let clock=1_000_000;
@@ -222,7 +224,7 @@ test("on a host a failed version check reads unavailable as before, with the bud
   answer={exitCode:127,stdout:"",stderr:"env: 'codex': No such file or directory\n"};
   const codex=await fx.manager.probe("codex");
   assert.deepEqual([codex.installed,codex.available],[false,false]);assert.match(codex.message,/^Codex CLI was not found\./);
-  assert.deepEqual(fx.asked.map(item=>[item.line,item.timeoutMs]),[["claude --version",20_000],["cursor-agent --version",6000],["codex --version",6000]]);
+  assert.deepEqual(fx.asked.map(item=>[item.line,item.timeoutMs]),[["claude --version",30_000],["cursor-agent --version",6000],["codex --version",6000]]);
 });
 
 // A `codex app-server` as a signed-in Codex runs one, standing in for Codex here: a node script behind a launcher of the test's own,
@@ -241,7 +243,7 @@ readline.createInterface({input:process.stdin}).on("line",line=>{const m=JSON.pa
   if(!windows)await chmod(launcher,0o755);
   return launcher;
 }
-test("Codex gets 6 s to answer --version, as one that runs out of time leaves the answer to its account read, which has 20 s",async t=>{
+test("Codex gets 6 s to answer --version, as one that runs out of time leaves the answer to its account read, which has 25 s",async t=>{
   const home=await tempHome(t,"codex"),binaryPath=await codexAppServerLauncher(home),calls=[];
   let version=()=>TIMED_OUT;
   const runFn=async(_command,args,{timeoutMs})=>{calls.push([args.join(" "),timeoutMs]);return version()};
@@ -269,7 +271,7 @@ test("a Codex whose --version ran out of time and whose account read finds no si
   const env={PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,COMSPEC:process.env.COMSPEC,TEMP:home,TMP:home,HOME:home,USERPROFILE:home,CODEX_HOME:join(home,"codex-home"),TREBELL_HOME:join(home,"trebell")};
   const manager=new AgentRuntimeManager({state:memoryState({agentRuntimeInstances:[{id:"codex-default",kind:"codex",binaryPath}]}),env,runFn});
   const status=await manager.probe("codex");
-  assert.deepEqual([status.installed,status.available,status.authenticated,status.versionCheckFailed,status.message],[true,false,false,true,"Codex CLI is signed out. Sign in with codex login and try again."]);
+  assert.deepEqual([status.installed,status.available,status.authenticated,status.versionCheckFailed,status.message],[true,false,false,true,"Codex has no account signed in. Run codex login, then try again."]);
   await manager.probe("codex");
   assert.deepEqual(calls,["--version","--version"],"the next check asked again");
 });
@@ -316,7 +318,7 @@ test("an OpenCode update whose --version does not answer or fails installs nothi
 });
 
 test("Grok's version and sign-in checks run with its updater off, and its sessions keep their environment",async t=>{
-  const fx=await localHarness(t,"grok",args=>answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41\n"));
+  const fx=await localHarness(t,"grok",args=>answered(args[0]==="models"?GROK_MODELS_SIGNED_IN:"grok 1.0.41\n"));
   const status=await fx.manager.probe("grok");
   assert.equal(status.authenticated,true);
   assert.deepEqual(fx.calls.map(call=>[call.args,call.env.GROK_DISABLE_AUTOUPDATER]),[["--version","1"],["models","1"]]);
@@ -337,7 +339,7 @@ import readline from "node:readline";
 const args=process.argv.slice(2),send=message=>process.stdout.write(JSON.stringify(message)+"\n");
 appendFileSync(process.env.TREBELL_STATUS_LOG,JSON.stringify({args,updater:process.env.GROK_DISABLE_AUTOUPDATER??null})+"\n");
 if(args[0]==="--version")process.stdout.write("grok 1.0.41-fixture\n");
-else if(args[0]==="models")process.stdout.write("You are logged in with grok.com.\n");
+else if(args[0]==="models")process.stdout.write(${JSON.stringify(GROK_MODELS_SIGNED_IN)});
 else readline.createInterface({input:process.stdin}).on("line",line=>{const m=JSON.parse(line);
   if(m.method==="initialize")send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentCapabilities:{},_meta:{modelState:{currentModelId:"grok-4.7",availableModels:[{modelId:"grok-4.7",name:"Grok 4.7"}]}}}});
   else if(m.id!=null)send({jsonrpc:"2.0",id:m.id,result:{}});
@@ -358,11 +360,11 @@ else readline.createInterface({input:process.stdin}).on("line",line=>{const m=JS
 test("a logged-out `grok models` is read once more, and the second answer decides unless it says nothing",async t=>{
   for(const [answers,expected,calls] of [
     // An access token that has just expired: Grok prints the logged-out line, then refreshes it.
-    [["Not authenticated. Run grok login.\n","You are logged in with grok.com.\n"],[true,true,"Ready"],2],
-    [["Not logged in\n","Not logged in\n"],[false,false,"Grok CLI is installed but not logged in. Run grok login."],2],
+    [["Not authenticated. Run grok login.\n",GROK_MODELS_SIGNED_IN],[true,true,"Ready"],2],
+    [["Not logged in\n","Not logged in\n"],[false,false,"Grok Build has no account signed in. Run grok login, then try again."],2],
     // A second read that times out keeps the first answer.
-    [["Not logged in\n",null],[false,false,"Grok CLI is installed but not logged in. Run grok login."],2],
-    [["You are logged in with grok.com.\n"],[true,true,"Ready"],1],
+    [["Not logged in\n",null],[false,false,"Grok Build has no account signed in. Run grok login, then try again."],2],
+    [[GROK_MODELS_SIGNED_IN],[true,true,"Ready"],1],
   ]){
     const left=[...answers];
     const fx=await localHarness(t,"grok",args=>{if(args[0]!=="models")return answered("grok 1.0.41\n");const next=left.shift();return next==null?TIMED_OUT:answered(next)});
@@ -382,10 +384,19 @@ test("a logged-out `grok models` is read once more, and the second answer decide
   assert.deepEqual(keyed.calls.map(call=>[call.args,call.env.XAI_API_KEY]),[["--version","xai-test-not-a-key"]]);
 });
 
+// The whole of what Grok Build 1.0.41's `grok models` prints (tests/fixtures/grok-cli-output.mjs): its sign-in line decides, and the
+// model list under it changes nothing, whichever sign-in the line names.
+test("Grok Build's own `grok models` output reads as signed in or signed out, its model list aside",()=>{
+  assert.equal(parseGrokModelsAuth(GROK_MODELS_SIGNED_IN),true);
+  assert.equal(parseGrokModelsAuth(GROK_MODELS_SIGNED_OUT),false);
+  assert.equal(parseGrokModelsAuth(GROK_MODELS_SIGNED_IN.replace("grok.com","Northwind SSO")),true,"a sign-in an administrator gave its own label");
+  assert.equal(parseGrokModelsAuth(GROK_MODELS_SIGNED_IN.slice(GROK_MODELS_SIGNED_IN.indexOf("\n")+1)),null,"the model list alone says nothing of the sign-in");
+});
+
 test("a Claude Code profile with a custom API endpoint is not called signed out; one on Anthropic's own API is",async t=>{
   const signedOut=args=>args[0]==="auth"?{...exited(1,""),stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"})}:answered("2.1.310 (Claude Code)\n");
-  const CUSTOM="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts.";
-  const ADVICE="Claude Code is signed out. Sign in with `claude auth login` and try again.";
+  const CUSTOM="Claude Code sends its requests to this profile's own API endpoint, which holds the credentials. A session checks them when it starts.";
+  const ADVICE="Claude Code has no account signed in. Run `claude auth login`, then try again.";
   for(const [where,options,expected] of [
     ["ANTHROPIC_BASE_URL from Trebell's own environment",{env:{ANTHROPIC_BASE_URL:"https://proxy.example"}},[true,null,CUSTOM]],
     ["the profile's own ANTHROPIC_BASE_URL",{instance:{environment:{ANTHROPIC_BASE_URL:"http://localhost:4000/v1"}}},[true,null,CUSTOM]],
@@ -396,7 +407,7 @@ test("a Claude Code profile with a custom API endpoint is not called signed out;
     const fx=await localHarness(t,"claude",signedOut,options);
     const status=await fx.manager.probe("claude");
     assert.deepEqual([status.available,status.authenticated,status.message],expected,where);
-    if(expected[1]===null)assert.deepEqual([status.account.type,status.account.label,status.account.loggedIn],["customEndpoint","Custom API endpoint",false],where);
+    if(expected[1]===null)assert.deepEqual([status.account.type,status.account.label,status.account.loggedIn],["ownEndpoint","Own API endpoint",false],where);
   }
   // A profile on a host runs with the host's own variables, which this machine's ANTHROPIC_BASE_URL says nothing of.
   const remote=remoteHarness((command,args)=>args[0]==="auth"?{exitCode:1,stdout:JSON.stringify({loggedIn:false,authMethod:"none"}),stderr:""}:{exitCode:0,stdout:"2.1.310 (Claude Code)\n",stderr:""});
@@ -410,7 +421,7 @@ test("a Claude Code profile with a custom API endpoint keeps its answer for a mi
   let clock=1_000_000;
   const fx=await localHarness(t,"claude",args=>args[0]==="auth"?{...exited(1,""),stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"})}:answered("2.1.311 (Claude Code)\n"),{env:{ANTHROPIC_BASE_URL:"https://gateway.example"},now:()=>clock});
   const first=await fx.manager.probe("claude");
-  assert.deepEqual([first.available,first.authenticated,first.account.type],[true,null,"customEndpoint"]);
+  assert.deepEqual([first.available,first.authenticated,first.account.type],[true,null,"ownEndpoint"]);
   for(const step of [5_000,5_000,49_000]){clock+=step;await fx.manager.probe("claude")}
   assert.deepEqual(fx.calls.map(call=>call.args),["--version","auth status"],"Settings' 5-s poll, the page load and chat starts reused it");
   clock+=1_001;await fx.manager.probe("claude");
@@ -490,4 +501,14 @@ test("a chat that fails on a Claude Code whose --version failed says, after the 
   assert.equal(withProbeAdvice("Claude Code process exited with code 1",{available:true,authenticated:null,versionCheckFailed:true,message:CHECK}),"Claude Code process exited with code 1. "+CHECK);
   assert.equal(withProbeAdvice(CHECK,{available:true,authenticated:null,versionCheckFailed:true,message:CHECK}),CHECK,"advice the message already has adds none");
   assert.equal(withProbeAdvice("Rate limited.",{available:true,authenticated:null,message:"Claude Code is installed, but Trebell could not verify its authentication status."}),"Rate limited.","an unread sign-in adds nothing, as before");
+});
+
+// A `grok models` that gives Trebell nothing to read (it timed out, or printed neither a model list nor a logged-out line) leaves
+// Grok Build's sign-in unknown, and Settings says so by the name it shows Grok by.
+test("a Grok Build whose sign-in could not be read says so, by the name Settings shows it under",async t=>{
+  for(const answer of [null,"Something unexpected\n"]){
+    const fx=await localHarness(t,"grok",args=>args[0]!=="models"?answered("grok 1.0.41\n"):answer==null?TIMED_OUT:answered(answer));
+    const status=await fx.manager.probe("grok");
+    assert.deepEqual([status.authenticated,status.message],[null,"Grok Build is installed, but Trebell could not tell whether it is signed in."],String(answer));
+  }
 });

@@ -732,13 +732,13 @@ test("Trebell Native background processes outlive the turn and stay thread-owned
     calls++;
     const processTools=request.tools.find(item=>item.name==="trebell_process");assert.ok(processTools);assert.ok(processTools.tools.some(item=>item.name==="start"));
     if(calls===1)return{id:"background-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-1",namespace:"trebell_process",name:"start",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write(process.env.NATIVE_BACKGROUND_RELAY_SECRET||'SAFE');setInterval(()=>{},1000)"],cwd:".",max_output_bytes:8192})}],finishReason:"tool_calls",usage:{}};
-    assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/processId/);return{id:"background-answer",provider:request.provider,model:request.model,text:"Server is running in the background.",toolCalls:[],finishReason:"stop",usage:{}};
+    assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/processId/);return{id:"background-answer",provider:request.provider,model:request.model,text:"The API is up and listening in the background.",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
-    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",dynamicToolNamespaces:["trebell_process"],input:[{type:"text",text:"Start the dev server in the background"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",dynamicToolNamespaces:["trebell_process"],input:[{type:"text",text:"Launch the API with npm start as a background job"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
     const listed=await rpc.request("thread/backgroundTerminals/list",{threadId:thread.id,limit:10});assert.equal(listed.data.length,1);const processItem=listed.data[0];assert.equal(processItem.running,true);assert.match(processItem.command,/node|electron/i);assert.equal(processItem.cwd,repo);
     const sibling=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
     assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:sibling.id,limit:10})).data.length,0);await assert.rejects(()=>rpc.request("thread/backgroundTerminals/terminate",{threadId:sibling.id,processId:processItem.processId}),/not found/i);
@@ -762,7 +762,7 @@ test("a Native thread restored after a restart gives its new background processe
     return {rpc:client(ws),close:async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))}};
   };
   const startProcess=async(rpc,threadId)=>{
-    const turn=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",dynamicToolNamespaces:["trebell_process"],input:[{type:"text",text:"Start the dev server in the background"}]})).turn;
+    const turn=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",dynamicToolNamespaces:["trebell_process"],input:[{type:"text",text:"Launch the API with npm start as a background job"}]})).turn;
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
   };
   try{

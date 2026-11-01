@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { hashedCodexAppServerToken } from "./codex-app-server-auth.mjs";
+import { CODEX_FOLDERS_SHARED_FROM_START } from "./codex-home-layout.mjs";
 import { remoteCommandWords, remoteEnvironmentCommand, remoteHomeGuard, remotePathExpression, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { plainTerminalStream } from "./terminal-log-text.mjs";
@@ -20,11 +21,10 @@ function homeAssignment(variable,path){
   return ["trebell_codex_"+variable+"="+remotePathExpression(path),remoteHomeGuard("trebell_codex_"+variable,path)].filter(Boolean);
 }
 
-const REMOTE_CODEX_SHARED_DIRECTORIES=["sessions","archived_sessions","sqlite","shell_snapshots","worktrees","skills","plugins","cache","logs","mcp-oauth-locks"];
-
 // The lines that make a Codex profile's own home (CODEX_HOME in Settings) or shadow home on a WSL or SSH host and export it as
 // CODEX_HOME, run there before its app-server, its sign-in and its account check (agent-runtime-manager.mjs), so the three use
-// one home. Nothing for a profile with no home of its own, which keeps the host's default.
+// one home. A shadow home there links the folders a local one shares from the start (codex-home-layout
+// CODEX_FOLDERS_SHARED_FROM_START). Nothing for a profile with no home of its own, which keeps the host's default.
 export function remoteCodexHomeSetup(runtimeInstance=null){
   const instance=runtimeInstance||{};
   const lines=[];
@@ -34,10 +34,10 @@ export function remoteCodexHomeSetup(runtimeInstance=null){
     lines.push(...homeAssignment("shared",shared||"~/.codex"));
     lines.push(...homeAssignment("effective",shadow));
     lines.push('mkdir -p "$trebell_codex_shared" "$trebell_codex_effective"');
-    // A link that already points at its shared entry is left as it is, as a local shadow home's is (codex-home-layout ensureLink):
-    // the account check runs these lines each time it asks the host, and the sign-in each time it opens, while the profile's
-    // app-server may be writing through the links. Only a missing link or one that points elsewhere is made.
-    lines.push("for trebell_codex_entry in "+REMOTE_CODEX_SHARED_DIRECTORIES.map(quotePosix).join(" ")+"; do");
+    // A link that already points at its shared entry is left as it is, as a local shadow home's is (codex-home-layout
+    // linkIntoShadow): the account check runs these lines each time it asks the host, and the sign-in each time it opens, while the
+    // profile's app-server may be writing through the links. Only a missing link or one that points elsewhere is made.
+    lines.push("for trebell_codex_entry in "+CODEX_FOLDERS_SHARED_FROM_START.map(quotePosix).join(" ")+"; do");
     lines.push('  mkdir -p "$trebell_codex_shared/$trebell_codex_entry"');
     lines.push('  if [ -L "$trebell_codex_effective/$trebell_codex_entry" ]; then');
     lines.push('    [ "$(readlink "$trebell_codex_effective/$trebell_codex_entry" 2>/dev/null)" = "$trebell_codex_shared/$trebell_codex_entry" ] && continue');

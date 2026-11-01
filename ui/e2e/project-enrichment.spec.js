@@ -257,3 +257,60 @@ test("large project lists paint before bounded enrichment finishes",async({page}
   await page.locator(".secondary-page").evaluate(node=>{node.scrollTop=0});
   await page.screenshot({animations:"disabled",path:"visual-audit/projects-bounded-enrichment-dark-1280x800.png"});
 });
+
+// A project's trebell.json, as the Projects page tells it: the defaults it sets with a button for each the project does not use yet,
+// "Shared actions to import" for a file with actions only, and, for a file that sets nothing this release reads (one written for
+// 2.1.1 or 2.1.2 uses other keys), that it was found but holds nothing Trebell reads, and which keys Trebell reads.
+test("a trebell.json hint says what the file sets, offers each default, and says when it sets nothing Trebell reads",async({page})=>{
+  test.setTimeout(30_000);
+  const files={
+    "C:/repos/old-keys":{present:true,workspaceMode:null,submodules:null,actions:0},
+    "C:/repos/actions-only":{present:true,workspaceMode:null,submodules:null,actions:2},
+    "C:/repos/defaults":{present:true,workspaceMode:"worktree",submodules:"top-level",actions:1},
+  };
+  await routeProjectsShell(page,{
+    projects:[
+      {id:"old-keys",name:"Old Keys Project",path:"C:/repos/old-keys",environmentId:null,scripts:[]},
+      {id:"actions-only",name:"Actions Only Project",path:"C:/repos/actions-only",environmentId:null,scripts:[]},
+      {id:"defaults",name:"Defaults Project",path:"C:/repos/defaults",environmentId:null,scripts:[],workspaceMode:"current",worktreeSubmodules:null},
+    ],
+    git:async path=>({isGit:true,root:path,branch:"main",remotes:[]}),
+  });
+  await page.route(/\/api\/project-actions\/suggestions\?/,route=>json(route,{scripts:[],projectFile:files[new URL(route.request().url()).searchParams.get("path")]||{present:false},packageManager:null}));
+  const saves=[];
+  await page.route(/\/api\/projects$/,route=>{
+    if(route.request().method()!=="POST")return route.fallback();
+    const body=route.request().postDataJSON();saves.push(body);
+    return json(route,{project:{id:body.id,name:"Defaults Project",path:body.path,environmentId:null,scripts:[]}});
+  });
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const hint=name=>page.locator(".project-card").filter({hasText:name}).locator(".project-config-hint");
+  await expect(hint("Old Keys Project")).toHaveText("trebell.json foundNothing in it that Trebell reads. Trebell reads actions, workspace and submodules.");
+  await expect(hint("Old Keys Project").getByRole("button")).toHaveCount(0);
+  await expect(hint("Actions Only Project")).toHaveText("trebell.json foundShared actions to import");
+  await expect(hint("Defaults Project").locator("span")).toHaveText("Workspace: new worktree · Submodules: first level");
+  await expect(hint("Defaults Project").getByRole("button")).toHaveText(["Use its workspace","Use its submodules"]);
+  await page.screenshot({animations:"disabled",path:auditDir+"projects-trebell-json-hint-1280x800.png"});
+  // Each hint, and each of the Defaults card's two buttons, scrolled into view and taken on its own: the cards below the fold are
+  // in no other picture.
+  const shots=[
+    ["old-keys",hint("Old Keys Project")],
+    ["actions-only",hint("Actions Only Project")],
+    ["defaults",hint("Defaults Project")],
+    ["use-its-workspace",hint("Defaults Project").getByRole("button",{name:"Use its workspace"})],
+    ["use-its-submodules",hint("Defaults Project").getByRole("button",{name:"Use its submodules"})],
+  ];
+  for(const [name,element] of shots){
+    await element.scrollIntoViewIfNeeded();
+    await expect(element).toBeInViewport();
+    await element.screenshot({animations:"disabled",path:auditDir+`projects-trebell-json-hint-${name}.png`});
+  }
+  await hint("Defaults Project").getByRole("button",{name:"Use its workspace"}).click();
+  await expect.poll(()=>saves.length).toBe(1);
+  expect(saves[0]).toMatchObject({id:"defaults",path:"C:/repos/defaults",workspaceMode:"worktree"});
+  await hint("Defaults Project").getByRole("button",{name:"Use its submodules"}).click();
+  await expect.poll(()=>saves.length).toBe(2);
+  expect(saves[1]).toMatchObject({id:"defaults",path:"C:/repos/defaults",worktreeSubmodules:"top-level"});
+});

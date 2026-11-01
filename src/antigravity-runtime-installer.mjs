@@ -17,8 +17,9 @@ const loadExtractZip=()=>extractZipModule??=import("extract-zip");
 export const ACP_REGISTRY_URL="https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 // Antigravity's sign-in and the home it runs in are antigravity-auth.mjs's.
 
-// What an install leaves free on its drive besides the download and the files it unpacks there.
-export const ANTIGRAVITY_FREE_SPACE_MARGIN=256*1024*1024;
+// What an install leaves free on its drive besides the download and the files it unpacks there. Trebell's own floor, 512 MiB: room
+// for Antigravity's first conversations and logs, Trebell's own state and the system's temporary files to keep growing after it.
+export const ANTIGRAVITY_FREE_SPACE_MARGIN=512*1024*1024;
 // How long the new runtime has to start and answer ACP's initialize, as long as a session's start has.
 const START_CHECK_TIMEOUT_MS=90_000;
 // What Windows says when a process holds a folder Trebell renames: a running Antigravity's own folder, or one just stopped.
@@ -132,12 +133,14 @@ async function checkRuntimeStarts({binary,args,launchEnv,version,spawnProcess}){
   }
 }
 
-// A folder renamed just after a process that ran from it stopped: Windows can hold it a moment longer, so the rename is tried
-// again 10 times, 100 ms apart. One a running process holds stays held, and the last refusal is thrown.
+// A folder renamed just after a process that ran from it stopped: Windows can hold it a moment longer while the process's handles
+// close, so the rename is tried again after waits that double from 50 ms, five times (about 1.5 s in all). One a running process
+// holds stays held, and the last refusal is thrown.
+const RENAME_WAITS_MS=[50,100,200,400,800];
 async function renameSettled(from,to,platform){
-  for(let attempt=1;;attempt++){
+  for(const wait of [...RENAME_WAITS_MS,null]){
     try{return await rename(from,to)}
-    catch(error){if(platform!=="win32"||attempt>=10||!IN_USE_CODES.has(error?.code))throw error;await new Promise(resolve=>setTimeout(resolve,100))}
+    catch(error){if(platform!=="win32"||wait===null||!IN_USE_CODES.has(error?.code))throw error;await new Promise(resolve=>setTimeout(resolve,wait))}
   }
 }
 

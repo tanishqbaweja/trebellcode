@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeQuestionText, openCodeReadOutput, openCodeRefusal, openCodeToolTitle, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, openCodeStartingVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodeSessionRules, openCodeQuestionText, unwrapOpenCodeRead, openCodeRefusal, openCodeToolTitle, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
-import { PROMPT_IMAGE_PATH, textExtractedTo } from "./prompt-attachments.mjs";
+import { attachmentLine, unsentImageLine } from "./attachment-line.mjs";
+import { PROMPT_IMAGE_PATH, PROMPT_TEXT_PATH } from "./prompt-attachments.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 import { isUserResponseTimeout } from "./user-response-timeout.mjs";
 
@@ -32,7 +33,7 @@ function variantsOf(model){
 }
 function v2Action(permission){const value=String(permission||"*");return value==="bash"?"shell":value==="task"?"subagent":value}
 function v2Rules(mode,{repositoryMcp=null,grants=[]}={}){
-  const rules=openCodePermissionRules(mode,{allowedTools:repositoryMcp?.name?[`${repositoryMcp.name}_*`]:[]});
+  const rules=openCodeSessionRules(mode,{allowedTools:repositoryMcp?.name?[`${repositoryMcp.name}_*`]:[]});
   return [...rules.map(rule=>({action:v2Action(rule.permission),resource:String(rule.pattern||"*"),effect:rule.action==="allow"?"allow":rule.action==="deny"?"deny":"ask"})),...(Array.isArray(grants)?grants:[])];
 }
 // OpenCode 2 takes an attachment as a URI it reads itself ({uri, name}), and refuses the whole prompt when one is missing. A
@@ -49,39 +50,66 @@ export async function openCode2PromptInput(parts=[],{external=false}={}){
     const path=pasted?String(part[PROMPT_IMAGE_PATH]||""):fileUriPath(part.uri)||"";
     const mime=pasted?String(part.mimeType||"").toLowerCase():NATIVE_IMAGES[extname(path).toLowerCase()]||"",native=Object.values(NATIVE_IMAGES).includes(mime);
     const kind=pasted||native?"image":"file",name=String(part.name||(path?basename(path):"")||kind);
-    if(!path){text.push(pasted?`[Attached image "${name}" could not be sent: Trebell Code has no saved file for it]`:`[Attached file "${name}" is at: ${String(part.uri||"")}]`);continue}
-    text.push(`[Attached ${kind} "${name}" is saved at: ${path}${textExtractedTo(part)}]`);
+    if(!path){text.push(pasted?unsentImageLine(name):attachmentLine("file",name,String(part.uri||"")));continue}
+    text.push(attachmentLine(kind,name,path,part[PROMPT_TEXT_PATH]));
     if(native&&!external&&await fileExists(path))files.push({uri:fileUri(path),name});
   }
   return {text:text.join("\n"),files};
 }
-// OpenCode 2 asks through forms: its question tool's questions, a plugin's or a server's. String
-// and multiselect fields are the question dialog's questions, their options its choices; a field the dialog cannot show is named.
-const FORM_FIELD_NAMES=Object.freeze({external:"a link to open",boolean:"a yes or no answer",number:"a number",integer:"a whole number"});
-const formText=value=>typeof value==="string"?value.trim():"";
-export function openCode2FormQuestions(form){
-  const fields=Array.isArray(form?.fields)?form.fields:[],questions=[];
-  if(!fields.length)return {unsupported:"an answer to a form with no questions"};
-  for(const [index,field] of fields.entries()){
-    const type=String(field?.type||"");
-    if(type!=="string"&&type!=="multiselect")return {unsupported:FORM_FIELD_NAMES[type]||`a value of type ${type||"unknown"}`};
-    if(field.hidden===true)return {unsupported:"a hidden field"};
-    if(Array.isArray(field.when)&&field.when.length)return {unsupported:"a field that depends on another"};
-    const header=formText(field.title)||`Question ${index+1}`;
-    const options=(Array.isArray(field.options)?field.options:[]).filter(option=>formText(option?.value)||formText(option?.label)).map(option=>({label:formText(option.label)||formText(option.value),description:formText(option.description),value:formText(option.value)?String(option.value):formText(option.label)}));
-    // Choices only, unless the field takes the person's own words too (or offers no choices).
-    questions.push({id:String(field.key),header,question:formText(field.description)||header,multiSelect:type==="multiselect",options,...(field.custom===true||!options.length?{}:{allowCustomAnswer:false})});
-  }
-  return {questions};
+// OpenCode 2 asks the person through forms (its question tool's questions, a plugin's, a server's), and Trebell asks them in the
+// window's question dialog, which takes words and choices: a field of the string or multiselect kind. A form is asked only when every
+// field is one the dialog can ask; any other form is declined, naming what OpenCode asked for (the first field the dialog cannot ask).
+const KIND_ASKED_FOR=new Map([["boolean","a yes or no answer"],["number","a number"],["integer","a whole number"],["external","a visit to a web page"]]);
+const DIALOG_KINDS=new Set(["string","multiselect"]);
+const trimmedText=value=>typeof value==="string"?value.trim():"";
+const listOf=value=>Array.isArray(value)?value:[];
+const hasWords=value=>typeof value==="string"&&value.trim()!=="";
+// What a field asks for that the dialog cannot ask, or null when the dialog can ask it: its kind decides first, then whether OpenCode
+// keeps it hidden, then whether it shows only on another field's answer (its conditions).
+function beyondDialog(field){
+  const kind=String(field?.type||"");
+  if(!DIALOG_KINDS.has(kind))return KIND_ASKED_FOR.get(kind)??`a value of type ${kind||"unknown"}`;
+  if(field.hidden===true)return "a field it keeps hidden";
+  return Array.isArray(field.when)&&field.when.length>0?"a conditional field":null;
 }
-// The answers by field key: a multiselect's as a list, a string's joined.
-export function openCode2FormAnswer(form,answers={}){
-  const answer={};
-  for(const field of Array.isArray(form?.fields)?form.fields:[]){
-    const raw=answers?.[field.key],values=(Array.isArray(raw)?raw:[raw]).filter(value=>typeof value==="string"&&value.trim());
-    if(values.length)answer[field.key]=field.type==="multiselect"?values:values.join(", ");
-  }
-  return answer;
+// The choices of a field as the dialog lists them: each option with a value or a label, shown by its label (else its value) and
+// answering with its value (else its label).
+function dialogChoices(options){
+  return listOf(options).flatMap(option=>{
+    const value=trimmedText(option?.value),label=trimmedText(option?.label);
+    return value||label?[{label:label||value,description:trimmedText(option.description),value:value?option.value:label}]:[];
+  });
+}
+// The dialog's question for the field at this place in the form (from 1). Only the choices answer a field with choices, unless the field
+// takes the person's own words too (custom).
+function dialogQuestion(field,place){
+  const header=trimmedText(field.title)||`Question ${place}`,options=dialogChoices(field.options);
+  const question={id:String(field.key),header,question:trimmedText(field.description)||header,multiSelect:field.type==="multiselect",options};
+  if(options.length>0&&field.custom!==true)question.allowCustomAnswer=false;
+  return question;
+}
+// OpenCode's reply from the dialog's answers by question id, which is the field's key: each field's answers that are words (blank ones
+// dropped, the others as given), a multiselect's as their list and any other field's joined with ", "; a field without any is left out.
+function formReply(fields,answers){
+  const byKey=answers&&typeof answers==="object"?answers:{};
+  return Object.fromEntries(fields.flatMap(field=>{
+    if(field===null||typeof field!=="object")return [];
+    const words=[byKey[field.key]].flat().filter(hasWords);
+    return words.length>0?[[field.key,field.type==="multiselect"?words:words.join(", ")]]:[];
+  }));
+}
+// A form as the question dialog asks it: declined (what OpenCode asked for that the dialog cannot ask, or null), the dialog's questions,
+// reply(answers) for OpenCode's reply, and chosen(reply), each question's reply in the person's words: a choice by its label.
+export function openCode2FormDialog(form){
+  const fields=listOf(form?.fields);
+  // Array.from visits every place of the list, an empty one as a field with no kind.
+  const declined=fields.length===0?"an answer to a form with no questions":Array.from(fields,field=>beyondDialog(field)).find(reason=>reason!==null)??null;
+  const questions=declined?[]:fields.map((field,index)=>dialogQuestion(field,index+1));
+  const chosen=reply=>questions.map(question=>{
+    const labels=new Map();for(const option of question.options)if(!labels.has(option.value))labels.set(option.value,option.label);
+    return [reply?.[question.id]].flat().filter(Boolean).map(value=>labels.get(value)??value);
+  });
+  return {declined,questions,reply:answers=>formReply(fields,answers),chosen};
 }
 // A form cancelled with a message fails its tool with that message and the model goes on; one cancelled without a message stops the
 // asking session's run, as Stop does. A question the person dismissed (the dialog's Cancel and close answer with nothing) or left
@@ -109,13 +137,24 @@ function executionFailure(error){
   const said=String(error?.message||"").trim().replace(/[\s.]+$/,"");
   return {text:`${said||"OpenCode reached a usage limit"}. ${OPENCODE_USAGE_LIMIT_HINT}`,usageLimit};
 }
-// OpenCode 2 sends a heartbeat on its event stream every 10 to 15 seconds, so a stream that has sent nothing for this long while the
-// session waits on it is lost (OpenCode's own app waits as long), as is one that ends or fails. To follow its stream, the
-// session subscribes again, up to five times two seconds apart, and a new stream counts once OpenCode has said which
-// sessions it still runs: a turn whose run goes on goes on, with what it said meanwhile read back from the session's history, one whose
-// run ended meanwhile ends as that history says, and the questions and approvals asked meanwhile are asked again. A turn the session
-// cannot follow again ends saying so, and its run is stopped; the next turn subscribes first, and asks OpenCode before it sends.
-const SILENT_STREAM_MS=45_000,RECONNECT_ATTEMPTS=5,RECONNECT_DELAY_MS=2_000,RECONNECT_OPEN_MS=5_000,RECONNECT_CHECK_MS=5_000,INTERRUPT_MS=10_000;
+// How the session follows OpenCode 2's event stream. OpenCode sends a heartbeat on it every 10 to 15 seconds, so a stream that has
+// sent nothing for silentMs while the session waits on it is lost, as is one that ends or fails: 45 s, the idle time OpenCode's own
+// client gives its event stream (defaultIdleTimeout in @opencode/client 2.0.24, which says the server writes a keepalive every 15 s).
+// The session then subscribes again, at most tries times, the first at once and the others spacingMs apart. A new subscription has
+// openMs to open, and counts once OpenCode has said within answerMs which sessions it still runs: a turn whose run goes on goes on,
+// with what it said meanwhile read back from the session's history, one whose run ended meanwhile ends as that history says, and the
+// questions and approvals asked meanwhile are asked again. A turn the session cannot follow again ends saying so, and its run is
+// stopped; the next turn subscribes first, and asks OpenCode before it sends. Trebell's own tries and spacing: four, three seconds
+// apart, about ten seconds in all, time for a restarted server or a network that dropped for a moment to come back, after which the
+// person waiting on the turn is told it ended. answerMs bounds each question put to OpenCode after the stream came back or before a
+// message goes out behind a turn Trebell stopped following: which sessions it still runs, and which requests it asked meanwhile.
+// OpenCode answers both from memory; Trebell's own 6 s is 2.1.2's 5 s and a fifth more, room for a server slowed by whatever cost the
+// stream, and a question it does not answer in time ends the turn, or refuses the message, saying so.
+const STREAM_FOLLOW=Object.freeze({silentMs:45_000,tries:4,spacingMs:3_000,openMs:5_000,answerMs:6_000});
+// How long OpenCode has to answer a stop of a run Trebell no longer follows (a lost turn's, one whose prompt answered after its turn
+// ended, or one still running when the next message goes out): it can wait on the run's tools to end. Trebell's own 12 s, 2.1.2's
+// 10 s and a fifth more. A stop not answered in time is let go; a message sent behind a lost turn asks again before it goes.
+const INTERRUPT_MS=12_000;
 const STREAM_LOST=Object.freeze({
   unreachable:"Trebell lost its connection to OpenCode's event stream and could not reconnect, so it stopped following the turn. Send the message again to retry.",
   unknown:"Trebell lost OpenCode's event stream, and OpenCode did not say whether it still runs the turn, so Trebell stopped following it. Send the message again to retry.",
@@ -128,16 +167,24 @@ const AFTER_LOST_TURN=Object.freeze({
   running:"OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run. Send the message again in a moment.",
   unknown:"OpenCode did not say whether it still runs the turn Trebell stopped following. Send the message again in a moment.",
 });
-const ENDED_FAILED="OpenCode ended the turn with an error while Trebell was reconnecting to it.";
+const FAILED_WITHOUT_REASON="OpenCode says this turn failed while Trebell was reconnecting, and it kept no reason for the failure.";
 const RUN_LOST="OpenCode lost this turn's run while Trebell was reconnecting to it, so the turn did not finish. Send the message again to retry.";
-// A turn's history is read back to its own message, at most this many messages a page and this many pages.
-const HISTORY_PAGE=50,HISTORY_PAGES=20;
+// A turn's history is read back to its own message, at most this many messages a page and this many pages. Trebell's own 100 a page
+// and ten pages: the same thousand messages back that 2.1.2 read (50 a page, 20 pages), in half the requests (OpenCode 2.0.24's
+// message list takes a limit of 1 to 200).
+const HISTORY_PAGE=100,HISTORY_PAGES=10;
 const after=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // Trebell's repository tools are an MCP server of the session's folder, which OpenCode drops when it evicts an idle folder, so it is
 // added again before every turn; adding an unchanged config keeps its connection.
 const MCP_ADD_TIMEOUT_MS=5_000;
-// How long a resumed session's open requests are listed, and then stopped, before the session goes on without (5 and 10 s).
-const LEFTOVER_LIST_MS=5_000,LEFTOVER_STOP_MS=10_000;
+// A resumed session waits at most listMs for OpenCode to list the requests asked while Trebell was away (approvals and forms, each
+// listed on its own within it), and refuseMs for it to take back all it listed, before it goes on without. A request it does not
+// take back keeps its run waiting, and the thread's next prompt waits behind that run, so neither wait is shorter than 2.1.2's 5 s
+// and 10 s: Trebell's own 6 s for the list, which OpenCode gives from memory but a server busy with other sessions can be slow to
+// give, and 12 s for taking them back, which can wait on their runs to stop, each 2.1.2's and a fifth more.
+const UNSEEN_REQUESTS=Object.freeze({listMs:6_000,refuseMs:12_000});
+// The ids of the requests in a list (none for a list OpenCode did not give), passing over any request without one.
+const requestIds=list=>(list||[]).map(request=>request?.id==null?"":String(request.id)).filter(id=>id!=="");
 function permissionDecision(value){return value==="accept"||value==="acceptForSession"?"once":"reject"}
 function permissionTitle(data){
   const action=String(data?.action||"tool"),resources=(Array.isArray(data?.resources)?data.resources:[]).map(String).filter(Boolean);
@@ -220,7 +267,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     this.sessionRules=v2Rules(this.permissionMode,{repositoryMcp:this.repositoryMcp,grants:this.sessionGrants});
     if(!info)info=await this.client.session.create({location,permissions:this.sessionRules});
     this.sessionId=String(info.id);
-    if(providerSessionId){await this.#stopLeftoverRequests();await this.#applyPermissionRules()}
+    if(providerSessionId){await this.#refuseUnseenRequests();await this.#applyPermissionRules()}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     const availableModels=[...this.modelMap.keys()];
     this.sessionSetup={sessionId:this.sessionId,models:{currentModelId:this.model,availableModels:availableModels.map(modelId=>({modelId,name:this.modelNames.get(modelId)||modelId}))},configOptions:[],modes:{currentModeId:String(info.agent||"build"),availableModes:[]},trebellRepositoryMcp:this.repositoryMcpStatus[0]||null};
@@ -229,19 +276,27 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return {initialize:this.initializeResult,session:this.sessionSetup};
   }
 
-  // A resumed session's run may still wait on a question or an approval asked while Trebell was not there (a profile's own server
-  // outlives Trebell): nothing would ever answer it, and the thread's next prompt would wait behind that run. When it resumes a
-  // session (stopLeftoverRequests), each is stopped without a message, which ends the run; requests OpenCode cannot list in
-  // time are left as they are.
-  async #stopLeftoverRequests(){
-    const sessionID=this.sessionId;
-    const listed=await openCode2Within(LEFTOVER_LIST_MS,"OpenCode did not list the session's open requests.",signal=>Promise.all([this.client.permission.list({sessionID},{signal}),this.client.session.form.list({sessionID},{signal})])).catch(()=>null);
-    if(!listed)return;
-    const [permissions,forms]=listed.map(list=>Array.isArray(list)?list:[]);
-    await openCode2Within(LEFTOVER_STOP_MS,"OpenCode did not take the session's open requests back.",()=>Promise.allSettled([
-      ...permissions.map(request=>this.client.permission.reply({sessionID,requestID:String(request.id),decision:"reject"})),
-      ...forms.map(form=>this.#cancelForm({id:form.id,sessionID})),
-    ])).catch(()=>{});
+  // A profile's own OpenCode server outlives Trebell, so the run of a session Trebell resumes may still wait on a question or an approval
+  // asked while Trebell was away. Nothing would ever answer it, and the thread's next prompt would wait behind that run, so each such
+  // request OpenCode lists is refused before the session goes on: an approval rejected and a form cancelled, both without a message,
+  // which ends the run. Approvals and forms are listed apart, so one kind OpenCode cannot list leaves the other to be refused; what it
+  // does not list in time stays as it is.
+  async #refuseUnseenRequests(){
+    const sessionID=this.sessionId,waiting=await this.#waitingRequests(sessionID,UNSEEN_REQUESTS.listMs),refusals=[];
+    for(const requestID of requestIds(waiting.approvals))refusals.push(()=>this.client.permission.reply({sessionID,requestID,decision:"reject"}));
+    for(const formID of requestIds(waiting.forms))refusals.push(()=>this.#cancelForm({id:formID,sessionID}));
+    if(refusals.length===0)return;
+    await openCode2Within(UNSEEN_REQUESTS.refuseMs,"OpenCode did not take back the requests asked while Trebell was away.",()=>Promise.allSettled(refusals.map(refuse=>Promise.resolve().then(refuse)))).catch(()=>{});
+  }
+  // A session's open approvals and forms as OpenCode lists them, each kind read on its own within ms: its list, or null when OpenCode
+  // did not give one in time (an answer that is not a list counts as an empty one).
+  async #waitingRequests(sessionID,ms){
+    const read=list=>openCode2Within(ms,"OpenCode did not list the session's open requests.",list).then(found=>Array.isArray(found)?found:[],()=>null);
+    const [approvals,forms]=await Promise.all([
+      read(signal=>this.client.permission.list({sessionID},{signal})),
+      read(signal=>this.client.session.form.list({sessionID},{signal})),
+    ]);
+    return {approvals,forms};
   }
   // A turn whose add fails goes on without the repository tools, and the session's MCP status says why.
   async #addRepositoryMcp(){
@@ -290,7 +345,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(agent){const agentId=this.agentIds.get(String(agent))||String(agent);await this.client.session.switchAgent({sessionID:this.sessionId,agent:agentId})}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     // A session that could not reconnect to its stream follows it again before it sends, so the turn's events reach it.
-    if(!this.following)await Promise.race([this.#follow(),after(RECONNECT_OPEN_MS)]);
+    if(!this.following)await Promise.race([this.#follow(),after(STREAM_FOLLOW.openMs)]);
     let settleTurn=()=>{};const completion=new Promise(resolve=>{settleTurn=resolve});
     const input=await openCode2PromptInput(parts,{external:Boolean(this.serverUrl)});
     // stopError: why Trebell ended the turn itself (a retry it will not wait for, a question it cannot show). text: the reply the window
@@ -326,7 +381,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // relay asks before it makes the message's turn, so a refused message stays the person's draft.
   async afterLostTurn(){
     if(!this.unsettled)return;
-    const runs=await openCode2Within(RECONNECT_CHECK_MS,AFTER_LOST_TURN.unknown,signal=>this.client.session.active({signal})).catch(()=>null);
+    const runs=await openCode2Within(STREAM_FOLLOW.answerMs,AFTER_LOST_TURN.unknown,signal=>this.client.session.active({signal})).catch(()=>null);
     if(!runs||typeof runs!=="object")throw new Error(AFTER_LOST_TURN.unknown);
     if(Object.hasOwn(runs,this.sessionId)){await this.#interrupt();throw new Error(AFTER_LOST_TURN.running)}
     this.unsettled=false;
@@ -459,7 +514,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   #subscribe(gate=null){
     const silence=new AbortController(),signal=AbortSignal.any([this.eventAbort.signal,silence.signal]);
     let timer=null,open=()=>{};const opened=new Promise(resolve=>{open=resolve});
-    const waiting=()=>{clearTimeout(timer);timer=setTimeout(()=>silence.abort(),SILENT_STREAM_MS)};
+    const waiting=()=>{clearTimeout(timer);timer=setTimeout(()=>silence.abort(),STREAM_FOLLOW.silentMs)};
     const ended=(async()=>{
       try{
         waiting();
@@ -475,27 +530,43 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     })();
     return {opened,ended,drop:()=>silence.abort()};
   }
-  // The event stream, followed while the session is open: a lost stream is subscribed to again (RECONNECT_ATTEMPTS times,
-  // RECONNECT_DELAY_MS apart), and a new one counts once the session has caught up with what it missed (#reconnected); if none
-  // does, a running turn ends saying so (#lose). The promise tells whether the first subscription opened.
+  // The event stream, followed while the session is open. A lost stream is followed again (#resubscribe); when that fails, a running
+  // turn ends saying why (#lose), and the session follows no stream until the next turn. The promise tells whether the first
+  // subscription opened.
   #follow(){
-    this.following=true;let first=this.#subscribe();
+    this.following=true;
+    const first=this.#subscribe();
     this.eventTask=(async()=>{
-      for(let stream=first;stream&&!this.closed;){
-        await stream.ended;if(this.closed)break;
-        stream=null;let opened=false;
-        for(let attempt=0;attempt<RECONNECT_ATTEMPTS&&!this.closed&&!stream;attempt++){
-          if(attempt)await after(RECONNECT_DELAY_MS);if(this.closed)break;
-          let caughtUp=()=>{};const next=this.#subscribe(new Promise(resolve=>{caughtUp=resolve}));
-          const open=await Promise.race([next.opened,after(RECONNECT_OPEN_MS).then(()=>false)]);opened||=open;
-          if(open&&await this.#reconnected().catch(()=>false))stream=next;else next.drop();
-          caughtUp();if(!stream)await next.ended;
-        }
-        if(!stream&&!this.closed)this.#lose(this.activePrompt,opened?STREAM_LOST.unknown:STREAM_LOST.unreachable);
+      let current=first;
+      while(current&&!this.closed){
+        await current.ended;
+        if(this.closed)break;
+        const again=await this.#resubscribe();
+        current=again.stream;
+        if(!current&&!this.closed)this.#lose(this.activePrompt,again.anyOpened?STREAM_LOST.unknown:STREAM_LOST.unreachable);
       }
       this.following=false;
     })();
     return first.opened;
+  }
+  // Subscribes again, at most STREAM_FOLLOW.tries times, until a subscription counts: it opened in time, and the session caught up with
+  // what it missed (#reconnected) before that subscription's events are read. One that does not count is let go, and has ended, before
+  // the next try. Gives the subscription that counted (or null) and whether any of them opened.
+  async #resubscribe(){
+    let anyOpened=false;
+    for(let tried=0;tried<STREAM_FOLLOW.tries&&!this.closed;tried++){
+      if(tried>0){await after(STREAM_FOLLOW.spacingMs);if(this.closed)break}
+      let release=()=>{};
+      const candidate=this.#subscribe(new Promise(resolve=>{release=resolve}));
+      const opened=await Promise.race([candidate.opened,after(STREAM_FOLLOW.openMs).then(()=>false)]);
+      anyOpened||=opened;
+      const counts=opened&&await this.#reconnected().catch(()=>false);
+      if(!counts)candidate.drop();
+      release();
+      if(counts)return {stream:candidate,anyOpened};
+      await candidate.ended;
+    }
+    return {stream:null,anyOpened};
   }
   // A turn the session stopped following ends with the reason. OpenCode may still run its message, so that run is stopped (once
   // OpenCode has the message: interrupt false when it does not yet) and the next message asks OpenCode first (afterLostTurn, which the
@@ -512,7 +583,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // whose message OpenCode never took ends saying so.
   async #reconnected(){
     const turn=this.activePrompt;
-    const runs=await openCode2Within(RECONNECT_CHECK_MS,"OpenCode did not say which sessions it runs.",signal=>this.client.session.active({signal}));
+    const runs=await openCode2Within(STREAM_FOLLOW.answerMs,"OpenCode did not say which sessions it runs.",signal=>this.client.session.active({signal}));
     if(this.closed)return true;
     if(!runs||typeof runs!=="object")return false;
     const live=()=>turn&&!turn.done&&!turn.cancelled&&!turn.stopError&&this.activePrompt===turn,going=Object.hasOwn(runs,this.sessionId);
@@ -544,18 +615,18 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   #endedMeanwhile(turn,since){
     const outcome=String(since?.findLast(item=>item?.type==="idle")?.outcome||"");
     if(outcome==="failed"){
-      const error=since.findLast(item=>item?.type==="assistant")?.error,failure=error?executionFailure(error):{text:ENDED_FAILED,usageLimit:false};
+      const error=since.findLast(item=>item?.type==="assistant")?.error,failure=error?executionFailure(error):{text:FAILED_WITHOUT_REASON,usageLimit:false};
       turn.error=failure.text;turn.usageLimit=failure.usageLimit;
     }else if(!outcome)turn.stopError=new Error(RUN_LOST);
     else if(outcome!=="succeeded")turn.cancelled=true;
     turn.settle?.();
   }
+  // The questions and approvals asked while the stream was lost, asked now; only once OpenCode has listed both kinds.
   async #askOpenRequests(sessionID){
-    const listed=await openCode2Within(RECONNECT_CHECK_MS,"OpenCode did not list the session's open requests.",signal=>Promise.all([this.client.permission.list({sessionID},{signal}),this.client.session.form.list({sessionID},{signal})])).catch(()=>null);
-    if(!listed||this.closed)return;
-    const [permissions,forms]=listed.map(list=>Array.isArray(list)?list:[]);
+    const {approvals,forms}=await this.#waitingRequests(sessionID,STREAM_FOLLOW.answerMs);
+    if(!approvals||!forms||this.closed)return;
     for(const form of forms)this.#askForm({...form,sessionID:String(form?.sessionID||sessionID)});
-    for(const request of permissions)void this.#permission({...request,sessionID:String(request?.sessionID||sessionID)}).catch(()=>{});
+    for(const request of approvals)void this.#permission({...request,sessionID:String(request?.sessionID||sessionID)}).catch(()=>{});
   }
   async #event(event){
     const data=event?.data||{},sessionID=String(data.sessionID||"");
@@ -585,7 +656,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     // A call whose input still streams has not started: it reads pending until OpenCode calls it, as OpenCode 1.x's pending part does.
     if(event.type==="session.tool.input.started"){const id=String(data.id),call={name:String(data.name||"tool"),input:{}};this.toolCalls.set(id,call);this.#toolRow("tool_call",id,call,{status:"pending"});return}
     if(event.type==="session.tool.called"){const id=String(data.id),call=this.#toolCall(id);call.input=data.input&&typeof data.input==="object"?data.input:{};this.#toolRow("tool_call_update",id,call,call.name==="question"?{status:"in_progress",rawOutput:questionRow(call,null,"")}:{status:"in_progress"});return}
-    if(event.type==="session.tool.success"){const id=String(data.id),call=this.#toolCall(id),output=outputText(data.content);this.toolCalls.delete(id);this.#toolRow("tool_call_update",id,call,{status:"completed",rawOutput:call.name==="read"?openCodeReadOutput(output):questionRow(call,data.metadata?.answers,output)});return}
+    if(event.type==="session.tool.success"){const id=String(data.id),call=this.#toolCall(id),output=outputText(data.content);this.toolCalls.delete(id);this.#toolRow("tool_call_update",id,call,{status:"completed",rawOutput:call.name==="read"?unwrapOpenCodeRead(output):questionRow(call,data.metadata?.answers,output)});return}
     // A question whose answer OpenCode refused fails with the message the session cancelled it with, and its row says it in the person's words.
     if(event.type==="session.tool.failed"){const id=String(data.id),call=this.#toolCall(id),failure=errorText(data.error),refused=this.refusedAnswers.get(failure);this.toolCalls.delete(id);this.refusedAnswers.delete(failure);this.#toolRow("tool_call_update",id,call,{status:"failed",rawOutput:refused||questionRow(call,null,failure)});return}
     if(event.type==="session.execution.succeeded"&&turn&&sessionID===this.sessionId){turn.settle?.();return}
@@ -631,10 +702,10 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return await Promise.resolve(this.client?.session?.form?.cancel?.({sessionID:String(form.sessionID),formID:String(form.id),...(message?{message}:{})})).then(()=>true,error=>FORM_GONE.has(error?.name));
   }
   async #answerForm(form,pending){
-    const sessionID=String(form.sessionID),formID=String(form.id),turn=this.activePrompt,own=sessionID===this.sessionId,mapped=openCode2FormQuestions(form);
-    if(mapped.unsupported){
+    const sessionID=String(form.sessionID),formID=String(form.id),turn=this.activePrompt,own=sessionID===this.sessionId,dialog=openCode2FormDialog(form);
+    if(dialog.declined){
       pending.answering=true;
-      const reason=`OpenCode asked for ${mapped.unsupported}, which Trebell Code's question dialog cannot show, so Trebell declined the question`;
+      const reason=`OpenCode asked for ${dialog.declined}, which Trebell Code's question dialog cannot show, so Trebell declined the question`;
       // The cancel stops this session's run (OpenCode's Stop) and the turn ends with the reason. A subagent is told the reason instead and
       // goes on: stopping it would not end the turn.
       if(!own||!turn||turn.done)return void await this.#cancelForm(form,reason+".");
@@ -645,13 +716,13 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     // unanswered: no answer came in time (the relay's wait ran out), or there is no one to ask. A wait that ended otherwise (Trebell
     // closing) is no answer either, nor one left unanswered: the question is cancelled as the session's close stops the run.
     let answers=null,unanswered=typeof this.onQuestion!=="function";
-    if(!unanswered)answers=await untilAborted(Promise.resolve().then(()=>this.onQuestion({toolName:"question",input:{questions:mapped.questions},signal:pending.controller.signal})),pending.controller.signal).catch(error=>{unanswered=isUserResponseTimeout(error);return null});
+    if(!unanswered)answers=await untilAborted(Promise.resolve().then(()=>this.onQuestion({toolName:"question",input:{questions:dialog.questions},signal:pending.controller.signal})),pending.controller.signal).catch(error=>{unanswered=isUserResponseTimeout(error);return null});
     // Settled elsewhere, or the session closed: there is nothing to send.
     if(pending.controller.signal.aborted||this.closed)return;
     pending.answering=true;
     // A stopped turn's run is ending, and the form with it.
     if(turn?.cancelled)return void await this.#cancelForm(form);
-    const answer=openCode2FormAnswer(form,answers||{});
+    const answer=dialog.reply(answers);
     if(!Object.keys(answer).length){
       // The cancel stops the asking session's run: this session's turn ends with the reason, set before OpenCode says the run stopped.
       // A subagent's question ends the subagent's run only, and the turn goes on as OpenCode goes on.
@@ -668,8 +739,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       // which tells the model, while the turn goes on. (An error notice would end the window's turn.) The tool's row tells the person, in
       // their words: what was asked, their answer and OpenCode's reason.
       const reason=errorText(error),message=`The user's answer could not be given: ${reason}. Continue without it, and tell the user what you would need from them.`;
-      const given=mapped.questions.map(question=>[answer[question.id]].flat().filter(Boolean).map(value=>question.options.find(option=>option.value===value)?.label||value));
-      this.refusedAnswers.set(message,openCodeQuestionText(mapped.questions,given,`OpenCode refused the answer (${reason.replace(/[\s.]+$/,"")}), so the turn went on without it.`));
+      this.refusedAnswers.set(message,openCodeQuestionText(dialog.questions,dialog.chosen(answer),`OpenCode refused the answer (${reason.replace(/[\s.]+$/,"")}), so the turn went on without it.`));
       await this.#cancelForm(form,message);
     }
   }

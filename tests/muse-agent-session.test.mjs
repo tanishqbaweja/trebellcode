@@ -11,8 +11,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { acpToolFrame } from "../src/acp-tool-state.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
-import { MuseAgentSession, MUSE_INTERRUPT_TIMEOUT_MS, MUSE_REQUEST_TIMEOUT_MS, museApprovalChoices, museDisplayText, museInputParts, museToolUpdate } from "../src/muse-agent-session.mjs";
-import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museEnvironment, museExitMessage, museServeArgs, museVerbatimPath, museWorkspaceRoot, stopMuseProcessTree } from "../src/muse-host.mjs";
+import { MuseAgentSession, MUSE_EMPTY_PROMPT, MUSE_INTERRUPT_TIMEOUT_MS, MUSE_REQUEST_TIMEOUT_MS, museDisplayText, museInputParts } from "../src/muse-agent-session.mjs";
+import { museDecisionChoices } from "../src/muse-asking.mjs";
+import { MuseHost, MUSE_HOST_BOUNDS, loadMuseSdk, museExitMessage, museHostEnvironment, museServeArgs, museWorkspaceRoot, stopMuseProcessTree, verbatimWindowsPath } from "../src/muse-host.mjs";
+import { museItemRow } from "../src/muse-rows.mjs";
 import { withWorkingContext } from "../src/working-context-envelope.mjs";
 
 // Muse Code is driven through Meta's SDK (@muse-code/sdk, a real Connection) over a fake `muse serve`: a child whose stdio carries
@@ -184,11 +186,11 @@ test("Muse Code never gets a META_API_KEY unless its profile is set to its API k
   for(const key of ["META_API_KEY","meta_api_key","Meta_Api_Key"]){
     const source={PATH:"/bin",MUSE_CHANNEL:"muse-stable"};let reads=0;
     Object.defineProperty(source,key,{enumerable:true,get:()=>{reads++;return "meta-key-of-trebells-environment"}});
-    assert.deepEqual(museEnvironment(source),{PATH:"/bin",MUSE_CHANNEL:"muse-stable",MUSE_NO_AUTO_UPDATE:"1"},key);
+    assert.deepEqual(museHostEnvironment(source),{PATH:"/bin",MUSE_CHANNEL:"muse-stable",MUSE_NO_AUTO_UPDATE:"1"},key);
     assert.equal(reads,0,"the key's value is never read");
     assert.ok(Object.keys(source).includes(key),"the environment given is left as it was");
-    assert.equal(museEnvironment(source,{approved:["meta_api_key"]})[key],undefined,"an approval is no way in");
-    assert.equal(museEnvironment(source,{authMethod:"api-key"})[key],"meta-key-of-trebells-environment","a profile set to its API key keeps it");
+    assert.equal(museHostEnvironment(source,{approved:["meta_api_key"]})[key],undefined,"an approval is no way in");
+    assert.equal(museHostEnvironment(source,{authMethod:"api-key"})[key],"meta-key-of-trebells-environment","a profile set to its API key keeps it");
   }
   // A session hands its profile's method to its host: the key reaches Muse only on its API key.
   const plain=await startSession({options:{env:{PATH:"/bin",META_API_KEY:"meta-key-of-trebells-environment"}}});
@@ -226,14 +228,14 @@ test("initialize names Trebell Code and asks for session MCP servers; a schema f
 test("an initialize answer with schema envelope version 2 is refused and the host is stopped",async()=>{
   const child=fakeChild(),muse=new FakeMuse(child,{handlers:{initialize:()=>({...INIT,schema:{...INIT.schema,version:2}})}});
   const session=new MuseAgentSession({command:"muse",cwd:process.cwd(),spawnFn:()=>child,stopTree:fakeStop,onUpdate:()=>{}});
-  await assert.rejects(session.start({}),/session protocol version 2, and Trebell speaks version 1/);
+  await assert.rejects(session.start({}),/answered with session protocol version 2, but Trebell Code reads only version 1/);
   assert.equal(muse.stdinEnded,true,"the refused host's input is closed");
   assert.equal(child.exitCode,0);
   assert.equal(muse.sent("session/start").length,0);
 });
 
 test("a host that does not answer initialize within 20 s is stopped",async()=>{
-  assert.equal(MUSE_STARTUP_TIMEOUT_MS,20_000);
+  assert.equal(MUSE_HOST_BOUNDS.answerMs,20_000);
   const child=fakeChild(),muse=new FakeMuse(child,{handlers:{initialize:()=>undefined}});
   const host=new MuseHost({command:"muse",spawnFn:()=>child,stopTree:fakeStop,startupTimeoutMs:60});
   await assert.rejects(host.start({}),/did not answer within 0 seconds|did not answer within/);
@@ -241,7 +243,7 @@ test("a host that does not answer initialize within 20 s is stopped",async()=>{
 });
 
 test("close() ends Muse's input at once and stops the whole process tree only after 10 s",async()=>{
-  assert.equal(MUSE_SHUTDOWN_TIMEOUT_MS,10_000);
+  assert.equal(MUSE_HOST_BOUNDS.exitMs,10_000);
   const stops=[];
   // A host that keeps running after its input ends (exitOnEof false): only the tree stop ends it.
   const {session,child,muse}=await startSession({muse:child=>new FakeMuse(child,{exitOnEof:false}),platform:"win32",options:{stopTree:async(target,{platform})=>{stops.push({pid:target.pid,platform});target.exit(1)}}});
@@ -340,7 +342,7 @@ test("turn/start sends Trebell's runtime notes first, then the parts, with the p
       assert.equal(session.activePrompt.turnId,commandId,"the turn's id is the command id Trebell minted");
       if(platform==="win32"){
         assert.match(workspaceRoots[0],/^\\\\\?\\/,"the verbatim form on Windows");
-        assert.equal(workspaceRoots[0],museVerbatimPath(await museWorkspaceRoot(folder,{verbatim:false})));
+        assert.equal(workspaceRoots[0],verbatimWindowsPath(await museWorkspaceRoot(folder,{verbatim:false})));
       }else assert.deepEqual(workspaceRoots,[await museWorkspaceRoot(folder,{platform:"linux"})]);
       assert.doesNotMatch(spawned[0].options.cwd,/^\\\\\?\\/,"the process starts in the plain folder");
       muse.notify("turn/completed",{sessionId:session.sessionId,viewCursor:"v",terminal:"completed",turnId:commandId});
@@ -351,9 +353,9 @@ test("turn/start sends Trebell's runtime notes first, then the parts, with the p
 });
 
 test("Muse's verbatim roots: drives, shares and a root already verbatim; Windows spells a root as the disk does",async()=>{
-  assert.equal(museVerbatimPath("\\\\?\\E:\\site"),"\\\\?\\E:\\site");
-  assert.equal(museVerbatimPath("D:\\Projects\\trebell-site"),"\\\\?\\D:\\Projects\\trebell-site");
-  assert.equal(museVerbatimPath("\\\\buildbox\\code\\app"),"\\\\?\\UNC\\buildbox\\code\\app");
+  assert.equal(verbatimWindowsPath("\\\\?\\E:\\site"),"\\\\?\\E:\\site");
+  assert.equal(verbatimWindowsPath("D:\\Projects\\trebell-site"),"\\\\?\\D:\\Projects\\trebell-site");
+  assert.equal(verbatimWindowsPath("\\\\buildbox\\code\\app"),"\\\\?\\UNC\\buildbox\\code\\app");
   assert.equal(await museWorkspaceRoot("C:/work/repo",{platform:"win32",resolveReal:async()=>{throw new Error("missing")}}),"\\\\?\\C:\\work\\repo");
   assert.equal(await museWorkspaceRoot("/work/repo",{platform:"linux",resolveReal:async path=>path+"-real"}),"/work/repo-real");
   if(process.platform!=="win32")return;
@@ -367,13 +369,35 @@ test("Muse's verbatim roots: drives, shares and a root already verbatim; Windows
 
 test("prompt parts: text as is, images as base64 with their type, other attachments named by their saved path; nothing to send is refused",()=>{
   const file=process.platform==="win32"?"C:\\Users\\ada\\notes.pdf":"/home/ada/notes.pdf";
-  assert.deepEqual(museInputParts([{type:"text",text:"Read this"},{type:"image",mimeType:"image/jpeg",data:"AAAA"},{type:"resource_link",uri:pathToFileURL(file).href,name:"notes.pdf"},{type:"text",text:"[Attached audio \"a.wav\" is saved at: /tmp/a.wav]"}]),[
-    {type:"text",text:"Read this"},{type:"image",base64Data:"AAAA",mediaType:"image/jpeg"},{type:"text",text:`Attached file: ${file}`},{type:"text",text:"[Attached audio \"a.wav\" is saved at: /tmp/a.wav]"},
+  // A text part that names a file in its own words goes as it is.
+  assert.deepEqual(museInputParts([{type:"text",text:"Read this"},{type:"image",mimeType:"image/jpeg",data:"AAAA"},{type:"resource_link",uri:pathToFileURL(file).href,name:"notes.pdf"},{type:"text",text:"[Voice memo \"a.wav\" in /tmp/a.wav]"}]),[
+    {type:"text",text:"Read this"},{type:"image",base64Data:"AAAA",mediaType:"image/jpeg"},{type:"text",text:`[File attachment "notes.pdf" at ${file}]`},{type:"text",text:"[Voice memo \"a.wav\" in /tmp/a.wav]"},
   ]);
-  assert.throws(()=>museInputParts([]),/Muse Code needs text or an image/);
-  assert.throws(()=>museInputParts([{type:"text",text:"  "}]),/Muse Code needs text or an image/);
+  assert.throws(()=>museInputParts([]),{message:"This message has no text and no image, so there is nothing to send to Muse Code."});
+  assert.throws(()=>museInputParts([{type:"text",text:"  "}]),{message:MUSE_EMPTY_PROMPT});
   assert.equal(museDisplayText([{type:"image",mimeType:"image/png",data:"AAAA"}]),"Attached image");
   assert.equal(museDisplayText([{type:"text",text:"one"},{type:"text",text:"two"}]),"one\ntwo");
+});
+
+test("prompt parts keep their order and their own words; a part with nothing in it, of a type Muse takes no input of, or not a part at all is left out, and what is left must say something",()=>{
+  // White space beside an image is sent as it is; the image alone is enough.
+  assert.deepEqual(museInputParts([{type:"text",text:" \n"},{type:"image",mime_type:"image/webp",data:"BBBB"},{type:"image",data:"CCCC"}]),[
+    {type:"text",text:" \n"},{type:"image",base64Data:"BBBB",mediaType:"image/webp"},{type:"image",base64Data:"CCCC",mediaType:"image/png"},
+  ]);
+  // A file link alone says something: its line names the file. Re-pinned: the line is Trebell's attachment line (linkedFileLine),
+  // not "Attached file: <path>".
+  assert.deepEqual(museInputParts([{type:"resource_link",uri:"untitled:notes"}]),[{type:"text",text:"[File attachment \"untitled:notes\" at untitled:notes]"}]);
+  // A number as text is sent as its digits.
+  assert.deepEqual(museInputParts([{type:"text",text:42}]),[{type:"text",text:"42"}]);
+  for(const [label,parts] of [
+    ["an image without data",[{type:"image",mimeType:"image/png",data:""}]],
+    ["a link without a uri",[{type:"resource_link",name:"notes.pdf"}]],
+    ["an empty and a missing text",[{type:"text",text:""},{type:"text"}]],
+    ["types Muse takes no input of",[{type:"audio",data:"AAAA"},{type:"constructor",text:"hi"},{type:"toString",text:"hi"},{type:{toString:()=>"text"},text:"hi"}]],
+    ["what is not a part",[null,"hello",7]],
+    ["no list",{type:"text",text:"hello"}],
+    ["nothing",undefined],
+  ])assert.throws(()=>museInputParts(parts),{message:MUSE_EMPTY_PROMPT},label);
 });
 
 test("a recorded Muse turn streams its reply and ends the turn; Muse's own message and reminder children are not rows",async()=>{
@@ -456,32 +480,33 @@ test("deltas: text streams the reply, summary.N the reasoning's parts and output
 
 test("tools map to rows: an edit keeps its exact old and new text, a write its content, a patch its diff, a search its hits",()=>{
   const item=fields=>({itemId:"row-7",kind:"toolCall",status:"completed",revision:3,...fields});
-  const shell=museToolUpdate({itemId:"shell-2",kind:"userShell",status:"completed",revision:1,commandText:"npm test",visibleOutput:"12 passing",exitCode:0,turnId:null});
+  const shell=museItemRow({itemId:"shell-2",kind:"userShell",status:"completed",revision:1,commandText:"npm test",visibleOutput:"12 passing",exitCode:0,turnId:null});
   assert.deepEqual([shell.kind,shell.title,shell.rawOutput,shell.exitCode],["execute","npm test","12 passing",0]);
-  const write=acpToolFrame(museToolUpdate(item({tool:"write_file",args:JSON.stringify({path:"docs/notes.md",content:"# Notes\n"})})));
+  const write=acpToolFrame(museItemRow(item({tool:"write_file",args:JSON.stringify({path:"docs/notes.md",content:"# Notes\n"})})));
   assert.deepEqual(write.changes,[{path:"docs/notes.md",kind:"add",newText:"# Notes\n"}]);
-  const edit=acpToolFrame(museToolUpdate(item({tool:"edit_file",args:JSON.stringify({file_path:"lib/retry.mjs",old_string:"const retries = 2;\n",new_string:"const retries = 3;\n"})})));
+  const edit=acpToolFrame(museItemRow(item({tool:"edit_file",args:JSON.stringify({file_path:"lib/retry.mjs",old_string:"const retries = 2;\n",new_string:"const retries = 3;\n"})})));
   assert.equal(edit.kind,"edit");assert.equal(edit.status,"completed");
   assert.deepEqual(edit.content,[{type:"diff",path:"lib/retry.mjs",oldText:"const retries = 2;\n",newText:"const retries = 3;\n"}]);
   assert.deepEqual(edit.changes,[{path:"lib/retry.mjs",kind:"update",oldText:"const retries = 2;\n",newText:"const retries = 3;\n"}]);
-  const patch=acpToolFrame(museToolUpdate(item({tool:"apply_patch",args:JSON.stringify({path:"docs/notes.md",patch:"@@ -2 +2 @@\n-draft\n+final"})})));
+  const patch=acpToolFrame(museItemRow(item({tool:"apply_patch",args:JSON.stringify({path:"docs/notes.md",patch:"@@ -2 +2 @@\n-draft\n+final"})})));
   assert.deepEqual(patch.changes,[{path:"docs/notes.md",kind:"update",diff:"@@ -2 +2 @@\n-draft\n+final"}]);
-  const page=museToolUpdate(item({tool:"web_fetch",args:JSON.stringify({url:"https://sqlite.org/about.html"}),visibleOutput:"SQLite is a C library"}));
-  assert.deepEqual(page.rawOutput.results,[{url:"https://sqlite.org/about.html",snippet:"SQLite is a C library"}]);
+  const about="https://sqlite.org/about.html";
+  const page=museItemRow(item({tool:"web_fetch",args:JSON.stringify({url:about}),visibleOutput:"SQLite is a C library"}));
+  assert.deepEqual(page.rawOutput.results,[{url:about,snippet:"SQLite is a C library"}]);
   const found={query:"sqlite wal mode",results:[{url:"https://sqlite.org/wal.html",title:"Write-Ahead Logging",snippet:"Readers run beside a writer",rank:2},{url:"",title:"",snippet:"A hit with no address"}]};
-  const search=museToolUpdate(item({tool:"web_search",args:JSON.stringify({query:found.query}),visibleOutput:JSON.stringify(found)}));
+  const search=museItemRow(item({tool:"web_search",args:JSON.stringify({query:found.query}),visibleOutput:JSON.stringify(found)}));
   assert.equal(search.kind,"fetch");assert.equal(search.title,"web_search: sqlite wal mode");
   assert.deepEqual(search.rawOutput,{query:"sqlite wal mode",results:[{url:"https://sqlite.org/wal.html",title:"Write-Ahead Logging",snippet:"Readers run beside a writer"},{snippet:"A hit with no address"}]});
   assert.equal(search.content[0].content.text,"Write-Ahead Logging (https://sqlite.org/wal.html)\nReaders run beside a writer\n\nA hit with no address");
   for(const status of ["handedOff","timedOut","rejected"]){
-    const failed=museToolUpdate(item({tool:"list_dir",status,fallbackText:"The folder is outside the workspace"}));
+    const failed=museItemRow(item({tool:"list_dir",status,fallbackText:"The folder is outside the workspace"}));
     assert.equal(failed.status,"failed",status);
     assert.equal(failed.rawOutput,`Muse Code reported ${status}.\nThe folder is outside the workspace`);
     assert.equal(failed.title,`list_dir: Muse Code reported ${status}.`);
   }
-  const other=museToolUpdate(item({tool:"read_file",args:"{\"path\":\"notes/todo.md\"",status:"inProgress"}));
+  const other=museItemRow(item({tool:"read_file",args:"{\"path\":\"notes/todo.md\"",status:"inProgress"}));
   assert.deepEqual([other.kind,other.title,other.status,other.rawInput],["other","read_file","in_progress",{args:"{\"path\":\"notes/todo.md\""}],"arguments still streaming stay as text");
-  assert.equal(museToolUpdate(item({kind:"subagent",tool:undefined,objective:"Check the release notes"})).title,"Subagent · Check the release notes");
+  assert.equal(museItemRow(item({kind:"subagent",tool:undefined,objective:"Check the release notes"})).title,"Subagent · Check the release notes");
 });
 
 test("Stop interrupts the running turn and waits for Muse's turn/completed: a recorded interrupted turn ends as a stop the person asked for",async()=>{
@@ -533,7 +558,7 @@ test("a message steers only the running turn, naming the turn it is meant for",a
 test("a recorded approval asks the person once with Muse's own choices, its request gets the presentation receipt, and their Reject sends Muse's abort for the stage asked",async()=>{
   const asked=[];
   const {session,muse,updates}=await startSession({muse:child=>new ReplayMuse(child,"permission"),options:{onPermission:request=>{asked.push(request);return "decline"}}});
-  const result=await session.prompt([{type:"text",text:"Run the shell command `touch trebell-declined.txt` once with your shell tool."}]);
+  const result=await session.prompt([{type:"text",text:"Use the shell to run `touch trebell-declined.txt` one time."}]);
   assert.equal(result.stopReason,"end_turn");
   assert.equal(chunks(updates),"REFUSED");
   assert.equal(asked.length,1,"the request and its notification are asked once");
@@ -552,9 +577,9 @@ test("a recorded approval asks the person once with Muse's own choices, its requ
 });
 
 test("Muse's questions are asked in the question dialog and answered with userInput/answer, and a file approval is declined with Muse's denied choice",async()=>{
-  const choices=museApprovalChoices([{choiceId:"allow_once",decision:"approved",scope:"once"},{choiceId:"keep_out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"abort",decision:"abort",scope:"once"},{choiceId:"deny_session",decision:"denied",scope:"session"},{choiceId:"deny",decision:"denied",scope:"once"}]);
+  const choices=museDecisionChoices([{choiceId:"allow_once",decision:"approved",scope:"once"},{choiceId:"keep_out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"abort",decision:"abort",scope:"once"},{choiceId:"deny_session",decision:"denied",scope:"session"},{choiceId:"deny",decision:"denied",scope:"once"}]);
   assert.deepEqual([choices.get("decline").choiceId,choices.get("cancel").choiceId,choices.get("accept").choiceId],["deny","abort","allow_once"],"the narrowest Reject, never one that saves a rule");
-  assert.equal(museApprovalChoices([{choiceId:"abort",decision:"abort",scope:"once"}]).get("decline").choiceId,"abort","a shell approval's Reject is its abort");
+  assert.equal(museDecisionChoices([{choiceId:"abort",decision:"abort",scope:"once"}]).get("decline").choiceId,"abort","a shell approval's Reject is its abort");
   const questions=[],approvals=[];
   const {session,muse,updates}=await startSession({options:{onQuestion:request=>{questions.push(request);return {lang:["TS"]}},onPermission:request=>{approvals.push(request);return "decline"}}});
   const running=session.prompt([{type:"text",text:"go"}]);

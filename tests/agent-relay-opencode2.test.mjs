@@ -71,7 +71,7 @@ test("an image sent to OpenCode 2 through the relay reaches it as a file it read
   assert.equal(completed.turn.status,"completed",completed.turn.error?.message);
   const [prompted]=relay.fake.prompts();
   assert.deepEqual(prompted.files,[{uri:fileUri(shot),name:"shot.png"}]);
-  assert.ok(prompted.text.endsWith(`What does this show?\n[Attached image "shot.png" is saved at: ${shot}]`),prompted.text);
+  assert.ok(prompted.text.endsWith(`What does this show?\n[Image attachment "shot.png" at ${shot}]`),prompted.text);
 });
 
 // OpenCode on its API keys leaves its stored sign-ins out by its line (AgentRuntimeManager.childEnv): the relay asks for the environment
@@ -94,7 +94,7 @@ test("an OpenCode 2 retry reaches the window as a retrying error of the turn, an
   await relay.rpc("turn/start",{threadId:relay.threadId,input:[{type:"text",text:"Say hello"}]});
   const error=await eventually(()=>relay.messages.find(message=>message.method==="error")?.params);
   const turnId=relay.threadStore.get(relay.threadId).turns.at(-1).id;
-  assert.deepEqual(error,{threadId:relay.threadId,turnId,message:"429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1).",willRetry:true});
+  assert.deepEqual(error,{threadId:relay.threadId,turnId,message:"429 Too Many Requests. OpenCode sends the request to opencode/big-pickle again in 30 s, as retry 1.",willRetry:true});
   release();
   const completed=await relay.completed();
   assert.equal(completed.turn.status,"completed");

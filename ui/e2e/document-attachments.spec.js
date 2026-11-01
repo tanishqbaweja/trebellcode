@@ -23,7 +23,7 @@ const DOCX="application/vnd.openxmlformats-officedocument.wordprocessingml.docum
 const REPORT_TEXT="# Quarterly Harbor Report\nCargo volume rose 12 percent & the new crane is running.\nPort\tTons\nJuniper\t4200\nNext review: March.";
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 // The line Codex's message names an attached document by, with the saved path and the file its text was extracted to.
-const DOCUMENT_LINE=/\[Attached file "report\.docx" is saved at: ([^\n]+?report\.docx) \(text extracted to: ([^\n]+?report\.docx\.txt)\)\]/;
+const DOCUMENT_LINE=/\[File attachment "report\.docx" at ([^\n]+?report\.docx), readable as text at ([^\n]+?report\.docx\.txt)\]/;
 
 // The files picked through Attach files (the composer's, or a question's), uploaded and taken in as a person attaches them.
 async function attach(page,button,files){
@@ -73,14 +73,14 @@ test("on Codex, an attached Word document's message names the file its text was 
     expect(await extractedText(textPath),"the text Codex reads is the document's").toBe(REPORT_TEXT);
     const bubble=page.locator(".user-bubble").filter({hasText:"What is the report's first heading?"}),files=bubble.locator(".user-attachments > span");
     await expect(files).toHaveText(["report.docx"]);
-    await expect(page.getByText(/\(text extracted to: /)).toHaveCount(0);
+    await expect(page.getByText(/, readable as text at /)).toHaveCount(0);
     await shots(page,"codex-message-with-document",()=>expect(files.first()).toBeInViewport());
     // Another view, then the thread again: the message from Codex's history shows the document by its name, not the line.
     await page.getByRole("button",{name:"New task",exact:true}).click();await expect(bubble).toHaveCount(0);
     await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
     await expect(bubble.locator("p")).toHaveText("What is the report's first heading?",{timeout:15_000});
     await expect(files).toHaveText(["report.docx"]);
-    await expect(page.getByText(/\[Attached file |\(text extracted to: /)).toHaveCount(0);
+    await expect(page.getByText(/\[File attachment |, readable as text at /)).toHaveCount(0);
     await shots(page,"codex-message-with-document-reopened",()=>expect(files.first()).toBeInViewport());
   }finally{await harness.close()}
 });
@@ -147,8 +147,8 @@ test("a Word document attached to a question's answer is named with the file its
       await page.setViewportSize({width:1280,height:800});
       await modal.getByRole("button",{name:"Submit",exact:true}).click();
       const [answer]=(await asked.answered).answers.evidence.answers;
-      const [,saved,textPath]=/^Attached files:\n- (.+report\.docx) \(text extracted to: (.+report\.docx\.txt)\)$/.exec(answer)||[];
-      expect(answer,"the answer names where the document's text is").toMatch(/^Attached files:\n- .+report\.docx \(text extracted to: .+report\.docx\.txt\)$/);
+      const [,saved,textPath]=/^Attached files:\n- (.+report\.docx), readable as text at (.+report\.docx\.txt)$/.exec(answer)||[];
+      expect(answer,"the answer names where the document's text is").toMatch(/^Attached files:\n- .+report\.docx, readable as text at .+report\.docx\.txt$/);
       expect(textPath).toBe(saved+".txt");
       expect(await extractedText(textPath)).toBe(REPORT_TEXT);
       await expect(modal).toHaveCount(0);
@@ -206,9 +206,9 @@ test("on Antigravity, an attached Word document's extracted text goes with its m
     const prompt=(await log()).find(entry=>entry.method==="session/prompt")?.params?.prompt||[];
     const links=prompt.filter(part=>part.type==="resource_link").map(part=>part.name);
     expect(links.map(name=>name.replace(/^\d{10,}-[0-9a-f]{8}-/,"")),"both documents keep their links").toEqual(["report.docx","broken.docx"]);
-    const lines=prompt.filter(part=>part.type==="text"&&/^\[Attached file "/.test(part.text)).map(part=>part.text);
+    const lines=prompt.filter(part=>part.type==="text"&&/^\[File attachment "/.test(part.text)).map(part=>part.text);
     expect(lines,"only the readable document is named with its text").toHaveLength(1);
-    const [,saved,textPath]=/is saved at: (.+report\.docx) \(text extracted to: (.+report\.docx\.txt)\)\]$/.exec(lines[0])||[];
+    const [,saved,textPath]=/ at (.+report\.docx), readable as text at (.+report\.docx\.txt)\]$/.exec(lines[0])||[];
     expect(textPath).toBe(saved+".txt");
     const embedded=prompt.filter(part=>part.type==="resource").map(part=>part.resource);
     expect(embedded.map(resource=>[resource.mimeType,resource.text]),"its text goes embedded, as Antigravity cannot open Trebell's attachments folder").toEqual([["text/plain",REPORT_TEXT]]);

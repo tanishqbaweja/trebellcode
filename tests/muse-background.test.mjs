@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as muse from "../src/muse-agent-session.mjs";
+import * as rows from "../src/muse-rows.mjs";
 import { FakeMuse, ReplayMuse, event, itemFrame, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
@@ -27,7 +28,15 @@ async function runningTurn(fixture,text="go"){
   return {running,turnId,sid:fixture.session.sessionId};
 }
 const complete=(fixture,turnId,terminal="completed",extra={})=>fixture.muse.notify("turn/completed",{sessionId:fixture.session.sessionId,viewCursor:"v",terminal,turnId,...extra});
-const workflowItem=(turnId,revision,children,fields={})=>({itemId:"wf-1",kind:"workflow",revision,status:"inProgress",turnId,entryId:"Probe workflow",children,...fields});
+// A workflow item as Muse Code sends one (Trebell's recorded workflow has the same fields): a generated workflow named by a slug,
+// one item id across its revisions, and on each revision every agent with its latest attempt.
+const FLOW="flow-lint-then-test";
+function lintFlow(turnId,revision,agents=[],extra={}){
+  return {kind:"workflow",itemId:FLOW,turnId,revision,status:"inProgress",entryId:"lint-then-test",scriptId:"generated.workflow.lint-then-test",fallbackText:"Workflow: lint-then-test",children:agents,...extra};
+}
+// One of its agents on its first attempt, as this revision tells it, and the id of the agent's own row.
+const flowAgent=(childId,state)=>({attempt:1,childId,...state});
+const agentRowId=childId=>`${FLOW}:agent:${childId}`;
 const REPORT="01a18ecf-d93f-76f1-828e-1c2e1c90c9ef";
 
 test("the recorded workflow: its row runs on past the turn that launched it, one row per agent keeps its label and first end, and Muse's report on it is a turn of its own",async()=>{
@@ -65,21 +74,39 @@ test("the recorded workflow: its row runs on past the turn that launched it, one
 
 test("a workflow agent that completed with a failure kind is failed, with it as its result; one cancelled or left unended by its workflow's failure fails too",async()=>{
   const fixture=await workSession(),{running,turnId,sid}=await runningTurn(fixture);
-  const child=(childId,fields)=>({childId,attempt:1,...fields});
-  fixture.muse.write(itemFrame("item/started",sid,workflowItem(turnId,1,[child("c1",{status:"finished",terminal:"completed",failureKind:"budget_exhausted"}),child("c2",{status:"started",label:"second"})])));
-  fixture.muse.write(itemFrame("item/updated",sid,workflowItem(turnId,2,[child("c1",{status:"finished",terminal:"completed",failureKind:"budget_exhausted"}),child("c2",{status:"terminal",terminal:"cancelled"}),child("c3",{status:"scheduled",label:"third"})])));
-  fixture.muse.write(itemFrame("item/completed",sid,workflowItem(turnId,3,[child("c1",{status:"finished",terminal:"completed",failureKind:"budget_exhausted"}),child("c2",{status:"terminal",terminal:"cancelled"}),child("c3",{status:"scheduled"})],{status:"failed",failureReason:"the workflow script threw"})));
+  // The lint agent, sent without a label, used up its budget; the test agent is cancelled; the docs agent is still scheduled when
+  // the workflow's script fails.
+  const lint=flowAgent("lint",{status:"terminal",terminal:"completed",failureKind:"budget_exhausted"}),cancelled=flowAgent("tests",{status:"terminal",terminal:"cancelled"});
+  fixture.muse.write(itemFrame("item/started",sid,lintFlow(turnId,1,[lint,flowAgent("tests",{status:"started",label:"unit tests"})])));
+  fixture.muse.write(itemFrame("item/updated",sid,lintFlow(turnId,2,[lint,cancelled,flowAgent("docs",{status:"scheduled",label:"docs links"})])));
+  fixture.muse.write(itemFrame("item/completed",sid,lintFlow(turnId,3,[lint,cancelled,flowAgent("docs",{status:"scheduled"})],{status:"failed",failureReason:"no test script in package.json"})));
   complete(fixture,turnId);await running;
-  const last=id=>rowsOf(fixture.seen,"wf-1:agent:"+id).at(-1);
-  assert.deepEqual([last("c1").status,last("c1").title,last("c1").rawOutput],["failed","Workflow Probe workflow · agent 1: budget_exhausted","budget_exhausted"]);
-  assert.deepEqual([last("c2").status,last("c2").title],["failed","Workflow Probe workflow · second: Muse Code reported cancelled."]);
-  assert.deepEqual([last("c3").status,last("c3").title],["failed","Workflow Probe workflow · third: The workflow ended before this agent finished."]);
-  assert.deepEqual([rowsOf(fixture.seen,"wf-1").at(-1).status,rowsOf(fixture.seen,"wf-1").at(-1).title],["failed","Workflow Probe workflow: the workflow script threw"]);
-  assert.equal(rowsOf(fixture.seen,"wf-1:agent:c1").length,1,"a settled agent is sent once, however often Muse sends it again");
+  const last=childId=>rowsOf(fixture.seen,agentRowId(childId)).at(-1),workflow=rowsOf(fixture.seen,FLOW);
+  assert.deepEqual([last("lint").status,last("lint").title,last("lint").rawOutput],["failed","Workflow lint-then-test · agent 1: budget_exhausted","budget_exhausted"]);
+  assert.deepEqual([last("tests").status,last("tests").title],["failed","Workflow lint-then-test · unit tests: Muse Code reported cancelled."]);
+  assert.deepEqual([last("docs").status,last("docs").title],["failed","Workflow lint-then-test · docs links: The workflow ended before this agent finished."]);
+  assert.deepEqual([workflow.at(-1).status,workflow.at(-1).title],["failed","Workflow lint-then-test: no test script in package.json"]);
+  assert.equal(rowsOf(fixture.seen,agentRowId("lint")).length,1,"a settled agent is sent once, however often Muse sends it again");
+  // Each row's input names the workflow; an agent's also its label (none for one Muse sent without) and its attempt.
+  assert.deepEqual(workflow[0].rawInput,{workflow:"lint-then-test"});
+  assert.deepEqual([last("lint").rawInput,last("docs").rawInput],[{workflow:"lint-then-test",agent:null,attempt:1},{workflow:"lint-then-test",agent:"docs links",attempt:1}]);
   // The pure mapping: a scheduled agent is pending, and the last label stays.
   const labels=new Map();
-  assert.deepEqual(muse.museWorkflowAgentUpdates?.(workflowItem("t",1,[child("x",{status:"scheduled",label:"alpha"})]),labels).map(row=>[row.status,row.title]),[["pending","Workflow Probe workflow · alpha"]]);
-  assert.deepEqual(muse.museWorkflowAgentUpdates?.(workflowItem("t",2,[child("x",{status:"started"})]),labels).map(row=>[row.status,row.title]),[["in_progress","Workflow Probe workflow · alpha"]]);
+  assert.deepEqual(rows.museWorkflowAgentRows?.(lintFlow("turn-a",1,[flowAgent("format",{status:"scheduled",label:"format check"})]),labels).map(row=>[row.status,row.title]),[["pending","Workflow lint-then-test · format check"]]);
+  assert.deepEqual(rows.museWorkflowAgentRows?.(lintFlow("turn-a",2,[flowAgent("format",{status:"started"})]),labels).map(row=>[row.status,row.title]),[["in_progress","Workflow lint-then-test · format check"]]);
+  await fixture.session.close();
+});
+
+test("a workflow's row is titled by its entry's first line, cut to 72 characters, or by 'Workflow' alone without an entry, and its agents' rows by that title",async()=>{
+  const fixture=await workSession(),{running,turnId,sid}=await runningTurn(fixture);
+  const entry="bump-every-workspace-package-to-the-new-node-version-and-rerun-its-checks-one-by-one\nthen open one pull request";
+  fixture.muse.write(itemFrame("item/started",sid,lintFlow(turnId,1,[flowAgent("bump",{status:"started",label:"bump versions"})],{itemId:"flow-long",entryId:entry})));
+  fixture.muse.write(itemFrame("item/started",sid,lintFlow(turnId,1,[],{itemId:"flow-unnamed",entryId:undefined})));
+  complete(fixture,turnId);await running;
+  const title="Workflow bump-every-workspace-package-to-the-new-node-version-and-rerun-its-chec…";
+  assert.deepEqual(rowsOf(fixture.seen,"flow-long").map(row=>[row.title,row.rawInput]),[[title,{workflow:entry}]],"the first line, 71 characters and an ellipsis; the input keeps the whole entry");
+  assert.deepEqual(rowsOf(fixture.seen,"flow-long:agent:bump").map(row=>row.title),[title+" · bump versions"]);
+  assert.deepEqual(rowsOf(fixture.seen,"flow-unnamed").map(row=>[row.title,row.rawInput]),[["Workflow",{}]]);
   await fixture.session.close();
 });
 
@@ -92,7 +119,7 @@ test("the recorded subagent: one row titled by its role, done once its result is
   assert.deepEqual(agent[0].rawInput,{objective:"Reply with exactly: Hi",role:"greeter"});
   assert.equal(replyOf(fixture.seen),"Hi","the child session's own reply is not the turn's");
   assert.equal(fixture.session.pendingBackgroundWork,false,"a subagent whose result is ready holds nothing");
-  assert.equal(muse.museWorkStatus?.({kind:"subagent",status:"inProgress",controlStatus:"resultReady"}),"completed");
+  assert.equal(rows.museWorkProgress?.({kind:"subagent",status:"inProgress",controlStatus:"resultReady"}),"completed");
   assert.deepEqual(fixture.muse.unexpected,[]);
   await fixture.session.close();
 });
@@ -100,11 +127,11 @@ test("the recorded subagent: one row titled by its role, done once its result is
 test("Muse's todo list is the turn's plan, pending, in progress or done, without the steps Muse cancelled or left blank; an empty list clears it, and write_todos is no row",async()=>{
   const fixture=await workSession(),{running,turnId,sid}=await runningTurn(fixture);
   fixture.muse.write(itemFrame("item/completed",sid,{itemId:"todo-tool",turnId,kind:"toolCall",tool:"write_todos",revision:1,status:"completed"}));
-  fixture.muse.write(event("session/todoListChanged",sid,{items:[{text:" Investigate ",status:"completed"},{text:"Fix",status:"inProgress"},{text:"Discarded",status:"cancelled"},{text:"  ",status:"pending"},{text:"Test",status:"pending"}],revision:1,sourceTool:"write_todos",sourceRange:{}}));
+  fixture.muse.write(event("session/todoListChanged",sid,{items:[{text:"  Reproduce the crash\t",status:"completed"},{text:"Guard the empty list",status:"inProgress"},{text:"Rewrite the module",status:"cancelled"},{text:" \t ",status:"pending"},{text:"Run the suite",status:"pending"}],revision:1,sourceTool:"write_todos",sourceRange:{}}));
   fixture.muse.write(event("session/todoListChanged",sid,{items:[],revision:2,sourceTool:"write_todos",sourceRange:{}}));
   complete(fixture,turnId);await running;
   const plans=fixture.seen.filter(entry=>entry.update.sessionUpdate==="plan");
-  assert.deepEqual(plans.map(entry=>entry.update.entries),[[{content:"Investigate",status:"completed"},{content:"Fix",status:"in_progress"},{content:"Test",status:"pending"}],[]]);
+  assert.deepEqual(plans.map(entry=>entry.update.entries),[[{content:"Reproduce the crash",status:"completed"},{content:"Guard the empty list",status:"in_progress"},{content:"Run the suite",status:"pending"}],[]]);
   assert.ok(plans.every(entry=>entry.turnKey===turnId));
   assert.equal(rowsOf(fixture.seen,"todo-tool").length,0);
   await fixture.session.close();
@@ -295,19 +322,19 @@ test("the recorded interrupted subagent: Stop ends the turn's running subagent w
 
 test("a workflow still running when its turn completed settles its rows in that turn while the next turn runs, and a host that dies ends what still runs, each in its own turn",async()=>{
   const fixture=await workSession(),{session,seen,child}=fixture,first=await runningTurn(fixture);
-  fixture.muse.write(itemFrame("item/started",first.sid,workflowItem(first.turnId,1,[])));
+  fixture.muse.write(itemFrame("item/started",first.sid,lintFlow(first.turnId,1)));
   complete(fixture,first.turnId);await first.running;
   assert.equal(session.pendingBackgroundWork,true,"the workflow runs on");
   const second=await runningTurn(fixture,"next");
-  fixture.muse.write(itemFrame("item/updated",first.sid,workflowItem(first.turnId,2,[{childId:"c1",attempt:1,status:"started",label:"alpha"}])));
-  await until(()=>rowsOf(seen,"wf-1:agent:c1").length===1,"the agent's row");
-  assert.ok(seen.filter(entry=>entry.update.toolCallId?.startsWith("wf-1")).every(entry=>entry.turnKey===first.turnId),"its rows stay in the turn that launched it");
+  fixture.muse.write(itemFrame("item/updated",first.sid,lintFlow(first.turnId,2,[flowAgent("lint",{status:"started",label:"lint"})])));
+  await until(()=>rowsOf(seen,agentRowId("lint")).length===1,"the agent's row");
+  assert.ok(seen.filter(entry=>entry.update.toolCallId?.startsWith(FLOW)).every(entry=>entry.turnKey===first.turnId),"its rows stay in the turn that launched it");
   child.stderr.write("panic: lost the model stream\n");child.exit(1);
   await assert.rejects(second.running,/Muse Code exited unexpectedly \(code 1\): panic: lost the model stream/);
-  const workflow=rowsOf(seen,"wf-1").at(-1),agent=rowsOf(seen,"wf-1:agent:c1").at(-1);
-  assert.deepEqual([workflow.status,workflow.title],["failed","Workflow Probe workflow: Muse Code exited unexpectedly (code 1): panic: lost the model stream"]);
-  assert.deepEqual([agent.status,agent.title],["failed","Workflow Probe workflow · alpha: The workflow ended before this agent finished."]);
-  assert.equal(seen.filter(entry=>entry.update.toolCallId?.startsWith("wf-1")).at(-1).turnKey,first.turnId);
+  const workflow=rowsOf(seen,FLOW).at(-1),agent=rowsOf(seen,agentRowId("lint")).at(-1);
+  assert.deepEqual([workflow.status,workflow.title],["failed","Workflow lint-then-test: Muse Code exited unexpectedly (code 1): panic: lost the model stream"]);
+  assert.deepEqual([agent.status,agent.title],["failed","Workflow lint-then-test · lint: The workflow ended before this agent finished."]);
+  assert.equal(seen.filter(entry=>entry.update.toolCallId?.startsWith(FLOW)).at(-1).turnKey,first.turnId);
   assert.equal(session.pendingBackgroundWork,false);
   await session.close();
 });
@@ -315,7 +342,7 @@ test("a workflow still running when its turn completed settles its rows in that 
 test("a command Muse sends to the background holds the host until Muse tells its end (backgroundTerminalCompletion), whether its tool call settles as it goes there or only then, and its row settles with that end in the turn that ran it",async()=>{
   for(const settlesFirst of [true,false]){
     const fixture=await workSession(),{session,seen}=fixture,sid=session.sessionId;
-    const {running,turnId}=await runningTurn(fixture,"Start the dev server");
+    const {running,turnId}=await runningTurn(fixture,"Keep the preview server running");
     const call=(revision,status,extra={})=>({itemId:"dev",kind:"toolCall",turnId,revision,status,tool:"bash",callId:"call_dev",args:"{\"command\":\"npm run dev\"}",...extra});
     fixture.muse.write(itemFrame("item/started",sid,call(1,"inProgress")));
     fixture.muse.write(itemFrame("item/updated",sid,call(2,"inProgress",{background:true,backgroundInitiator:"timeout"})));
@@ -333,18 +360,20 @@ test("a command Muse sends to the background holds the host until Muse tells its
   }
 });
 
-test("work that has said nothing for four hours holds the host no more, and each word from it renews that",async()=>{
+// Re-pinned note: the silence allowed is Trebell's own eight hours now, the same as Claude Code's hold (it was an hour here, and four
+// hours in 2.1.2).
+test("work that has said nothing for eight hours holds the host no more, and each word from it renews that",async()=>{
   let clock=1_800_000_000_000;
   const fixture=await workSession({options:{now:()=>clock}}),{session}=fixture,{running,turnId,sid}=await runningTurn(fixture);
-  assert.equal(muse.MUSE_MAX_IDLE_PIN_MS,4*60*60_000);
-  fixture.muse.write(itemFrame("item/started",sid,workflowItem(turnId,1,[])));
+  assert.equal(muse.MUSE_MAX_IDLE_PIN_MS,8*60*60_000);
+  fixture.muse.write(itemFrame("item/started",sid,lintFlow(turnId,1)));
   complete(fixture,turnId);await running;
   assert.equal(session.pendingBackgroundWork,true);
-  clock+=muse.MUSE_MAX_IDLE_PIN_MS-1;assert.equal(session.pendingBackgroundWork,true,"just under four hours of silence");
-  fixture.muse.write(itemFrame("item/updated",sid,workflowItem(turnId,2,[{childId:"c1",attempt:1,status:"scheduled",label:"alpha"}])));
-  await until(()=>rowsOf(fixture.seen,"wf-1:agent:c1").length===1,"the agent's row");
-  clock+=muse.MUSE_MAX_IDLE_PIN_MS-1;assert.equal(session.pendingBackgroundWork,true,"its update renewed the four hours");
-  clock+=2;assert.equal(session.pendingBackgroundWork,false,"four hours of silence");
+  clock+=muse.MUSE_MAX_IDLE_PIN_MS-1;assert.equal(session.pendingBackgroundWork,true,"just under eight hours of silence");
+  fixture.muse.write(itemFrame("item/updated",sid,lintFlow(turnId,2,[flowAgent("lint",{status:"scheduled",label:"lint"})])));
+  await until(()=>rowsOf(fixture.seen,agentRowId("lint")).length===1,"the agent's row");
+  clock+=muse.MUSE_MAX_IDLE_PIN_MS-1;assert.equal(session.pendingBackgroundWork,true,"its update renewed the eight hours");
+  clock+=2;assert.equal(session.pendingBackgroundWork,false,"eight hours of silence");
   await session.close();
 });
 

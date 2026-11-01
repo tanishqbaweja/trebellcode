@@ -40,7 +40,8 @@ async function writeCodexHome(root,workspace){
   const sessions=[
     {id:"own-vscode",source:"vscode",minutesAgo:10,messages:[`# AGENTS.md instructions for ${workspace}\n\n<INSTRUCTIONS>\nUse tabs.\n</INSTRUCTIONS>\n## My request for Codex:\nFix the flaky checkout test`]},
     {id:"own-cli",source:"cli",minutesAgo:20,messages:[`<environment_context>\n<cwd>${workspace}</cwd>\n<shell>bash</shell>\n</environment_context>\n\nAdd a dark mode toggle to the settings page`]},
-    {id:"own-app",minutesAgo:30,messages:["<recommended_plugins>\nGitHub\n</recommended_plugins>\n<in-app-browser-context source=\"ambient-ui-state\">\nTab\n</in-app-browser-context>","Write the release notes for 2.4"]},
+    // Re-pinned note: setup Codex's source writes (an in-app browser element stood here, which Codex writes none of).
+    {id:"own-app",minutesAgo:30,messages:["<recommended_plugins>\n- Linear: open and update issues\n- Sentry: read crash reports\n</recommended_plugins>\n<environment_context>\n<shell>zsh</shell>\n</environment_context>","Write the release notes for 2.4"]},
     // The person's fork of the review's thread: its own session_meta, then the review's, which a fork copies in after it.
     {id:"own-fork",source:"vscode",forkOf:{id:"review",source:{subagent:"review"}},minutesAgo:5,messages:["Apply the review's fixes in my fork"]},
     {id:"child-agent",source:{subagent:{thread_spawn:{parent_thread_id:"own-vscode",depth:1}}},minutesAgo:1,messages:["Investigate the failing checkout test"]},
