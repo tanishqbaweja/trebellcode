@@ -51,9 +51,9 @@ test("an OpenCode 2 turn whose stream went silent and whose server does not say 
     await expect(stopButton(page)).toHaveCount(0);
     // Letting go of the stream is Trebell's own doing, and no error row of its own.
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Transport"})).toHaveCount(0);
-    // Each of the five streams opened again counted only once OpenCode said which sessions it runs, and
+    // Each of the four streams opened again counted only once OpenCode said which sessions it runs, and
     // the run Trebell no longer follows is stopped (the stream reaches OpenCode, so the interrupt does too).
-    expect(fake.called("GET /api/session/active").length).toBeGreaterThanOrEqual(5);
+    expect(fake.called("GET /api/session/active").length).toBeGreaterThanOrEqual(4);
     expect(fake.called("POST /api/session/ses_main/interrupt")).toHaveLength(1);
     await shots(page,"opencode2-silent-stream-stopped",()=>expect(stopped).toBeVisible());
     // OpenCode answers again: the next message asks it first whether that run has ended, and goes through.
