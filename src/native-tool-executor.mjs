@@ -18,6 +18,7 @@ function repositoryArguments(root,value={}){
 export function createNativeToolExecutor({
   contextEngine=null,root=null,io=null,knowledgeService=null,environmentId=null,
   repository=true,discoverRepositoryTools=null,directTool=null,outputStore=null,mcpBroker=null,executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
+  attachedSource=null,
 }={}){
   const repositoryHandlers=repository&&contextEngine&&root?repositoryToolHandlers({contextEngine,root,io,knowledgeService,environmentId}):null;
   // A repository call's capability and arguments, checked against its input schema, or null for another tool. The gateway runs it before
@@ -51,6 +52,9 @@ export function createNativeToolExecutor({
       return {...base,workspace:override.workspace??base.workspace??root??null,projectAvailable:override.projectAvailable??base.projectAvailable??(projectAvailable==null?Boolean(root):Boolean(projectAvailable)),...override};
     },
     execute:async call=>{
+      // attachedSource(arguments): the lines of a file attached to the thread that a read_source asks for, read where the file is (the
+      // relay's list of the thread's attachments), else null. Without it (the benchmark runner) every read_source reads the project.
+      if(typeof attachedSource==="function"&&call.namespace==="trebell_repo"&&call.name==="read_source"){const read=await attachedSource(call.arguments||{});if(read)return read}
       const repositoryInvocation=repositoryCall(call);
       if(repositoryInvocation){
         const result=await invokeRepositoryTool(repositoryHandlers,repositoryInvocation.definition,repositoryInvocation.args);

@@ -4,8 +4,11 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ContextEngine } from "../src/context-engine.mjs";
 import { NativeAgentSession } from "../src/native-agent-session.mjs";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
+import { nativePolicyContext } from "../src/native-configuration.mjs";
+import { createNativeToolExecutor } from "../src/native-tool-executor.mjs";
 import { authorizePlatformToolCall } from "../src/shared-tool-gateway.mjs";
 
 // Benchmarked Native is shipped Native. L10-8 lets the app's Native read a thread's attachments where they are, through an attachedFile
@@ -46,6 +49,21 @@ test("the runner's tool decisions and arguments are unchanged for reads in and o
   }
   if(process.env.TREBELL_PRINT_DIGESTS)console.log("decisions",digest(decisions));
   assert.equal(digest(decisions),"a2bff3107ef0a53ebf54ab460791a8e764416f758ce9a0aa2cc3ce77ddb7d6c5");
+});
+
+// The app hands the executor attachedSource, which reads a range of an attached file's lines; the runner builds its executor without it
+// (native-harbor-run.mjs: Full access, no approvals), so every read_source reads the project through the repository, as on 40f024d6.
+test("the runner's read_source reads the project and refuses a file outside it, with the same results",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-runner-source-"));t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
+  const repo=join(root,"repo");await mkdir(join(repo,"src"),{recursive:true});await writeFile(join(repo,"src","app.js"),"export const answer = 42;\n");
+  await writeFile(join(root,"outside.txt"),"outside\n");
+  const executor=createNativeToolExecutor({contextEngine:new ContextEngine(),root:repo,repository:true,projectAvailable:true,
+    policyContext:nativePolicyContext({permissionProfile:"full",workspace:repo,projectAvailable:true}),executeShared:async()=>{throw new Error("not used")}});
+  // Each result as the model is given it, with the temporary folder's path written as <root> and every separator as /.
+  const outcome=async path=>JSON.stringify(await executor({namespace:"trebell_repo",name:"read_source",arguments:{path}})).split(JSON.stringify(root).slice(1,-1)).join("<root>").split("\\\\").join("/");
+  const results=[await outcome("src/app.js"),await outcome(join(root,"outside.txt")),await outcome("../outside.txt")];
+  if(process.env.TREBELL_PRINT_DIGESTS)console.log("sources",JSON.stringify(results));
+  assert.equal(digest(results),"6b1920331158309ea061a0a81fc4516f271007ce94237cd8b2ce46874c53d28c");
 });
 
 test("the runner's built-in read_file reads in the workspace and refuses a file outside it, with the same results",async t=>{

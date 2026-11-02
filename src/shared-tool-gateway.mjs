@@ -22,12 +22,13 @@ function normalizedPlatformArguments(namespace,name,value){
   return args;
 }
 
-// A read of a file attached to the thread opens that file where it is: context.attachedFile (the relay's list of the thread's
-// attachments and the text extracted from them) names it, its path is kept as it was given instead of being placed in the project,
-// and the read is inside what the thread may read. Every other path and tool is placed and judged as before, and a context without
-// the list (the benchmark runner's) has no attached file.
+// A read of a file attached to the thread (read_file, or read_source for a range of its lines) opens that file where it is:
+// context.attachedFile (the relay's list of the thread's attachments and the text extracted from them) names it, its path is kept as
+// it was given instead of being placed in the project, and the read is inside what the thread may read. Every other path and tool is
+// placed and judged as before, and a context without the list (the benchmark runner's) has no attached file.
 function attachedFileRead(namespace,name,value,context){
-  if(namespace!=="trebell_workspace"||name!=="read_file"||typeof context?.attachedFile!=="function")return false;
+  const read=(namespace==="trebell_workspace"&&name==="read_file")||(namespace==="trebell_repo"&&name==="read_source");
+  if(!read||typeof context?.attachedFile!=="function")return false;
   const path=objectArguments(value).path;return typeof path==="string"&&Boolean(context.attachedFile(path));
 }
 

@@ -1215,8 +1215,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const mcpDiscovery=mcpBroker.discoveryNamespace();if(mcpDiscovery)tools.push(mcpDiscovery);
       // The thread's history may name process handles from before a restart; the processes it starts now get later ones.
       nativeBackgroundProcesses.reserveHandles(thread.id,highestProcessHandle(thread));
-      // The thread's attachments on this machine and their extracted text, which its read tool opens where they are at every access
-      // level (native-attached-files.mjs): those its earlier messages carried, and each new message's as it goes (turn/start, steer).
+      // The thread's attachments on this machine and their extracted text, which its reads (read_file, and read_source for a range of
+      // lines) open where they are at every access level (native-attached-files.mjs): those its earlier messages carried, and each new
+      // message's as it goes (turn/start, steer).
       // A thread in a remote environment keeps its attachments on that host, inside its workspace, so it has none of these.
       const attachedFiles=remoteIo?null:new NativeAttachedFiles({platform:runtimeManager.platform||process.platform});
       attachedFiles?.addThread(threadStore.get(thread.id)||thread,{home:documentHome});
@@ -1237,7 +1238,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const executeTool=createNativeToolExecutor({
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         discoverRepositoryTools,directTool:requested=>exposedToolNamed(tools,requested),outputStore,
-        projectAvailable:!projectless,
+        projectAvailable:!projectless,attachedSource:attachedFiles?args=>attachedFiles.readSource(args):null,
         policyContext:()=>({...nativePolicyContext({
           permissionProfile:normalizePermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),workspace:runtimeCwd,projectAvailable:!projectless,
           desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),delegationAvailable:namespaceNames.has("trebell_delegate"),

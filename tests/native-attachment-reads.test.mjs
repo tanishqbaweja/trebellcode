@@ -109,15 +109,17 @@ for(const permissionProfile of ["supervised","read-only","edits","auto","full"])
       // The same file spelled with forward slashes, as a model may write a Windows path.
       read((fixture.document+".txt").replaceAll("\\","/")),
       read("src/app.js"),
+      {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.document+".txt",startLine:3}},
     ],attachedInput(fixture));
     assert.match(result.userMessages[0],new RegExp(`Attached resource: report\\.docx \\(${escaped(fixture.document)}\\), readable as text at ${escaped(fixture.document+".txt")}`),"the line names the document's text");
     assert.match(result.userMessages[0],new RegExp(`Attached resource: notes\\.txt \\(${escaped(fixture.notes)}\\)(?!, readable)`),"a plain file is named as before");
     assert.deepEqual(result.asked,[],"no read of an attachment asks");
-    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,true],"every attachment was read, and the project's file too");
+    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,true,true],"every attachment was read, and the project's file too");
     assert.match(result.toolMessages[0],new RegExp(DOCUMENT_FACT),"the document's text was read");
     assert.match(result.toolMessages[1],new RegExp(NOTES_FACT),"the person's own attached file was read");
     assert.match(result.toolMessages[2],new RegExp(DOCUMENT_FACT));
     assert.match(result.toolMessages[3],/answer = 42/);
+    assert.match(result.toolMessages[4],new RegExp(`^"The vault code is ${DOCUMENT_FACT}\\.`),"read_source reads the text's lines from the third");
   });
 }
 
@@ -130,17 +132,44 @@ test("Supervised and Read only: only the thread's own attachments are read outsi
       {namespace:"trebell_workspace",name:"list",arguments:{path:fixture.attachments}},
       read(fixture.outside),
       read(join(fixture.attachments,"..","attachments","1761500000001-cd34ef56-other.txt")),
-      {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.document+".txt"}},
+      {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.other}},
+      {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.outside}},
+      {namespace:"trebell_repo",name:"search_code",arguments:{query:"VAULT",path:fixture.document+".txt"}},
       {namespace:"trebell_workspace",name:"write_file",arguments:{path:fixture.document+".txt",content:"overwritten"}},
     ],attachedInput(fixture));
     assert.deepEqual(result.asked,[],`${permissionProfile}: a path out of the project is refused, not offered for approval`);
-    assert.deepEqual(result.rows.map(row=>row.success),[false,false,false,false,false,false],`${permissionProfile}: none of them ran`);
+    assert.deepEqual(result.rows.map(row=>row.success),[false,false,false,false,false,false,false,false],`${permissionProfile}: none of them ran`);
     assertOnlyAttachedRead(result);
+    assert.equal(result.toolMessages[6].includes(DOCUMENT_FACT),false,"a search does not reach an attachment");
     // A thread that has no attachment cannot read another thread's.
     const bare=await fixture.start(permissionProfile);
     const other=await fixture.turn(bare,permissionProfile,[read(fixture.document+".txt")]);
     assert.deepEqual(other.rows.map(row=>row.success),[false],`${permissionProfile}: another thread's attachment stays out of reach`);
     assert.equal(other.toolMessages.some(message=>message.includes(DOCUMENT_FACT)),false);
+  }
+});
+
+// A document's text runs to 2,000,000 characters, more than the 1 MB one read_file gives: read_source reads any range of an attached
+// file's lines, as it reads a project file's, so the end of a long document's text can be read too.
+test("Supervised and Read only: a long document's text is read to its end with read_source, without asking",{timeout:180_000},async t=>{
+  const fixture=await attachmentFixture(t);
+  const lines=Array.from({length:12_000},(_,index)=>`Line ${index+1}. The tide came in and went out again along the old stone quay while the gulls argued over the nets.`);
+  await writeFile(fixture.document+".txt",[...lines,"The last line holds END-OCHRE-9001.",""].join("\n"));
+  for(const permissionProfile of ["supervised","read-only"]){
+    const thread=await fixture.start(permissionProfile);
+    const result=await fixture.turn(thread,permissionProfile,[
+      {...read(fixture.document+".txt"),arguments:{path:fixture.document+".txt",max_bytes:1_048_576}},
+      {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.document+".txt",startLine:11_995,maxLines:400}},
+      {namespace:"trebell_repo",name:"read_source",arguments:{path:(fixture.document+".txt").replaceAll("\\","/"),startLine:1,endLine:3}},
+      {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.document,startLine:1}},
+    ],attachedInput(fixture));
+    assert.deepEqual(result.asked,[],`${permissionProfile}: no read of an attachment asks`);
+    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,false],`${permissionProfile}: the text's lines are read, the Word file's own bytes are not text`);
+    assert.equal(result.toolMessages[0].includes("END-OCHRE-9001"),false,"one read_file gives the text's first megabyte only");
+    assert.match(result.toolMessages[1],/^"Line 11995\. The tide[^]*Line 12000\. The tide[^]*The last line holds END-OCHRE-9001\./,"read_source reads the text's last lines");
+    assert.match(result.toolMessages[2],/^"Line 1\. The tide[^]*Line 3\. The tide[^]*nets\."$/,"and the first three");
+    assert.match(result.toolMessages[3],/binary/);
+    assertOnlyAttachedRead(result);
   }
 });
 
