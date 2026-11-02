@@ -103,26 +103,42 @@ function toolOutput(item={}){
   return item.success===false?"Tool execution failed.":"Tool completed.";
 }
 
-// A call stored twice (a late update that an earlier build wrote into the turn running then) goes out once, where it was made, with
-// the output it settled with first: a provider takes exactly one output for each call and refuses the whole request otherwise.
+// A call an earlier build stored twice: its own turn left it open (running, pending, or stopped at that turn's end), and its late
+// update was written into the turn running then, as a second copy with the same id, tool and arguments. That call goes out once,
+// where it was made, with the output of its first settled copy: a provider takes exactly one output for each call and refuses the
+// whole request otherwise. Every other call goes out as stored, also one whose id an earlier turn's call had (the loop names a
+// provider's id-less calls native-tool-1, native-tool-2 and so on again in each turn).
+const OPEN_TOOL_STATUSES=new Set(["inProgress","pending","stopped"]);
 const SETTLED_TOOL_STATUSES=new Set(["completed","failed","declined","cancelled","canceled","rejected","skipped","stopped","notRun"]);
 const toolCallItem=item=>item?.type==="dynamicToolCall"&&item.namespace&&item.tool;
+function storedToolCopies(turns){
+  const open=new Map(),copies=new Set(),settledBy=new Map();
+  turns.forEach((turn,index)=>{
+    for(const item of Array.isArray(turn?.items)?turn.items:[]){
+      if(!toolCallItem(item)||!item.id)continue;
+      let shape;try{shape=JSON.stringify([String(item.id),String(item.namespace),String(item.tool),item.arguments||{}])}catch{continue}
+      const original=open.get(shape);
+      if(original&&original.index<index){copies.add(item);if(!settledBy.has(original.item)&&SETTLED_TOOL_STATUSES.has(item.status))settledBy.set(original.item,item)}
+      else if(!original&&OPEN_TOOL_STATUSES.has(item.status))open.set(shape,{index,item});
+    }
+  });
+  return {copies,settledBy};
+}
 
 export function nativeMessagesFromThread(thread={}, {afterTurnId=null}={}){
   const messages=[];
   const turns=Array.isArray(thread.turns)?thread.turns:[];
   const boundary=afterTurnId==null?-1:turns.findIndex(turn=>String(turn?.id||"")===String(afterTurnId));
   const source=boundary>=0?turns.slice(boundary+1):turns;
-  const settled=new Map(),sent=new Set();
-  for(const turn of source)for(const item of Array.isArray(turn.items)?turn.items:[])if(toolCallItem(item)&&item.id&&!settled.has(String(item.id))&&SETTLED_TOOL_STATUSES.has(item.status))settled.set(String(item.id),item);
+  const {copies,settledBy}=storedToolCopies(source);
   for(const turn of source){
     for(const item of Array.isArray(turn.items)?turn.items:[]){
       if(item?.type==="userMessage"){
         const text=itemText(item.content);if(text)messages.push({role:"user",content:text});
       }else if(toolCallItem(item)){
-        if(item.id){if(sent.has(String(item.id)))continue;sent.add(String(item.id))}
+        if(copies.has(item))continue;
         messages.push({role:"assistant",content:"",toolCalls:[{id:String(item.id||randomUUID()),namespace:String(item.namespace),name:String(item.tool),arguments:item.arguments||{}}]});
-        messages.push({role:"tool",toolCallId:String(item.id||""),content:toolOutput(item.id&&settled.get(String(item.id))||item)});
+        messages.push({role:"tool",toolCallId:String(item.id||""),content:toolOutput(settledBy.get(item)||item)});
       }else if(item?.type==="agentMessage"&&item.text){
         messages.push({role:"assistant",content:String(item.text)});
       }

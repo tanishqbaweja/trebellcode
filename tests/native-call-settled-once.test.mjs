@@ -76,14 +76,15 @@ test("a call whose executor throws is reported failed with what the model was to
 // stored each one again, failed, in the check turn running then.
 const user=(id,text)=>({type:"userMessage",id:"user-"+id,content:[{type:"text",text}]});
 const run=(id,status,extra={})=>({type:"dynamicToolCall",id,namespace:"trebell_terminal",tool:"run",arguments:{command:"node",args:["count-lines.js"]},status,contentItems:null,success:null,durationMs:null,locations:[],...extra});
-const closed=id=>run(id,"failed",{success:false,contentItems:[{type:"inputText",text:JSON.stringify({success:false,error:"The relay closed",decision:"CONFIRM"})}],rawOutput:{success:false,error:"The relay closed",decision:"CONFIRM"}});
+// The copy a late update wrote carries the call's own arguments (rawInput), as the tour thread's copies do.
+const closed=(id,extra={})=>run(id,"failed",{success:false,contentItems:[{type:"inputText",text:JSON.stringify({success:false,error:"The relay closed",decision:"CONFIRM"})}],rawOutput:{success:false,error:"The relay closed",decision:"CONFIRM"},...extra});
 const read=(id,path)=>({type:"dynamicToolCall",id,namespace:"trebell_workspace",tool:"read_file",arguments:{path},status:"completed",contentItems:[{type:"inputText",text:JSON.stringify({path,content:"alpha\n"})}],success:true,durationMs:null,locations:[],rawOutput:{path,content:"alpha\n"}});
 const agent=(id,text)=>({type:"agentMessage",id:"assistant-"+id,text});
 const brokenThread={id:"thread-1",turns:[
   {id:"t1",status:"completed",items:[user("t1","Create count-lines.js and run it."),read("read-1","data.txt"),agent("t1","It prints 3.")]},
   {id:"t2",status:"completed",items:[user("t2","Check the change."),read("read-2","count-lines.js"),run("call-a","inProgress"),agent("t2","The check timed out.")]},
   {id:"t3",status:"completed",items:[user("t3","Check it once more."),run("call-b","inProgress",{arguments:{command:"node",args:["count-lines.js"],timeout_ms:15000}}),agent("t3","It timed out again.")]},
-  {id:"t4",status:"cancelled",items:[user("t4","Last check."),closed("call-a"),closed("call-b")]},
+  {id:"t4",status:"cancelled",items:[user("t4","Last check."),closed("call-a"),closed("call-b",{arguments:{command:"node",args:["count-lines.js"],timeout_ms:15000}})]},
   {id:"t5",status:"failed",items:[user("t5","What is two plus two?")]},
 ]};
 
@@ -165,4 +166,43 @@ test("a thread with no call stored twice replays and sends byte for byte as befo
     assert.equal(JSON.stringify(providerTurnToChat(request)),JSON.stringify(providerTurnToChat(old)));
     assert.equal(JSON.stringify(providerTurnToAnthropic(request)),JSON.stringify(providerTurnToAnthropic(old)));
   }
+});
+
+// A provider that sends its tool calls without ids gets them named native-tool-1, native-tool-2 and so on, counted again in each turn
+// (native-agent-loop), so two turns each hold a native-tool-1 of their own. Each is its own call and is sent as before; so is a later
+// call with the id and the arguments of an earlier one its turn settled, and one whose earlier namesake was left running.
+test("calls whose ids repeat from turn to turn are each sent, byte for byte as before",()=>{
+  const npm=(id,args,stdout,extra={})=>({type:"dynamicToolCall",id,namespace:"trebell_terminal",tool:"run",arguments:{command:"npm",args},status:"completed",success:true,contentItems:null,rawOutput:{success:true,exitCode:0,stdout},...extra});
+  const thread={id:"thread-3",turns:[
+    {id:"a",status:"completed",items:[user("a","Run the tests."),npm("native-tool-1",["test"],"3 failed"),agent("a","3 tests fail.")]},
+    {id:"b",status:"completed",items:[user("b","Fix them and run the linter."),npm("native-tool-1",["run","lint"],"lint clean"),npm("native-tool-2",["test"],"all pass"),agent("b","Fixed; lint is clean.")]},
+    {id:"c",status:"completed",items:[user("c","Run the tests once more."),npm("native-tool-1",["test"],"all pass"),agent("c","They pass.")]},
+    {id:"d",status:"failed",items:[user("d","And the linter."),npm("native-tool-1",["run","lint"],"",{status:"inProgress",success:null,rawOutput:undefined}),agent("d","Running it.")]},
+    {id:"e",status:"completed",items:[user("e","Build it."),npm("native-tool-1",["run","build"],"built"),agent("e","Built.")]},
+  ]};
+  for(const options of [{},{afterTurnId:"a"}]){
+    const now=nativeMessagesFromThread(thread,options),before=replayBefore(thread,options);
+    assert.equal(JSON.stringify(now),JSON.stringify(before));
+    const request={model:"model-a",messages:[{role:"system",content:"S"},...now,{role:"user",content:"next"}],tools:TERMINAL},old={...request,messages:[{role:"system",content:"S"},...before,{role:"user",content:"next"}]};
+    assert.equal(JSON.stringify(providerTurnToResponses(request)),JSON.stringify(providerTurnToResponses(old)));
+    assert.equal(JSON.stringify(providerTurnToChat(request)),JSON.stringify(providerTurnToChat(old)));
+    assert.equal(JSON.stringify(providerTurnToAnthropic(request)),JSON.stringify(providerTurnToAnthropic(old)));
+  }
+  const sent=nativeMessagesFromThread(thread).filter(message=>message.toolCalls).map(message=>message.toolCalls[0].arguments.args.join(" "));
+  assert.deepEqual(sent,["test","run lint","test","test","run lint","run build"],"every turn's call is sent");
+  const outputs=nativeMessagesFromThread(thread).filter(message=>message.role==="tool").map(message=>String(message.content).split("\n").pop());
+  assert.match(outputs[1],/lint clean/,"the second turn's native-tool-1 keeps its own output");
+});
+
+// A call its turn's stop cut off (stopped) whose harness sent its result after the next message: an earlier build stored that result
+// again, in the later turn. The call goes out once, in its own turn, with that result.
+test("a call stopped at its turn's end and stored again with its late result is sent once, with that result",()=>{
+  const thread={id:"thread-4",turns:[
+    {id:"s1",status:"cancelled",items:[user("s1","Count the lines."),run("call-c","stopped")]},
+    {id:"s2",status:"completed",items:[user("s2","Did it finish?"),run("call-c","completed",{success:true,rawOutput:{success:true,exitCode:0,stdout:"3\n"}}),agent("s2","It printed 3.")]},
+  ]};
+  const messages=nativeMessagesFromThread(thread);
+  assert.deepEqual(outputsByCall(messages),{calls:{"call-c":1},outputs:{"call-c":1}});
+  assert.deepEqual(messages.map(message=>message.role),["user","assistant","tool","user","assistant"]);
+  assert.match(String(messages[2].content),/"stdout":"3\\n"/,"the late result is the call's output, in its own turn");
 });
