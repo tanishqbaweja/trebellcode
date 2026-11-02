@@ -120,7 +120,8 @@ test("a relay turn that failed without a reply says how it ended once the next t
     await page.reload();await openThreadRow(page,"Native turn failure");
     await expect(page.getByText("Second turn answer.",{exact:true})).toBeVisible({timeout:10_000});
     await expect(rows).toHaveCount(1);
-    await expect(rows.first().getByTestId("assistant-heading")).toHaveText("Trebell Native");
+    // Its heading names the model and the mode the turn was sent with, as it did live: the thread keeps them with the turn.
+    await expect(rows.first().getByTestId("assistant-heading")).toHaveText("Trebell Native · GPT-5.6 · Supervised");
     await expect(rows.first().getByTestId("turn-outcome")).toHaveText(/^failed/);
     await expect(rows.first().locator(".turn-outcome-message")).toHaveText(USAGE_LIMIT);
     expect(turnRequests.some(params=>params?.itemsView==="notLoaded"&&params?.sortDirection==="desc")).toBe(true);

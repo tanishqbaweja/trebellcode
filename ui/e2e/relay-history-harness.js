@@ -29,7 +29,7 @@ export const replyItem=(id,text)=>({type:"agentMessage",id,text});
 // Trebell Native threads on the real relay, with the provider scripted: replies answers the provider's calls in order, each
 // {text,toolCalls} or a function of the request returning one (the completion gate is answered apart). seedThread stores a
 // thread whose turns ran before the window opened, each {user,items,status,error}, finished as the relay finishes a turn; they
-// finish in the same second, so their pills read "done".
+// finish within milliseconds, so their pills read under a second ("done · 0.1s"), or "done" for one that took no time at all.
 export async function startRelayHarness({replies=[]}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-relay-history-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
