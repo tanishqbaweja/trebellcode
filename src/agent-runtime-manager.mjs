@@ -899,7 +899,7 @@ export class AgentRuntimeManager{
   }
   async #install(target,environmentId,instanceId=null){
     if(target.runtime==="antigravity"){
-      if(this.activeEnvironment(environmentId))throw new Error("Managed Antigravity ACP installation is currently available only on the local machine");
+      if(this.activeEnvironment(environmentId))throw new Error("Trebell Code installs Antigravity on this computer only. Choose Local machine in Environments to install it.");
       const instance=this.instances().find(item=>item.kind==="antigravity"&&item.id==="antigravity-default")||defaultInstance("antigravity");
       // The new runtime's start check launches it with the profile's own environment, as its sessions are (its home and key aside).
       const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch,launchEnv:this.childEnv(instance,{key:false})});
@@ -1321,7 +1321,7 @@ export class AgentRuntimeManager{
       const refused=this.#refusedAfterVersion(instance,environmentId,{protocol:"codex",version,binary:this.executable(instance,{environmentId})});if(refused)return refused;
       // Readiness is Codex's own account/read answer, so non-OpenAI model providers need no login.
       const probed=await this.#codexAccount(instance,environmentId);
-      if(probed.error)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:true,authenticated:null,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:("Codex app-server account check failed: "+probed.error).slice(0,500)};
+      if(probed.error)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:true,authenticated:null,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:("Trebell Code could not read your Codex account: "+probed.error+(/[.!?]$/.test(String(probed.error).trim())?"":".")).slice(0,500)};
       const status=codexAccountStatus(probed.result.account);
       return {id:instance.id,kind:"codex",name:def.name,available:status.ready,installed:true,authenticated:status.authenticated,protocol:"codex",version:version??probed.result.version??null,binary:this.executable(instance,{environmentId}),message:status.message,account:{type:status.authType,label:status.label},...(failure?{versionCheckFailed:true}:{})};
     }

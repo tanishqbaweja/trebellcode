@@ -2187,7 +2187,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           // and the answer says how many (stoppedChats). One sign-in at a time ("already in progress").
           if(mock)return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:"oauth-personal",methodName:"Log in with Google"},agentSnapshot:await agentRuntimes.snapshot()});
           if(antigravitySignIn)throw new Error("Antigravity is already signing in, which can take up to 5 minutes. Finish it in the browser page Antigravity opened, or try again once that sign-in has ended.");
-          if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
+          if(environmentId)throw new Error("Antigravity signs in on this computer only. Choose Local machine in Environments to sign in.");
           const signingIn=antigravitySignIn=signInAntigravityProfile(agentRuntimes,instance,{methodId:typeof body.authMethodId==="string"?body.authMethodId:null,version:TREBELL_VERSION});
           let signed;try{signed=await signingIn}finally{if(antigravitySignIn===signingIn)antigravitySignIn=null}
           const stoppedChats=signed.changed?await agentRelay?.closeRuntimeSessions?.("antigravity")||0:0;

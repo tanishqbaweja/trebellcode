@@ -1,9 +1,11 @@
 // Tour lane L10's provider findings: a relay with a fixed model list checks a typed key with the provider before keeping it
 // (L10-1), a key read from an environment variable says so and cannot be removed as if it were saved (L10-18), a provider's
 // refusal reads in plain words with its reason, never its raw JSON body (L10-16), and a request its provider has not answered
-// for a while says the turn is still waiting for that provider (L10-21), counted again from each time it is sent again.
+// for a while says the turn is still waiting for that provider (L10-21), counted again from each time it is sent again. The rows of
+// Agents & models say an Antigravity or Codex refusal in plain words, without ACP, app-server or Antigravity's program names (L10-F-10).
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -243,4 +245,25 @@ test("a request sent again after a retryable refusal or a refused image says the
   assert.equal(waitingAgain.params.error?.message,"Still waiting for HCNSec.cn to answer.");
   assert.deepEqual(calls.slice(2).map(call=>call.image),[true,false],"the image was refused, then the request went again without it");
   assert.equal((await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===resent.id)).params.turn.status,"completed");
+});
+
+test("Agents & models says an Antigravity install or sign-in outside this computer, a broken Antigravity download and a failed Codex account read in plain words (L10-F-10)",async t=>{
+  const profile={id:"ssh-plain-words",type:"ssh",cwd:"/srv/app"};
+  const environments={
+    get:id=>id===profile.id?profile:null,
+    executeArgv:async(_id,{args})=>args[0]==="--version"?{exitCode:0,stdout:"codex-cli 0.158.0\n",stderr:""}:{exitCode:1,stdout:"",stderr:"unexpected command"},
+    // Codex's app-server on that host stops at once, as one too old for it does.
+    spawnArgv:()=>spawn(process.execPath,["-e","process.stderr.write('error: unrecognized subcommand app-server\\n');process.exit(2)"],{windowsHide:true,stdio:["pipe","pipe","pipe"]}),
+  };
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"}});
+  await assert.rejects(manager.install("antigravity",{environmentId:profile.id}),{message:"Trebell Code installs Antigravity on this computer only. Choose Local machine in Environments to install it."});
+  const codex=await manager.probe("codex");
+  assert.equal(codex.available,false);
+  assert.match(codex.message,/^Trebell Code could not read your Codex account: Codex stopped with exit code 2(: error: unrecognized subcommand app-server)?\.$/);
+  assert.doesNotMatch(codex.message,/app-server account|account check failed/);
+
+  const {gui}=await guiServer(t,{fetchFn:async input=>{throw new Error("Unexpected request: "+String(input?.url||input))}});
+  const signIn=await fetch(gui.url+"/api/agent-runtime-auth",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({runtime:"antigravity",instanceId:"antigravity-default",environmentId:"wsl-plain-words"})}).then(async response=>({status:response.status,body:await response.json()}));
+  assert.ok(signIn.status>=400);
+  assert.equal(signIn.body.error,"Antigravity signs in on this computer only. Choose Local machine in Environments to sign in.");
 });

@@ -139,10 +139,14 @@ test("a registry entry without a SHA-256 is refused before anything is downloade
   assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
 });
 
-test("a download without localharness_external beside agy_acp_server is refused",async t=>{
+// Each says what is missing in plain words, without the program names Antigravity ships (L10-F-10).
+test("a download without agy_acp_server, or without localharness_external beside it, is refused",async t=>{
   const fx=await home(t);
+  const none=await install(fx,{files:{"README.txt":"no server here"}});
+  assert.equal(none.error?.message,`The Google Antigravity ${VERSION} download is missing the program Antigravity runs. Nothing was installed.`);
+  assert.equal(none.launches.length,0);
   const {error,launches}=await install(fx,{files:{"agy_acp_server.exe":"stand-in server"}});
-  assert.equal(error?.message,`The Google Antigravity ${VERSION} download has no localharness_external.exe beside agy_acp_server.exe, which Antigravity needs to run. Nothing was installed.`);
+  assert.equal(error?.message,`The Google Antigravity ${VERSION} download is missing a program Antigravity needs to run. Nothing was installed.`);
   // A helper elsewhere in the archive is not beside the server.
   const elsewhere=await install(fx,{files:{"agy_acp_server.exe":"stand-in server","helpers/localharness_external.exe":"stand-in helper"}});
   assert.equal(elsewhere.error?.message,error.message);

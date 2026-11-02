@@ -193,9 +193,9 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
       if(free<neededMb*MB)throw noRoom({version,step:`unpack ${basename(String(item?.fileName||""))||"its files"}`,neededMb,free,root,parts:`${megabytes(fileMb)} for it`});
     }});
     await rm(archivePath,{force:true});
-    const source=await findFile(extracted,distribution.binaryName);if(!source)throw new Error(`Downloaded Antigravity archive did not contain ${distribution.binaryName}`);
+    const source=await findFile(extracted,distribution.binaryName);if(!source)throw new Error(`The Google Antigravity ${version} download is missing the program Antigravity runs. Nothing was installed.`);
     const helper=await stat(join(dirname(source),distribution.helperName)).catch(()=>null);
-    if(!helper?.isFile())throw new Error(`The Google Antigravity ${version} download has no ${distribution.helperName} beside ${distribution.binaryName}, which Antigravity needs to run. Nothing was installed.`);
+    if(!helper?.isFile())throw new Error(`The Google Antigravity ${version} download is missing a program Antigravity needs to run. Nothing was installed.`);
     // The server's folder with its helper and whatever else Google ships beside it (the launcher expects those relative paths),
     // moved into place rather than copied: no second copy on the drive.
     await rename(dirname(source),ready);

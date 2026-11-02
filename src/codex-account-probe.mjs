@@ -131,7 +131,7 @@ export async function readCodexAccount({ spawnAppServer, clientVersion = TREBELL
     child.once?.("error", error => reject(Object.assign(new Error(error?.message || String(error)), { codexSpawnFailed: true })));
     child.once?.("exit", code => {
       const detail = stderr.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(" ").slice(0, 400);
-      reject(new Error(`Codex app-server exited${code === null || code === undefined ? "" : ` with code ${code}`}${detail ? `: ${detail}` : ""}`));
+      reject(new Error(`Codex stopped${code === null || code === undefined ? "" : ` with exit code ${code}`}${detail ? `: ${detail}` : ""}`));
     });
   });
   finished.catch(error => failAll(error));
@@ -155,7 +155,7 @@ export async function readCodexAccount({ spawnAppServer, clientVersion = TREBELL
       const waiter = pending.get(message.id);
       if (!waiter) continue;
       pending.delete(message.id);
-      if (message.error) waiter.reject(Object.assign(new Error(message.error.message || "Codex app-server request failed"), { error: message.error }));
+      if (message.error) waiter.reject(Object.assign(new Error(message.error.message || "Codex answered with an error"), { error: message.error }));
       else waiter.resolve(message.result);
     }
   });
@@ -173,8 +173,8 @@ export async function readCodexAccount({ spawnAppServer, clientVersion = TREBELL
     const account = await request("account/read", {});
     return { userAgent: initialize?.userAgent || null, version: codexVersionFromUserAgent(initialize?.userAgent), account };
   })();
-  // Out of time: the request the app-server still owes an answer to, and how long it was given.
-  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Codex app-server did not answer ${awaiting || "its start"} within ${waitInWords(timeoutMs)}`)), timeoutMs); });
+  // Out of time, in words a person reads on the Codex row: whether Codex had started (its initialize answered) and how long it was given.
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Codex did not ${awaiting === "account/read" ? "answer" : "start"} within ${waitInWords(timeoutMs)}`)), timeoutMs); });
   try {
     return await Promise.race([work, timeout, finished]);
   } finally {

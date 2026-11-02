@@ -84,9 +84,9 @@ test("the sentences for a harness that is not ready say what to do",()=>{
 // A stand-in app-server: one that answers nothing, and one that answers initialize but never account/read.
 const SILENT="setInterval(()=>{},1000)";
 const STARTS_ONLY=`process.stdin.setEncoding("utf8");let held="";process.stdin.on("data",chunk=>{held+=chunk;let end;while((end=held.indexOf("\\n"))>=0){const line=held.slice(0,end);held=held.slice(end+1);let message;try{message=JSON.parse(line)}catch{continue}if(message.method==="initialize")process.stdout.write(JSON.stringify({id:message.id,result:{userAgent:"codex_cli_rs/0.162.0"}})+"\\n")}});setInterval(()=>{},1000);`;
-test("a Codex account read that runs out of time says which request went unanswered and after how long",{timeout:30_000},async()=>{
+test("a Codex account read that runs out of time says in plain words whether Codex started, and after how long",{timeout:30_000},async()=>{
   const appServer=script=>()=>spawn(process.execPath,["-e",script],{windowsHide:true,stdio:["pipe","pipe","pipe"]});
-  await assert.rejects(readCodexAccount({spawnAppServer:appServer(SILENT),timeoutMs:1500}),{message:"Codex app-server did not answer initialize within 1.5 seconds"});
-  await assert.rejects(readCodexAccount({spawnAppServer:appServer(STARTS_ONLY),timeoutMs:1000}),{message:"Codex app-server did not answer account/read within 1 second"});
-  await assert.rejects(readCodexAccount({spawnAppServer:appServer(SILENT),timeoutMs:400}),{message:"Codex app-server did not answer initialize within 400 ms"});
+  await assert.rejects(readCodexAccount({spawnAppServer:appServer(SILENT),timeoutMs:1500}),{message:"Codex did not start within 1.5 seconds"});
+  await assert.rejects(readCodexAccount({spawnAppServer:appServer(STARTS_ONLY),timeoutMs:1000}),{message:"Codex did not answer within 1 second"});
+  await assert.rejects(readCodexAccount({spawnAppServer:appServer(SILENT),timeoutMs:400}),{message:"Codex did not start within 400 ms"});
 });

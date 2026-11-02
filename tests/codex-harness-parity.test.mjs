@@ -65,7 +65,7 @@ test("readCodexAccount runs one short app-server, reads the account and stops it
     const result=await readCodexAccount({spawnAppServer:args=>spawn(process.execPath,[script,"chatgpt",log,...args],{windowsHide:true,stdio:["pipe","pipe","pipe"]}),clientVersion:"0.0.0-test",timeoutMs:15_000});
     assert.equal(result.version,"0.162.0");assert.equal(result.account.account.planType,"plus");
     assert.deepEqual((await readFile(log,"utf8")).trim().split("\n").map(line=>JSON.parse(line)),[["app-server"]]);
-    await assert.rejects(readCodexAccount({spawnAppServer:()=>spawn(process.execPath,["-e","process.exit(3)"],{windowsHide:true,stdio:["pipe","pipe","pipe"]}),timeoutMs:15_000}),/exited with code 3/);
+    await assert.rejects(readCodexAccount({spawnAppServer:()=>spawn(process.execPath,["-e","process.exit(3)"],{windowsHide:true,stdio:["pipe","pipe","pipe"]}),timeoutMs:15_000}),{message:"Codex stopped with exit code 3"});
   }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
