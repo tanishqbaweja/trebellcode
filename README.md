@@ -215,8 +215,6 @@ Trebell Code's own code is licensed under the [Apache License 2.0](LICENSE). Thi
 
 ## Links
 
-- Website: https://code.trebell.dev/
 - Releases: https://github.com/tanishqbaweja/trebellcode-releases/releases
 - Issues: https://github.com/tanishqbaweja/trebellcode/issues
 - Security policy: [SECURITY.md](SECURITY.md)
-- Contact: founder@trebell.dev
