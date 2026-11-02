@@ -581,6 +581,9 @@ export class EnvironmentManager {
       return {path:resolved,size,image,environmentId:profile?.id||null};
     }
     const result=await this.execute(profile.id,{command:`if [ -f ${quotePosix(requested)} ]; then wc -c < ${quotePosix(requested)}; else exit 44; fi`,cwd:"",timeoutMs:12000});
+    // A copy that is gone from the environment is refused by its name, as one gone from this computer is, so the composer takes its chip
+    // off too (missingPath).
+    if(result.exitCode===44)throw unreadableAttachment(/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(requested)?"image":"file",requested,{code:"ENOENT"},profile.name);
     if(result.exitCode!==0)throw new Error(result.stderr||`Attachment does not exist in ${profile.name}`);
     size=Number(String(result.stdout||"").trim());if(!Number.isFinite(size)||size<0)throw new Error("Could not determine attachment size");
     return {path:requested,size,image:/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(requested),environmentId:profile.id};

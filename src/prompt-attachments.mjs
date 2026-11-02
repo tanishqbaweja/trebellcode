@@ -37,10 +37,11 @@ export function attachmentName(path){
 // An attached file Trebell cannot read, said by its name with what to do, in plain words instead of Node's error or its code: a file
 // that is gone is no longer on this computer (missingPath names it, for the composer to take its chip off), one the system does not
 // let Trebell open says so. The harness has nothing yet, so the relay ends the turn with it and asks the harness nothing.
-export function unreadableAttachment(kind,path,error){
+// environmentName: the remote environment whose copy of the file is gone (missingIn), which is said instead of this computer.
+export function unreadableAttachment(kind,path,error,environmentName=""){
   const named=`The attached ${kind} "${attachmentName(path)}"`,code=error?.code,gone=code==="ENOENT"||code==="ENOTDIR";
-  const refusal=new SessionRefusalError(gone?`${named} is no longer on this computer. Attach it again.`:code==="EACCES"||code==="EPERM"?`${named} could not be read, since this computer does not let Trebell Code open it.`:`${named} could not be read. Attach it again.`);
-  if(gone)refusal.missingPath=String(path);
+  const refusal=new SessionRefusalError(gone?`${named} is no longer ${environmentName?"in "+environmentName:"on this computer"}. Attach it again.`:code==="EACCES"||code==="EPERM"?`${named} could not be read, since this computer does not let Trebell Code open it.`:`${named} could not be read. Attach it again.`);
+  if(gone){refusal.missingPath=String(path);if(environmentName)refusal.missingIn=environmentName}
   return refusal;
 }
 // An image of a thread in a remote environment: the composer keeps the copy it made on the remote host, which this machine cannot read

@@ -198,3 +198,33 @@ test("a follow-up the queue cannot start because its image is gone says so below
     await shots(page,"queued-image-gone-below-reply",()=>readsBelow(said,answer));
   }finally{release();await harness.close()}
 });
+
+// A follow-up sent while a turn runs checks its files too (L10-F-1's review): the chip of one that is gone came back with the draft
+// and a card said "Could not queue follow-up" at every press. It comes off now, the composer says so once, and the next press queues.
+test("a follow-up sent while a turn runs whose attached file is gone takes its chip off, says so once and the next press queues it",async({page})=>{
+  test.setTimeout(90_000);
+  let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+  const harness=await openThread(page,[async()=>{await held;return {text:"The login form has two fields."}},{text:"The plan is fine."}]);
+  try{
+    await type(page,"Describe the login form");await page.keyboard.press("Enter");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible({timeout:20_000});
+    const saved=await attach(page,{name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("release notes\n")});
+    await attach(page,{name:"plan.txt",mimeType:"text/plain",buffer:Buffer.from("the plan\n")});
+    await rm(saved,{force:true});
+    await type(page,"And the plan?");await page.keyboard.press("Enter");
+    const said=page.getByTestId("composer-alert");
+    await expect(said).toHaveText('"notes.txt" is no longer on this computer, so it was taken off your message. Attach it again, or send the message without it.');
+    await expect(page.getByText(/Could not queue follow-up/)).toHaveCount(0);
+    await expect(page.getByTestId("composer")).toHaveValue("And the plan?");
+    await expect(page.getByRole("button",{name:"Remove notes.txt"})).toHaveCount(0);
+    await expect(page.getByRole("button",{name:"Remove plan.txt"})).toBeVisible();
+    await expect(page.locator(".queued-message")).toHaveCount(0);
+    await shots(page,"followup-attachment-gone",()=>expect(said).toBeVisible());
+    await page.getByTestId("composer").click();await page.keyboard.press("Enter");
+    await expect(page.locator(".queued-message").filter({hasText:"And the plan?"})).toBeVisible();
+    await expect(page.getByText(/Could not queue follow-up/)).toHaveCount(0);
+    release();
+    await expect(page.getByText("The plan is fine.",{exact:true})).toBeVisible({timeout:20_000});
+    expect(harness.providerCalls(),"the turn and the follow-up went").toBe(2);
+  }finally{release();await harness.close()}
+});

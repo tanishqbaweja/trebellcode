@@ -584,7 +584,7 @@ export async function sendModelFanout(deps,text){
   const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return "kept"}
   if(prompt.length>maxComposerChars){setEvents(prev=>[...prev,{id:"fanout-long-"+Date.now(),kind:"error",title:`Message exceeds the ${maxComposerChars.toLocaleString()} character limit`,status:"done",raw:{}}]);return "kept"}
   if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return "kept"}
-  try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
+  try{await validateAttachmentPaths(attachments)}catch(error){if(!deps.dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
   const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
   // Its text left the composer as the send started (dispatchSend), or leaves it once the fan-out has launched (sendInBackground); its
   // files and context leave it now, and what was added meanwhile stays.
@@ -616,7 +616,7 @@ export async function sendInBackground(deps,promptOverride=null,{taken=false}={}
   const fanned=await sendModelFanout(deps,text);if(fanned){if(fanned===true)takeSent();return fanned}
   if(bootstrap.mock||!rpc||rpcStatus!=="connected"||runtimeSwitchRef.current||!modelsRef.current.includes(model)){await send(promptOverride);return}
   if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return "kept"}
-  try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
+  try{await validateAttachmentPaths(attachments)}catch(error){if(!deps.dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
   const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
   takeSent();setPromptHistoryIndex(-1);dropSentDraft(draft);setEvents([]);resetAssistantStream();setSection("chat");
   // A launch that fails is told by background-send-outcome.js, which loads then: should it not load, the draft goes back to the
@@ -694,7 +694,9 @@ export async function sendQueuedNow(deps,item){
   // the thread running.
   const onItsWay=localQueueStartRef.current;onItsWay.add(item.id);
   try{
-    await validateAttachmentPaths(item.attachments||[]);
+    // A file of it that is gone leaves it, which waits in the queue, and the composer says so (dropGoneAttachments): it was refused at
+    // every press, and attaching the file again added it to the composer, not to this follow-up.
+    try{await validateAttachmentPaths(item.attachments||[])}catch(error){if(deps.dropGoneAttachments(error,item))return;throw error}
     if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
       // Steered into the turn, it is on its way until Codex has it: its card says so and leaves it be, and a steer that fails leaves
       // it queued as it was (clearQueuedDispatch). One the relay refuses for the mode it is sent in says so as the queue's own note

@@ -4405,7 +4405,7 @@ export default function App(){
   // (and the compaction a send runs first). Each starts only once the person does it, so one done before that module has loaded
   // waits for it, and one that cannot load it says so: a send is not sent and keeps its draft.
   function turnDeps(){
-    return {activeThread,activeThreadRef,activeTurnId,agentRuntime,agentRuntimeLabel,askConfirm,assertTurnModel,attachments,backgroundThreadsRef,bootstrap,cannotSteerReason,clearQueuedDispatch,codexChoicesFor,compactingRow,compactionWaitersRef,contextChips,createThreadFor,currentProject,desktopNotify,dropSentDraft,editFromHereAskingRef,endCompactionRecord,focusComposerAt,followConversationEnd,gitInfo,inputsFor,leavingThread,loadNativeQueue,loadSharedToolCatalog,localQueueStartRef,markThreadTurn,maxComposerChars:MAX_COMPOSER_CHARS,model,modelMeta,models,modelsRef,permissionMode,persistLocalQueue,prepareDetachedWorktree,prepareTurnContext,presetFor,projectPath,projectlessMode,prompt,provider,providerAgent,queueKeysDone,queueNow,queuedEditId,queuedOnItsWay,reloadActiveThread,reportCheckpointIssue,resetAssistantStream,restoreFailedDraft,rpc,rpcRef,rpcStatus,running,runtimeCapabilities,runtimeSwitchRef,selectedCollaborationMode,selectedModels,send,setActiveTurnId,setAttachments,setCompactionStops,setComposerAlert,setContextChips,setEvents,setGoal,setMessages,setPrompt,setPromptHistoryIndex,setQueued,setRunning,setSection,setThreadMeta,setThreads,settings,settleCompactionWaiter,showActionError,startTurn,turnRunsNow,turnStillRuns,upsertEvent,validateAttachmentPaths,waitForActiveClone,workspaceEnvironmentId};
+    return {activeThread,activeThreadRef,activeTurnId,agentRuntime,agentRuntimeLabel,askConfirm,assertTurnModel,attachments,backgroundThreadsRef,bootstrap,cannotSteerReason,clearQueuedDispatch,codexChoicesFor,compactingRow,compactionWaitersRef,contextChips,createThreadFor,currentProject,desktopNotify,dropGoneAttachments,dropSentDraft,editFromHereAskingRef,endCompactionRecord,focusComposerAt,followConversationEnd,gitInfo,inputsFor,leavingThread,loadNativeQueue,loadSharedToolCatalog,localQueueStartRef,markThreadTurn,maxComposerChars:MAX_COMPOSER_CHARS,model,modelMeta,models,modelsRef,permissionMode,persistLocalQueue,prepareDetachedWorktree,prepareTurnContext,presetFor,projectPath,projectlessMode,prompt,provider,providerAgent,queueKeysDone,queueNow,queuedEditId,queuedOnItsWay,reloadActiveThread,reportCheckpointIssue,resetAssistantStream,restoreFailedDraft,rpc,rpcRef,rpcStatus,running,runtimeCapabilities,runtimeSwitchRef,selectedCollaborationMode,selectedModels,send,setActiveTurnId,setAttachments,setCompactionStops,setComposerAlert,setContextChips,setEvents,setGoal,setMessages,setPrompt,setPromptHistoryIndex,setQueued,setRunning,setSection,setThreadMeta,setThreads,settings,settleCompactionWaiter,showActionError,startTurn,turnRunsNow,turnStillRuns,upsertEvent,validateAttachmentPaths,waitForActiveClone,workspaceEnvironmentId};
   }
   async function delegateTask(rawSpec){return (turnSupport||await loadTurnSupport()).delegateTask(turnDeps(),rawSpec)}
   // The files and context chips that went with a send leave the composer, each chip with its file (addContextPath), so a chip never
@@ -4499,13 +4499,13 @@ export default function App(){
       try{
         if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips,{queuedId:queuedEditId}))return;
         restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-update-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not support editing native queued follow-ups.`,status:"done",raw:{}}]);return;
-      }catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+      }catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
     }
     // An edit of a follow-up in Trebell's own queue is saved in its place there; its files and context leave the composer once it is.
     if(queuedEditId&&activeThread?.id&&queued.some(item=>item.id===queuedEditId&&!item.native)){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};
       try{await validateAttachmentPaths(draft.attachments);await persistLocalQueue(activeThread.id,queued.map(item=>item.id===queuedEditId?{...item,...draft}:item));setPromptHistoryIndex(-1);dropSentDraft(draft);setQueuedEditId(null)}
-      catch(error){keepDraft();setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}
+      catch(error){keepDraft();if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}
       return;
     }
     // A follow-up waits in the queue of the thread it follows, which sends it once the turn ends; with no thread shown there is no
@@ -4514,16 +4514,16 @@ export default function App(){
     // for it (-31000: Muse Code writes its report on a host of another mode) says beside the composer that it was not sent.
     if(running&&activeThread?.id){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
-      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){restoreSentDraft(draft);if(error?.rpcCode===-31000)setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});else setEvents(prev=>[...prev,{id:"steer-error-"+Date.now(),kind:"error",title:"Could not steer the agent: "+(error.message||String(error)),status:"done",raw:{}}])}return}
+      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){restoreSentDraft(draft);if(dropGoneAttachments(error))return;if(error?.rpcCode===-31000)setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});else setEvents(prev=>[...prev,{id:"steer-error-"+Date.now(),kind:"error",title:"Could not steer the agent: "+(error.message||String(error)),status:"done",raw:{}}])}return}
       if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
         try{
           if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;
           const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};await persistLocalQueue(activeThread.id,[...queued,item]);return;
         }
-        catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+        catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
       }
       try{await validateAttachmentPaths(draft.attachments);const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};await persistLocalQueue(activeThread.id,[...queued,item])}
-      catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
+      catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
     }
     // Never start a turn with a model the active runtime does not list: a stale pick from another harness, or a catalog that is loading or failed.
     if(!modelsRef.current.includes(model)&&selectedModels.filter(id=>modelsRef.current.includes(id)).length<2){
@@ -4535,7 +4535,7 @@ export default function App(){
     }
     try{await waitForActiveClone()}catch(error){keepDraft();setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const fanned=await sendModelFanout(text);if(fanned){if(fanned==="kept")keepDraft();return}
-    try{await validateAttachmentPaths(attachments)}catch(e){keepDraft();if(e.data?.missing?.length)return dropGoneAttachments(e.data.missing);setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
+    try{await validateAttachmentPaths(attachments)}catch(e){keepDraft();if(dropGoneAttachments(e))return;setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};if(sendView)sendDraftsRef.current.set(sendView,draft);
     setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock){
@@ -4732,12 +4732,19 @@ export default function App(){
     const result=await api("/api/attachments/import",{method:"POST",body});
     return (result.files||[]).map(file=>file.path);
   }
-  // Files whose saved copies are gone (the check before a send names them) leave the draft with their chips, a context chip's too, and
-  // the composer says so once, so the next send goes: a chip of a file that is no longer there refused every later send the same way.
-  function dropGoneAttachments(gone){
-    setAttachments(prev=>prev.filter(path=>!gone.includes(path)));setContextChips(prev=>prev.filter(chip=>!gone.includes(chip.path)));
-    const one=gone.length<2,names=new Intl.ListFormat("en").format(gone.map(path=>`"${attachmentDisplayName(path)}"`));
-    setComposerAlert({kind:"send",text:one?names+" is no longer on this computer, so it was taken off your message. Attach it again, or send the message without it.":names+" are no longer on this computer, so they were taken off your message. Attach them again, or send the message without them."});
+  // Files whose saved copies are gone (the check before a send names them, missing, and where, missingIn, for a remote environment's
+  // copy) leave the draft with their chips, a context chip's too, and the composer says so once, so the next send goes: a chip of a
+  // file that is no longer there refused every later send the same way. Every send does this, a follow-up's (queued, steered, an edit
+  // of one queued), a multi-model send's and a background send's too. Given a follow-up of Trebell's own queue (its Send now), the files
+  // leave that follow-up, which waits for the person (autoStartFailed), so it never goes without them unasked. True when it did.
+  function dropGoneAttachments(error,item){
+    const gone=error?.data?.missing;if(!gone?.length)return false;
+    const keep=list=>(list||[]).filter(entry=>!gone.includes(entry?.path??entry)),threadId=activeThreadRef.current?.id;
+    if(item)persistLocalQueue(threadId,queueNow(threadId).map(q=>q.id===item.id?{...q,attachments:keep(q.attachments),contextChips:keep(q.contextChips),autoStartFailed:true}:q)).catch(showActionError);
+    else{setAttachments(keep);setContextChips(keep)}
+    const one=gone.length<2,it=one?"it":"them",names=new Intl.ListFormat("en").format(gone.map(path=>`"${attachmentDisplayName(path)}"`));
+    setComposerAlert({kind:"send",queuedId:item?.id,text:names+(one?" is":" are")+" no longer "+(error.data.missingIn?"in "+error.data.missingIn:"on this computer")+", so "+(one?"it was":"they were")+" taken off "+(item?"the queued follow-up. Edit the follow-up to attach "+it+" again, or send the follow-up":"your message. Attach "+it+" again, or send the message")+" without "+it+"."});
+    return true;
   }
   async function validateAttachmentPaths(paths,{extract=true}={}){
     if(!paths?.length)return {files:[],count:0,imageBytes:0};
