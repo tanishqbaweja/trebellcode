@@ -67,9 +67,10 @@ test("every harness kind is named in every label map the server and the UI keep"
 });
 
 test("every harness kind is in the kind lists it belongs to: custom models, sign-in, composer choices, lazy sessions, the Settings cards and search",()=>{
-  assert.deepEqual(sorted(strings("src/gui-server.mjs","const mergeCustom=catalog=>{")),sorted(ids),"custom models of every harness");
+  assert.deepEqual(sorted(strings("src/custom-model-catalog.mjs","const CUSTOM_MODEL_RUNTIMES=new Set(")),sorted(ids),"custom models of every harness");
   assert.deepEqual(sorted(strings("src/agent-runtime-manager.mjs","canAuthenticate:")),sorted(external),"every external harness signs in from Settings");
-  assert.deepEqual(sorted(strings("ui/src/components/SettingsPage.jsx","\"agents-models\":")),sorted(external),"the custom models card");
+  // Trebell Native's card holds the prices of its provider's models.
+  assert.deepEqual(sorted(strings("ui/src/components/SettingsPage.jsx","\"agents-models\":")),sorted(ids),"the custom models card");
   assert.deepEqual(sorted(strings("src/agent-relay.mjs","const LAZY_SESSION_RUNTIMES=new Set(")),sorted(["cursor","grok","antigravity","opencode","muse"]),"reopening their threads starts no harness");
   const relay=ids.filter(relayHarness);
   assert.deepEqual(sorted(relay),sorted(ids.filter(id=>!["native","codex"].includes(id))),"every harness on the agent relay gets the thread's access level");
