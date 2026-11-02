@@ -1358,6 +1358,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const waiting=call.id?String(call.id):"";markAwaitingApproval(thread.id,waiting,true);
           const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:card.reason,trebellTitle:card.title,...(card.command?{command:card.command}:{}),trebellNotice:card.notice,toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}}).finally(()=>markAwaitingApproval(thread.id,waiting,false));
           const decision=result?.decision||"decline";
+          // A declined call of any tool (an app's too) reads as declined on its row (agentToolRefusal).
+          if(/^(?:decline|cancel)/.test(String(decision)))declineToolCall(thread.id,call.id);
           if(decision==="acceptForSession"){nativeSessionGrants.add(grant);return "accept"}
           return decision;
         },
