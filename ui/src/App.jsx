@@ -4732,10 +4732,10 @@ export default function App(){
     const result=await api("/api/attachments/import",{method:"POST",body});
     return (result.files||[]).map(file=>file.path);
   }
-  // Files whose saved copies are gone (the check before a send names them) leave the draft, which says so once beside the composer, so
-  // the next send goes: a chip of a file that is no longer there refused every later send the same way.
+  // Files whose saved copies are gone (the check before a send names them) leave the draft with their chips, a context chip's too, and
+  // the composer says so once, so the next send goes: a chip of a file that is no longer there refused every later send the same way.
   function dropGoneAttachments(gone){
-    setAttachments(prev=>prev.filter(path=>!gone.includes(path)));
+    setAttachments(prev=>prev.filter(path=>!gone.includes(path)));setContextChips(prev=>prev.filter(chip=>!gone.includes(chip.path)));
     const one=gone.length<2,names=new Intl.ListFormat("en").format(gone.map(path=>`"${attachmentDisplayName(path)}"`));
     setComposerAlert({kind:"send",text:one?names+" is no longer on this computer, so it was taken off your message. Attach it again, or send the message without it.":names+" are no longer on this computer, so they were taken off your message. Attach them again, or send the message without them."});
   }
