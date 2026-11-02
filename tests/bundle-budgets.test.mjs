@@ -156,6 +156,12 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // and 817.8 / 270.9 KB (turn-support.js 46 / 34 bytes, and the rounded sizes of the chunks whose import lines name the first
 // bundle anew): the lazy limit goes up by those 3.3 / 1.6 KB, its headroom still 0.9 / 0.1 KB, with 2.5 KB gzip of room left in the
 // first bundle.
+// The 2.1.4 fixes to Usage costs (2026-11-02) raise no limit: the Usage page's pricing (usage-pricing.js) became the one helper the
+// composer's cost label shares, so it moved into the first bundle and took the place of the composer's own copy there. The Usage
+// page's chunk went down 464 / 121 bytes with its Input card counting every input token once and its Models card naming each
+// harness of a model, which holds what Trebell Native's prices in Settings' Custom models card and the Settings search's price
+// words add to the Settings page, 370 / 151 bytes. The first bundle went from 614.4 / 199.3 to 614.8 / 199.6 KB and the lazy chunks
+// from 817.9 / 271.0 to 817.8 / 271.0 KB.
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:818.7,gzipKB:271.0}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 

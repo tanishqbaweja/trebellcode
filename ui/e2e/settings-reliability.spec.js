@@ -878,7 +878,8 @@ test("a Settings search result taller than the window opens with its heading and
 });
 
 // Some cards show only for some harnesses: Model provider for Trebell Native, MCP servers for Trebell Native, Claude Code, Cursor, Grok
-// and Antigravity, and Custom models for every harness but Trebell Native; Desktop notifications only in the desktop app. The search
+// and Antigravity, and Custom models for every harness (for Trebell Native, the prices of its provider's models); Desktop
+// notifications only in the desktop app. The search
 // offered each whatever the harness, and Enter on it opened Agents & models (or General) at its head, with no such card on the page.
 // Runtime profiles shows only for a harness that takes profiles of its own, not for Trebell Native: before the harness list had come
 // in on a first visit the search offered it, and Agents & models drew an empty Profiles block, which went once the list came.
@@ -890,7 +891,7 @@ test("the Settings search offers only the cards the harness in use shows, and En
     await page.setViewportSize({width:1280,height:800});
     for(const [runtime,name,missing,shown,profiles] of [
       ["codex","Codex",["MCP servers","Model provider","Desktop notifications"],[["Custom models","agents-models"]],true],
-      ["native","Trebell Native",["Custom models","Desktop notifications","Runtime profiles"],[["MCP servers","agents-mcp"],["Model provider","agents-provider"]],false],
+      ["native","Trebell Native",["Desktop notifications","Runtime profiles"],[["MCP servers","agents-mcp"],["Model provider","agents-provider"],["Custom models","agents-models"]],false],
     ]){
       hold=true;
       await openSettings(page,request,"Search Harness Cards Workspace",{agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default"});

@@ -14,6 +14,10 @@ test("settings search finds targeted setting groups by plain-language terms",()=
   assert.equal(searchSettings("provider",{keybindings})[0].section,"agents");
 });
 
+test("settings search reaches the Custom models card, where model prices are saved, by price and cost wording",()=>{
+  for(const query of ["price","prices","model prices","cost","pricing"])assert.equal(searchSettings(query,{keybindings})[0]?.id,"agents-models",query);
+});
+
 test("settings search reaches the Model provider card by API key wording and every provider id",()=>{
   assert.equal(searchSettings("provider",{keybindings})[0].id,"agents-provider");
   assert.equal(searchSettings("api key",{keybindings})[0].id,"agents-provider");
