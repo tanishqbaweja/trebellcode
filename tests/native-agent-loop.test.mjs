@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderConnectFailure, nativeProviderNetworkFailure,nativeProviderRejectedImage, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
+import { TOOL_APPROVAL_WAIT } from "../src/shared-tool-gateway.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 // Historical controller tests opt in explicitly; production/default behavior stays lean.
 const runNativeAgentTurn=options=>runNativeAgentTurnImpl({midTaskProgressCheckpoints:true,...options});
@@ -7387,4 +7388,44 @@ test("persistent-output targets are scoped to sentences and list items, skipping
   assert.deepEqual(targets("Produce the following outputs:\n1. `/srv/reports/metrics.json` with per-class accuracy\n2. `/srv/reports/confusion.png`"),["/srv/reports/metrics.json","/srv/reports/confusion.png"]);
   assert.deepEqual(targets("Please create these files:\n- `out/config.yaml` - the merged settings, keeping the same\n  key order as the input\n- `out/changes.txt` - one changed key per line"),["out/config.yaml","out/changes.txt"]);
   assert.deepEqual(targets("## Outputs\nWrite these files:\n- `out/a.csv`\n- `out/b.csv`"),["out/a.csv","out/b.csv"]);
+});
+
+test("native terminal time limit starts when the command starts, never while the person is asked to approve it",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"run the check"}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"call-approved-late",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check.js"],"timeout_ms":1000}'}],usage:{}};
+      const observation=request.messages.at(-1),output=JSON.parse(String(observation.content));assert.equal(observation.role,"tool");assert.equal(output.timedOut,false);assert.equal(output.signal,null);assert.equal(output.exitCode,0);assert.match(output.stdout,/^checked/);
+      return {text:"The check ran after it was approved.",toolCalls:[],usage:{}};
+    },
+    // The person answers after 5 s, past the 1 s limit and its 3.5 s grace; the command then runs for 0.6 s of its 1 s.
+    executeTool:async call=>{
+      call[TOOL_APPROVAL_WAIT]?.(true);await new Promise(resolve=>setTimeout(resolve,5_000));call[TOOL_APPROVAL_WAIT]?.(false);
+      await new Promise(resolve=>setTimeout(resolve,600));return {success:true,exitCode:0,signal:null,timedOut:false,stdout:"checked\n",stderr:""};
+    },
+  });
+  assert.equal(result.text,"The check ran after it was approved.");
+  assert.equal(events.some(event=>/^native\.tool\.watchdog_/.test(event.name)),false);
+  const completed=events.find(event=>event.name==="native.tool.completed");assert.equal(completed.status,"completed");assert.equal(completed.data.success,true);
+});
+
+test("native terminal time limit still ends a command that runs past it once approved",async()=>{
+  let turns=0;const events=[];let answeredAt=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"run the check"}],onEvent:event=>events.push({...event,seenAt:Date.now()}),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"call-approved-hung",namespace:"trebell_terminal",name:"run",arguments:'{"command":"hung-check","args":[],"timeout_ms":1000}'}],usage:{}};
+      assert.match(String(request.messages.at(-1).content),/did not settle after cancellation/i);
+      return {text:"The approved command was bounded by its own limit.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{call[TOOL_APPROVAL_WAIT]?.(true);await new Promise(resolve=>setTimeout(resolve,800));call[TOOL_APPROVAL_WAIT]?.(false);answeredAt=Date.now();return await new Promise(()=>{})},
+  });
+  assert.equal(result.text,"The approved command was bounded by its own limit.");
+  // The whole limit and its grace count from the answer: 1 s + 3.5 s after it, not after the call began.
+  const timeout=events.find(event=>event.name==="native.tool.watchdog_timeout");assert.ok(timeout);assert.ok(timeout.seenAt-answeredAt>=4_400,`settled ${timeout.seenAt-answeredAt} ms after the answer`);
 });

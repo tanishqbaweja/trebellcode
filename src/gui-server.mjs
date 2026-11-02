@@ -72,7 +72,7 @@ import { verificationRepairAttempt, verificationRepairChainState, verificationRe
 import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
 import { runAutomaticVerificationEvidence } from "./verification-auto-runner.mjs";
 import { mergeVerificationEvidence } from "./verification-loop.mjs";
-import { verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationState } from "./verification-continuation.mjs";
+import { verificationCheckNotApproved, verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationRefusal, verificationContinuationState } from "./verification-continuation.mjs";
 import { verificationAutomationAttempt, verificationAutomationChainState } from "./verification-automation.mjs";
 import { normalizeBrowserVerificationReceipt } from "./browser-verification-evidence.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
@@ -1455,8 +1455,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     assertCodexGoalBudget(threadId);
     const records=state.verificationRecords({threadId,limit:50}),prepared=verificationContinuationState(records,params.recordId||null),{record,nextAction}=prepared;
     if(nextAction.action!=="verify"||!nextAction.nextStep)throw new Error("Latest verification does not require another verification step (next action: "+nextAction.action+").");
-    const continuationAttempt=verificationContinuationAttempt(meta?.verificationContinuationChain,record,{automatic:Boolean(params.auto)}),automationAttempt=verificationAutomationAttempt(meta?.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"verify"});
-    if(!continuationAttempt.allowed)throw Object.assign(new Error(`Automatic verification continuation stopped after ${continuationAttempt.limit} attempts. Review the remaining verification state before continuing.`),{code:-32001});
+    const continuationAttempt=verificationContinuationAttempt(meta?.verificationContinuationChain,record,{automatic:Boolean(params.auto),stepId:nextAction.nextStep.id}),automationAttempt=verificationAutomationAttempt(meta?.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"verify"});
+    if(!continuationAttempt.allowed)throw Object.assign(new Error(verificationContinuationRefusal(continuationAttempt)),{code:-32001});
     if(!automationAttempt.allowed)throw Object.assign(new Error(`Automatic verification workflow stopped after ${automationAttempt.limit} actions. Review the remaining verification state before continuing.`),{code:-32001});
     const continuationContext=verificationContinuationContext(prepared),withGoal=goalAdditionalContext({},durableCodexGoal(threadId)),withContinuity=continuityAdditionalContext(withGoal,durableCodexContinuity(threadId)),additionalContext={...(withContinuity||{}),"trebell.verification_continue":{kind:"application",value:continuationContext}},model=codexThreadModels.get(threadId)||null;
     const turnParams={threadId,cwd:meta?.cwd||undefined,approvalPolicy:params.approvalPolicy,sandboxPolicy:params.sandboxPolicy,input:[{type:"text",text:verificationContinuationPrompt(),textElements:[]}],additionalContext,...(model?{model}:{})};for(const key of Object.keys(turnParams))if(turnParams[key]===undefined)delete turnParams[key];
@@ -3169,8 +3169,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             const environmentId=meta?.environmentId??null,root=sourceRecord.projectPath||meta?.cwd||process.cwd(),remote=remoteEnvironmentProfile(environmentId),verificationIo=remote?createRemoteContextIo({environments,environmentId,root}):null,agentTurn=agentThreads.get(threadId)?.turns?.find(turn=>String(turn?.id||"")===turnId)||null,traces=eventJournal.list({threadId,turnId,limit:500});
             const observed=collectVerificationEvidence({plan:sourceRecord.plan,turnItems:agentTurn?.items||[],traces}),merged=mergeVerificationEvidence(sourceRecord.evidence,observed),automatic=await runAutomaticVerificationEvidence({contextEngine,plan:sourceRecord.plan,evidence:merged,root,io:verificationIo}),assessment=contextEngine.assessVerification({plan:sourceRecord.plan,evidence:automatic.evidence});
             const record=state.recordVerification({environmentId,projectPath:root,threadId,turnId,plan:sourceRecord.plan,evidence:automatic.evidence,assessment}),nextAction=contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence});
-            eventJournal.record({environmentId,threadId,turnId,category:"verification",name:"verification.continuation_evaluated",status:assessment.status,data:{recordId:record.id,sourceRecordId:sourceRecord.id,evidenceCount:record.evidence.length,newEvidenceCount:observed.length,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
-            return json(res,200,{supported:true,continuation:true,sourceRecordId:sourceRecord.id,checkpointId:null,threadId,turnId,changedPaths:[],record,nextAction});
+            // A check the person did not allow ends the chain's automatic checks (thread/verification/continue refuses the next one), and the
+            // window, told so (stopped) and given the chain's first record (rootRecordId, the key it checks a step once by), asks for none.
+            const stopped=verificationCheckNotApproved({turnItems:agentTurn?.items||[],traces})?"not-approved":null,rootRecordId=String(continuationChain.rootRecordId||sourceRecord.id);
+            if(stopped)state.updateThreadMeta(threadId,{verificationContinuationChain:{...continuationChain,stopped}});
+            eventJournal.record({environmentId,threadId,turnId,category:"verification",name:"verification.continuation_evaluated",status:assessment.status,data:{recordId:record.id,sourceRecordId:sourceRecord.id,evidenceCount:record.evidence.length,newEvidenceCount:observed.length,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null,stopped}});
+            return json(res,200,{supported:true,continuation:true,sourceRecordId:sourceRecord.id,rootRecordId,...(stopped?{stopped}:{}),checkpointId:null,threadId,turnId,changedPaths:[],record,nextAction});
           }
         }
         const checkpoint=checkpoints.list(threadId).filter(item=>String(item.turnId||"")===turnId).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0]||null;

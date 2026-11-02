@@ -67,7 +67,7 @@ test("completed turns automatically plan verification while failed turns do not"
       await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
         supported:true,threadId:body.threadId,turnId:body.turnId,changedPaths:["ui/src/App.jsx"],
         record:{id:"verification:auto",threadId:body.threadId,turnId:body.turnId,status:"incomplete",risk:"medium",assessment:{status:"incomplete",risk:"medium",summary:{required:3,passed:0,failed:0,blocked:0,missing:3}}},
-        nextAction:{action:"verify",nextStep:{id:"diagnostics"}},
+        nextAction:{action:"verify",nextStep:{id:"diagnostics",kind:"diagnostics"}},
       })});
     });
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
@@ -78,9 +78,9 @@ test("completed turns automatically plan verification while failed turns do not"
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"turn-verified",status:"completed",completedAt:Date.now()/1000}}});
     await expect.poll(()=>requests.length).toBe(1);
     expect(requests[0]).toEqual({threadId:thread.id,turnId:"turn-verified"});
-    await expect(page.getByText("Verification planned · medium risk · 3 required checks · next diagnostics",{exact:true})).toBeVisible();
+    await expect(page.getByText("Verification planned · medium risk · 3 required checks · next: one more check",{exact:true})).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
-    await page.getByText("Verification planned · medium risk · 3 required checks · next diagnostics",{exact:true}).scrollIntoViewIfNeeded();
+    await page.getByText("Verification planned · medium risk · 3 required checks · next: one more check",{exact:true}).scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:auditDir+"turn-verification-planned-dark-1280x800.png",fullPage:true});
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"turn-failed",status:"failed",completedAt:Date.now()/1000}}});
     await page.waitForTimeout(250);expect(requests.length).toBe(1);

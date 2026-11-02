@@ -38,7 +38,7 @@ import { mergeAcpMcpServers, repositoryMcpProcessConfig } from "./repository-mcp
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { continuityAdditionalContext, continuityContextValue, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
-import { verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationState } from "./verification-continuation.mjs";
+import { verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationRefusal, verificationContinuationState } from "./verification-continuation.mjs";
 import { verificationAutomationAttempt, verificationAutomationChainState } from "./verification-automation.mjs";
 import { normalizeBrowserVerificationReceipt } from "./browser-verification-evidence.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
@@ -1956,8 +1956,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(thread.status?.type==="active")throw new Error("Stop the running turn before continuing verification.");
       const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];if(!records.length)throw new Error("No persisted verification record is available for this thread.");
       const prepared=verificationContinuationState(records,params.recordId||null),{record,nextAction}=prepared;if(nextAction.action!=="verify"||!nextAction.nextStep)throw new Error("Latest verification does not require another verification step (next action: "+nextAction.action+").");
-      const meta=state?.threadMeta?.(thread.id)||{},continuationAttempt=verificationContinuationAttempt(meta.verificationContinuationChain,record,{automatic:Boolean(params.auto)}),automationAttempt=verificationAutomationAttempt(meta.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"verify"});
-      if(!continuationAttempt.allowed)throw Object.assign(new Error(`Automatic verification continuation stopped after ${continuationAttempt.limit} attempts. Review the remaining verification state before continuing.`),{code:-32001});
+      const meta=state?.threadMeta?.(thread.id)||{},continuationAttempt=verificationContinuationAttempt(meta.verificationContinuationChain,record,{automatic:Boolean(params.auto),stepId:nextAction.nextStep.id}),automationAttempt=verificationAutomationAttempt(meta.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"verify"});
+      if(!continuationAttempt.allowed)throw Object.assign(new Error(verificationContinuationRefusal(continuationAttempt)),{code:-32001});
       if(!automationAttempt.allowed)throw Object.assign(new Error(`Automatic verification workflow stopped after ${automationAttempt.limit} actions. Review the remaining verification state before continuing.`),{code:-32001});
       const verificationContext=verificationContinuationContext(prepared),verificationPrompt=verificationContinuationPrompt(),started=await request(context,"turn/start",{
         threadId:thread.id,model:thread.model||undefined,

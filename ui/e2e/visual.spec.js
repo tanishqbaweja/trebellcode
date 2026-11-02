@@ -283,7 +283,7 @@ test("missing test verification automatically starts one same-thread check",asyn
     await page.goto("/");const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification continuation fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await threadOpened(page);await expect(page.getByTestId("composer")).toBeVisible();
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"completed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
     await expect.poll(()=>continuationRequests.length).toBe(1);expect(continuationRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-continue-1",auto:true});
-    await expect(page.getByText(/Automatic same-thread check turn · project_tests/)).toBeVisible();
+    await expect(page.getByText("Automatic check · running the tests",{exact:true})).toBeVisible();await expect(page.getByText(/project_tests/)).toHaveCount(0);
     await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"automatic-verification-continuation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

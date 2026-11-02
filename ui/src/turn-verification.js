@@ -1,4 +1,4 @@
-function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+export function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
 
 export async function requestTurnVerificationPlan({request,threadId,turnId,retries=3,sleep=wait}={}){
   if(typeof request!=="function")throw new Error("Verification planner request function is required.");
@@ -13,6 +13,10 @@ export async function requestTurnVerificationPlan({request,threadId,turnId,retri
   return result;
 }
 
+// What a step of the plan checks, in the words a person reads (its id is the planner's own).
+const STEP_WORDS={command:"running a command",tests:"running the tests",behavioral:"trying the changed behavior",browser:"trying it in a browser",visual:"checking how it looks"};
+export const verificationStepWords=step=>STEP_WORDS[step?.kind]||"one more check";
+
 // The row shows the assessment made when the turn ended. Checks the turn already ran count toward it, so a turn that ran them
 // reads as verified or failed rather than as a plan still waiting. It comes once the turn has ended, as a notice of that turn after
 // its steps (notice 2): it reads on the turn's own card, after the steps it judged (App's sealLiveTurn).
@@ -20,7 +24,7 @@ export function verificationPlanEvent(result,turnId){
   if(!result?.record)return null;
   const assessment=result.record.assessment||{},summary=assessment.summary||{},count=key=>Math.max(0,Number(summary[key])||0),required=count("required");
   const risk=String(result.record.risk||assessment.risk||result.record.plan?.risk||"unknown");
-  const nextId=result.nextAction?.nextStep?.id?String(result.nextAction.nextStep.id):null,next=nextId?" · next "+nextId:"";
+  const nextStep=result.nextAction?.nextStep,nextId=nextStep?.id?String(nextStep.id):null,next=nextId?" · next: "+verificationStepWords(nextStep):"";
   const checks=n=>`${n} required check${n===1?"":"s"}`,outcome=String(assessment.status||result.record.status||"");
   const row=outcome==="verified"?{title:`Verified · ${risk} risk · ${required?checks(required)+" passed":"no required checks"}`,status:"done"}
     :outcome==="failed"?{title:`Verification failed · ${risk} risk · ${count("failed")} of ${checks(required)} failed`,status:"failed"}

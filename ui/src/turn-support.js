@@ -12,9 +12,8 @@ import { repositoryFocusPaths } from "./context-focus.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { repositoryContextDeliveryPacket, repositoryContextEntries } from "./context-provenance.js";
 import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
-import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
-import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
-import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
+import { requestTurnVerificationPlan, verificationPlanEvent, verificationStepWords, wait } from "./turn-verification.js";
+import { maybeStartAutomaticVerificationContinuation, maybeStartAutomaticVerificationRepair } from "./auto-verification-continuation.js";
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { isVideoAttachment } from "./composer-state.js";
@@ -159,21 +158,17 @@ export async function planCompletedTurnEvidence(deps,threadId,turnId){
       const refreshed=await rpcRef.current.request("thread/continuity/get",{threadId}).catch(()=>null);
       if(refreshed&&activeThreadRef.current?.id===threadId)setContinuity(refreshed.continuity||null);
     }
-    if(result?.nextAction?.action==="repair"&&rpcRef.current){
+    // A failed check starts one repair; a step still to check, one check turn, whose row says in plain words what it checks.
+    const repair=result?.nextAction?.action==="repair",step=result?.nextAction?.nextStep;
+    if((repair||result?.nextAction?.action==="verify")&&rpcRef.current){
+      const name=repair?"repair":"continue";
       try{
-        const repair=await maybeStartAutomaticVerificationRepair({rpc:rpcRef.current,threadId,result,seen:automaticVerificationRepairSeenRef.current});
-        adoptAutomaticTurn(deps,threadId,repair);
-        if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Automatic same-thread repair turn",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
+        const started=await (repair?maybeStartAutomaticVerificationRepair:maybeStartAutomaticVerificationContinuation)({rpc:rpcRef.current,threadId,result,seen:(repair?automaticVerificationRepairSeenRef:automaticVerificationContinuationSeenRef).current});
+        adoptAutomaticTurn(deps,threadId,started);
+        const id="verification-auto-"+name+"-"+started.recordId+(repair?"":"-"+started.nextStepId);
+        if(started.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!==id),{id,kind:"verification",title:repair?"Automatic same-thread repair turn":"Automatic check · "+verificationStepWords(step),status:"running",raw:{recordId:started.recordId,turnId:started.turn?.id||null}}]);
       }catch(error){
-        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null},turnId:String(turnId),notice:2}]);
-      }
-    }else if(result?.nextAction?.action==="verify"&&rpcRef.current){
-      try{
-        const continuation=await maybeStartAutomaticVerificationContinuation({rpc:rpcRef.current,threadId,result,seen:automaticVerificationContinuationSeenRef.current});
-        adoptAutomaticTurn(deps,threadId,continuation);
-        if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Automatic same-thread check turn · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
-      }catch(error){
-        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null},turnId:String(turnId),notice:2}]);
+        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-"+name+"-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification "+(repair?"repair":"continuation")+" stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null},turnId:String(turnId),notice:2}]);
       }
     }
   }catch(error){
@@ -359,46 +354,33 @@ export async function runSlashCommand(deps,text){
   return false;
 }
 
-async function monitorWorktreeSetup({setWorktreeSetup},sessionId,{timeoutMs=30*60_000}={}){
+// A worktree's setup terminal, polled until it ends or 30 minutes pass; three failed polls in a row end the wait with an error that
+// names what (the worktree setup, or a background send's).
+async function setupEnd(sessionId,what,{timeoutMs=30*60_000}={}){
   const started=Date.now();let consecutiveErrors=0;
   while(Date.now()-started<timeoutMs){
     let data;
     try{data=await api("/api/terminal/sessions");consecutiveErrors=0}
     catch(error){
       consecutiveErrors++;
-      if(consecutiveErrors>=3){
-        const failure=new Error("Could not monitor worktree setup: "+(error?.message||String(error)));
-        setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:"failed",detail:failure.message}:prev);
-        throw failure;
-      }
-      await new Promise(resolve=>setTimeout(resolve,700));continue;
-    }
-    const session=(data.sessions||[]).find(item=>item.id===sessionId);
-    if(session&&!session.running){
-      const failed=session.exitCode!==0;
-      setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:failed?"failed":"done",detail:failed?`Setup exited with code ${session.exitCode??"unknown"}`:"Setup completed",exitCode:session.exitCode}:prev);
-      return {exitCode:session.exitCode};
-    }
-    await new Promise(resolve=>setTimeout(resolve,700));
-  }
-  setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:"failed",detail:"Setup is still running after 30 minutes."}:prev);
-  return {timeout:true,exitCode:null};
-}
-async function waitForDetachedSetup(sessionId,{timeoutMs=30*60_000}={}){
-  const started=Date.now();let consecutiveErrors=0;
-  while(Date.now()-started<timeoutMs){
-    let data;
-    try{data=await api("/api/terminal/sessions");consecutiveErrors=0}
-    catch(error){
-      consecutiveErrors++;
-      if(consecutiveErrors>=3)throw new Error("Could not monitor background worktree setup: "+(error?.message||String(error)));
-      await new Promise(resolve=>setTimeout(resolve,700));continue;
+      if(consecutiveErrors>=3)throw new Error("Could not monitor "+what+": "+(error?.message||String(error)));
+      await wait(700);continue;
     }
     const session=(data.sessions||[]).find(item=>item.id===sessionId);
     if(session&&!session.running)return {exitCode:session.exitCode};
-    await new Promise(resolve=>setTimeout(resolve,700));
+    await wait(700);
   }
   return {timeout:true,exitCode:null};
+}
+// The same wait, told on the worktree setup card.
+async function monitorWorktreeSetup({setWorktreeSetup},sessionId){
+  const card=next=>setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,...next}:prev);
+  let settled;
+  try{settled=await setupEnd(sessionId,"worktree setup")}
+  catch(failure){card({phase:"failed",detail:failure.message});throw failure}
+  const failed=settled.exitCode!==0;
+  card(settled.timeout?{phase:"failed",detail:"Setup is still running after 30 minutes."}:{phase:failed?"failed":"done",detail:failed?`Setup exited with code ${settled.exitCode??"unknown"}`:"Setup completed",exitCode:settled.exitCode});
+  return settled;
 }
 
 // A send's new worktree (App asks for one only in New worktree mode). owns: whether the view that asked for the worktree is still
@@ -406,15 +388,17 @@ async function waitForDetachedSetup(sessionId,{timeoutMs=30*60_000}={}){
 // pressed: the presses counted at the send's press, as of which the setup terminal asks for the keyboard as it opens the drawer, once
 // the worktree is made, so a menu opened or a key pressed meanwhile keeps the keyboard where it went (terminal-keyboard.js).
 // worktreeCardErrors: the failures the worktree setup card already shows (the activity list does not repeat them).
+// A new worktree's branch and folder, named by the model it is for and a stamp: trebell/<model>-<stamp>, beside the repository.
+function worktreeNames(root,modelId,stamp){
+  const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";
+  return {branch:"trebell/"+slug+"-"+stamp,path:root+"-trebell-"+slug+"-"+stamp};
+}
 export async function prepareWorktree(deps,basePath,modelId,{owns=null,pressed}={}){
   const {setWorktreeSetup,touchProject,setPanel,showActionError,worktreeCardErrors}=deps;
   const card=next=>{if(!owns||owns())setWorktreeSetup(next)};
   const info=await api("/api/git/info?path="+encodeURIComponent(basePath));
   if(!info.isGit)throw new Error("New worktree mode requires a Git project.");
-  const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";
-  const stamp=Date.now().toString(36);
-  const branch="trebell/"+slug+"-"+stamp;
-  const path=info.root+"-trebell-"+slug+"-"+stamp;
+  const {branch,path}=worktreeNames(info.root,modelId,Date.now().toString(36));
   card({phase:"creating",branch,path,scriptName:null,sessionId:null,detail:"Creating an isolated Git worktree"});
   try{
     const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});
@@ -461,13 +445,12 @@ export async function prepareWorktree(deps,basePath,modelId,{owns=null,pressed}=
 export async function prepareDetachedWorktree({showActionError},basePath,modelId,{environmentId=null}={}){
   const infoParams=new URLSearchParams({path:String(basePath)});if(environmentId)infoParams.set("environmentId",environmentId);
   const info=await api("/api/git/info?"+infoParams);if(!info.isGit)throw new Error("Background worktree mode requires a Git project.");if(!info.branch)throw new Error("Background worktrees require a checked-out base branch; detached HEAD is not supported.");
-  const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";const stamp=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-  const branch="trebell/"+slug+"-"+stamp;const path=info.root+"-trebell-"+slug+"-"+stamp;
+  const {branch,path}=worktreeNames(info.root,modelId,Date.now().toString(36)+Math.random().toString(36).slice(2,5));
   const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch,environmentId:environmentId||null}});const worktree=response.result?.worktree||path;
   try{await api("/api/projects",{method:"POST",body:{path:worktree,environmentId:environmentId||null}})}
   catch(error){showActionError(error,"Could not register background worktree")}
   const setup=response.result?.setup||null;
-  if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
+  if(setup?.session?.id&&setup.waitForSetup){const settled=await setupEnd(setup.session.id,"background worktree setup");if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
   return worktree;
 }
 
@@ -586,7 +569,7 @@ export async function startDetachedTurn(deps,text,paths,modelId=deps.model,{forc
     let uncertainThread=thread;const verificationErrors=[];
     if(mayHaveSucceeded&&!uncertainThread?.id){
       for(let attempt=0;attempt<3&&!uncertainThread;attempt++){
-        if(attempt)await new Promise(resolve=>setTimeout(resolve,250));
+        if(attempt)await wait(250);
         try{
           const listed=await rpc.request("thread/list",threadListParams(100));
           uncertainThread=threadForWorktree(listed.data||[],cwd);

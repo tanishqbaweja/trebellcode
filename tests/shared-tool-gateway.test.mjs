@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSharedToolGateway, authorizePlatformToolCall, authorizeSharedToolCall } from "../src/shared-tool-gateway.mjs";
+import { createSharedToolGateway, authorizePlatformToolCall, authorizeSharedToolCall, TOOL_APPROVAL_WAIT } from "../src/shared-tool-gateway.mjs";
 import { POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "../src/policy-engine.mjs";
 
 test("shared tool authorization combines catalog requirements with unified policy",()=>{
@@ -239,4 +239,25 @@ test("a call that fails validation is answered with its error before anyone is a
   const strict=createSharedToolGateway({validate:()=>{validated++},execute:async()=>"never"});
   const rejected=await strict.invoke({namespace:"trebell_computer",name:"click",arguments:{x:1,y:2}},{permissionProfile:"supervised",desktopAvailable:true});
   assert.equal(rejected.decision,POLICY_REJECT);assert.equal(validated,0);
+});
+
+test("a call's approval wait is told to whoever times it, around the ask only, and never for a call nobody is asked about",async()=>{
+  const waits=[],ran=[];
+  const gateway=createSharedToolGateway({
+    execute:async call=>{ran.push(waits.slice());return {success:true,exitCode:0}},
+    confirm:async()=>{waits.push("asked");return "accept"},
+  });
+  const command={namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["-v"]}};
+  const asked=await gateway.invoke({...command,[TOOL_APPROVAL_WAIT]:waiting=>waits.push(waiting)},{permissionProfile:"supervised",workspace:process.cwd()});
+  assert.equal(asked.success,true);
+  // The clock stops before the person is asked and starts again once they answered, before the command runs.
+  assert.deepEqual(waits,[true,"asked",false]);assert.deepEqual(ran,[[true,"asked",false]]);
+  waits.length=0;
+  const denied=createSharedToolGateway({execute:async()=>{throw new Error("should not run")},confirm:async()=>"decline"});
+  const refused=await denied.invoke({...command,[TOOL_APPROVAL_WAIT]:waiting=>waits.push(waiting)},{permissionProfile:"supervised",workspace:process.cwd()});
+  assert.equal(refused.success,false);assert.equal(refused.confirmationRequired,true);assert.deepEqual(waits,[true,false]);
+  waits.length=0;
+  // Full access: no ask, so nothing is told and the caller's clock runs as it always did.
+  const full=await gateway.invoke({...command,[TOOL_APPROVAL_WAIT]:waiting=>waits.push(waiting)},{permissionProfile:"full",workspace:process.cwd()});
+  assert.equal(full.success,true);assert.equal(full.decision,POLICY_ALLOW);assert.deepEqual(waits,[]);
 });

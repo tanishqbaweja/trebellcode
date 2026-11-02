@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { maybeStartAutomaticVerificationRepair } from "../ui/src/auto-verification-repair.js";
+import { maybeStartAutomaticVerificationRepair } from "../ui/src/auto-verification-continuation.js";
 
 test("automatic verification repair starts exactly once for a failed persisted record",async()=>{
   const calls=[],seen=new Set(),rpc={request:async(method,params)=>{calls.push({method,params});return {turn:{id:"repair-turn"}}}};

@@ -184,6 +184,10 @@ function confirmationAllowed(value){
 }
 
 function event(onEvent,event){try{onEvent?.({...event,at:Date.now()})}catch{}}
+// The key a caller that times a call puts its approval-wait callback under: a symbol, so a call that is copied, cloned or written out
+// carries no function.
+export const TOOL_APPROVAL_WAIT=Symbol.for("trebell.tool.approvalWait");
+function approvalWait(call,waiting){try{call?.[TOOL_APPROVAL_WAIT]?.(waiting)}catch{}}
 
 function transportOutcomeUncertain(error){
   if(error?.uncertain===true)return true;
@@ -228,10 +232,13 @@ export function createSharedToolGateway({execute,validate=null,confirm=null,envi
         if(typeof confirm!=="function")return {success:false,decision:POLICY_CONFIRM,confirmationRequired:true,error:authorization.reason,authorization};
         event(onEvent,{name:"shared_tool.confirmation_requested",status:"pending",data:trace});
         let confirmed=false;
+        // Whoever times the call (call[TOOL_APPROVAL_WAIT], Native's command time limit) stops its clock while the person is asked and starts
+        // it afresh once they have answered: the wait for an answer is no part of the call's run.
+        approvalWait(call,true);
         try{confirmed=confirmationAllowed(await confirm({call,context:resolvedContext,authorization}))}catch(error){
           event(onEvent,{name:"shared_tool.confirmation_resolved",status:"error",data:{...trace,error:error?.message||String(error)}});
           return {success:false,decision:POLICY_CONFIRM,error:error?.message||String(error),authorization};
-        }
+        }finally{approvalWait(call,false)}
         event(onEvent,{name:"shared_tool.confirmation_resolved",status:confirmed?"accepted":"declined",data:trace});
         if(!confirmed)return {success:false,decision:POLICY_CONFIRM,confirmationRequired:true,error:"Tool execution was not approved.",authorization};
       }

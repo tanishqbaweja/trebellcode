@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
-import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
+import { platformToolAllowedByAllowlist, TOOL_APPROVAL_WAIT } from "./shared-tool-gateway.mjs";
 import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 import { redactSecretText, showsRedactionMark } from "./secret-redactor.mjs";
 import { coolHistoricalReadToolResults, coolVirtualizedToolContent } from "./native-tool-history.mjs";
@@ -1629,17 +1629,12 @@ export async function runNativeAgentTurn({
       if(terminalTimeoutMs==null){
         output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:toolSignal,modelTurn:modelTurns,toolCall:toolCallNumber});
       }else{
-        let abortTimer=null,settleTimer=null;
+        let abortTimer=null,settleTimer=null,resolveWatchdog=null,raced=false;
         const timedOutOutput=error=>({success:false,exitCode:1,timedOut:true,signal:"SIGKILL",stdout:"",stderr:"",error});
         const cancelledOutput=()=>timedOutOutput(`Terminal command exceeded its ${terminalTimeoutMs}ms timeout and was cancelled by Trebell's tool watchdog.`);
         const unsettledOutput=()=>timedOutOutput(`Terminal command exceeded its ${terminalTimeoutMs}ms timeout and did not settle after cancellation.`);
-        const execution=Promise.resolve()
-          .then(()=>executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:toolSignal,modelTurn:modelTurns,toolCall:toolCallNumber}))
-          .catch(error=>{
-            if(toolController.signal.aborted&&!turnSignal?.aborted&&error?.name==="AbortError")return cancelledOutput();
-            throw error;
-          });
-        const watchdog=new Promise(resolveWatchdog=>{
+        const disarm=()=>{if(abortTimer)clearTimeout(abortTimer);if(settleTimer)clearTimeout(settleTimer);abortTimer=settleTimer=null};
+        const arm=()=>{
           abortTimer=setTimeout(()=>{
             if(!toolController.signal.aborted){
               watchdogAbortedTool=true;
@@ -1651,9 +1646,20 @@ export async function runNativeAgentTurn({
             emit(onEvent,{name:"native.tool.watchdog_timeout",status:"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,timeoutMs:terminalTimeoutMs,settlementGraceMs:TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS}});
             resolveWatchdog(unsettledOutput());
           },terminalTimeoutMs+TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS);
-        });
+        };
+        // The command's time limit runs while it runs, never while the person is asked to approve it: the executor says when the call
+        // waits for an answer (TOOL_APPROVAL_WAIT, true), which stops the clock, and when it has one (false), which starts the whole limit
+        // again. A call nobody is asked about (Full access, every benchmark run) never says either, and is timed from here as before.
+        const onApprovalWait=waiting=>{if(raced)return;disarm();if(!waiting)arm()};
+        const execution=Promise.resolve()
+          .then(()=>executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:toolSignal,modelTurn:modelTurns,toolCall:toolCallNumber,[TOOL_APPROVAL_WAIT]:onApprovalWait}))
+          .catch(error=>{
+            if(toolController.signal.aborted&&!turnSignal?.aborted&&error?.name==="AbortError")return cancelledOutput();
+            throw error;
+          });
+        const watchdog=new Promise(resolve=>{resolveWatchdog=resolve;arm()});
         try{output=await Promise.race([execution,watchdog])}
-        finally{if(abortTimer)clearTimeout(abortTimer);if(settleTimer)clearTimeout(settleTimer)}
+        finally{raced=true;disarm()}
       }
       throwIfAborted(turnSignal);
       if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.");uncertain=output?.uncertain===true;retrySafe=output?.retrySafe===true}
