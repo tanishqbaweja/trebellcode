@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
@@ -110,11 +110,16 @@ for(const permissionProfile of ["supervised","read-only","edits","auto","full"])
       read((fixture.document+".txt").replaceAll("\\","/")),
       read("src/app.js"),
       {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.document+".txt",startLine:3}},
+      // The text's path written from the project, as a model may write it (tour L10's fix check, 2026-11-02 16:16Z).
+      read(relative(fixture.repo,fixture.document+".txt")),
+      {namespace:"trebell_repo",name:"read_source",arguments:{path:relative(fixture.repo,fixture.document+".txt").replaceAll("\\","/")}},
     ],attachedInput(fixture));
     assert.match(result.userMessages[0],new RegExp(`Attached resource: report\\.docx \\(${escaped(fixture.document)}\\), readable as text at ${escaped(fixture.document+".txt")}`),"the line names the document's text");
     assert.match(result.userMessages[0],new RegExp(`Attached resource: notes\\.txt \\(${escaped(fixture.notes)}\\)(?!, readable)`),"a plain file is named as before");
     assert.deepEqual(result.asked,[],"no read of an attachment asks");
-    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,true,true],"every attachment was read, and the project's file too");
+    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,true,true,true,true],"every attachment was read, and the project's file too");
+    assert.match(result.toolMessages[5],new RegExp(DOCUMENT_FACT),"a path from the project to the document's text reads it");
+    assert.match(result.toolMessages[6],new RegExp(DOCUMENT_FACT));
     assert.match(result.toolMessages[0],new RegExp(DOCUMENT_FACT),"the document's text was read");
     assert.match(result.toolMessages[1],new RegExp(NOTES_FACT),"the person's own attached file was read");
     assert.match(result.toolMessages[2],new RegExp(DOCUMENT_FACT));
@@ -136,9 +141,10 @@ test("Supervised and Read only: only the thread's own attachments are read outsi
       {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.outside}},
       {namespace:"trebell_repo",name:"search_code",arguments:{query:"VAULT",path:fixture.document+".txt"}},
       {namespace:"trebell_workspace",name:"write_file",arguments:{path:fixture.document+".txt",content:"overwritten"}},
+      read(relative(fixture.repo,fixture.other)),
     ],attachedInput(fixture));
     assert.deepEqual(result.asked,[],`${permissionProfile}: a path out of the project is refused, not offered for approval`);
-    assert.deepEqual(result.rows.map(row=>row.success),[false,false,false,false,false,false,false,false],`${permissionProfile}: none of them ran`);
+    assert.deepEqual(result.rows.map(row=>row.success),[false,false,false,false,false,false,false,false,false],`${permissionProfile}: none of them ran`);
     assertOnlyAttachedRead(result);
     assert.equal(result.toolMessages[6].includes(DOCUMENT_FACT),false,"a search does not reach an attachment");
     // A thread that has no attachment cannot read another thread's.

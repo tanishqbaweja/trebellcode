@@ -1219,7 +1219,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // lines) open where they are at every access level (native-attached-files.mjs): those its earlier messages carried, and each new
       // message's as it goes (turn/start, steer).
       // A thread in a remote environment keeps its attachments on that host, inside its workspace, so it has none of these.
-      const attachedFiles=remoteIo?null:new NativeAttachedFiles({platform:runtimeManager.platform||process.platform});
+      const attachedFiles=remoteIo?null:new NativeAttachedFiles({platform:runtimeManager.platform||process.platform,root:runtimeCwd});
       attachedFiles?.addThread(threadStore.get(thread.id)||thread,{home:documentHome});
       const attachedFile=attachedFiles?path=>attachedFiles.find(path):null;
       const nativeBuiltins=createNativeBuiltins({

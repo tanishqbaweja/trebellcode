@@ -16,16 +16,20 @@ const SOURCE_MAX_BYTES=8*1024*1024;
 export class NativeAttachedFiles{
   #files=new Map();
   #platform;
-  constructor({platform=process.platform}={}){this.#platform=platform}
+  #root;
+  // root: the thread's workspace, which a relative path starts from, as the read tools place it.
+  constructor({platform=process.platform,root=null}={}){this.#platform=platform;this.#root=typeof root==="string"&&root?root:null}
   #key(path){const full=resolve(path);return this.#platform==="win32"?full.toLowerCase():full}
   add(path){
     const text=typeof path==="string"?path.trim():"";
     if(text&&isAbsolute(text))this.#files.set(this.#key(text),resolve(text));
   }
-  // The attached file an absolute path names, as it was attached, or null.
+  // The attached file a path names, as it was attached, or null: an absolute path, or one relative to the workspace that leads to it
+  // (a model may write ../../home/attachments/<file> from the project instead of the path its message gave).
   find(path){
-    const text=typeof path==="string"?path.trim():"";
-    return text&&isAbsolute(text)?this.#files.get(this.#key(text))??null:null;
+    const text=typeof path==="string"?path.trim():"";if(!text)return null;
+    const full=isAbsolute(text)?text:this.#root?resolve(this.#root,text):null;
+    return full?this.#files.get(this.#key(full))??null:null;
   }
   // A read_source of an attached file: the lines it asks for, read where the file is, as the repository's read gives a project file's
   // (context-engine readSourceRange: at most 400 lines and 32,000 characters at a time). null for any path that is not attached.
