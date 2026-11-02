@@ -2106,11 +2106,14 @@ test("a file picked from the @ menu with the caret inside its word replaces the 
     // The caret put just before the punctuation after '@log' (a full stop at the draft's end, a comma with more words after it, a
     // closing bracket) and the menu listing what matches 'log': the file goes on the word, the punctuation stays after it with the
     // caret between them, and what is typed on goes there. The pick took the whole word up to the next whitespace, the punctuation
-    // with it: 'Look at @src/login.js ' (round 8 repair).
+    // with it: 'Look at @src/login.js ' (round 8 repair). The punctuation stays on the file as it stood on the word, with no space
+    // put before it ('(see @src/login.js ) please', tour L10-11), and an @ right after an opening bracket opens the menu too (L10-12).
     for(const [index,[mode,width,draft,left,pick,picked,typed]] of [
-      ["dark",1280,"Look at @log.",1,"Enter","Look at @src/login.js .","Look at @src/login.js now."],
-      ["light",900,"Check @log, then run it",13,"a click","Check @src/login.js , then run it","Check @src/login.js now, then run it"],
-      ["light",1280,"(see @log) please",8,"Tab","(see @src/login.js ) please","(see @src/login.js now) please"],
+      ["dark",1280,"Look at @log.",1,"Enter","Look at @src/login.js.","Look at @src/login.js now."],
+      ["light",900,"Check @log, then run it",13,"a click","Check @src/login.js, then run it","Check @src/login.js now, then run it"],
+      ["light",1280,"(see @log) please",8,"Tab","(see @src/login.js) please","(see @src/login.js now) please"],
+      ["dark",1280,"Quote it (@log), please.",10,"Enter","Quote it (@src/login.js), please.","Quote it (@src/login.js now), please."],
+      ["light",1280,"(@log)",1,"a click","(@src/login.js)","(@src/login.js now)"],
     ].entries()){
       await switchMode(page,mode);await page.setViewportSize({width,height:800});
       const where=` in ${mode} at ${width}, the caret put before what follows '@log' in '${draft}' and the file picked by ${pick}`,caret=draft.indexOf("@log")+4;
@@ -2123,9 +2126,10 @@ test("a file picked from the @ menu with the caret inside its word replaces the 
       if(pick==="a click")await menu.locator("button").filter({hasText:"src/login.js"}).click();else await page.keyboard.press(pick);
       await expect(context).toHaveCount(1);
       await expect.soft(composer,"the draft once the file is in"+where).toHaveValue(picked);
-      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret after the file"+where).toEqual([caret+10,caret+10]);
-      await frames(page);await page.keyboard.type("now",{delay:20});await expect.soft(composer,"the draft typed on"+where).toHaveValue(typed);
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret after the file"+where).toEqual([caret+9,caret+9]);
+      await frames(page);await page.keyboard.type(" now",{delay:20});await expect.soft(composer,"the draft typed on"+where).toHaveValue(typed);
       if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-picked-before-the-punctuation-after-its-word-${mode}-${width}x800.png`});
+      if(index>2)await page.screenshot({animations:"disabled",path:auditDir+`mention-picked-in-brackets-${mode}-${width}x800.png`});
       await context.locator("button").click();await expect(context).toHaveCount(0);
     }
     const rounds=[["dark",1280,"ArrowLeft","Enter"],["dark",1280,"a click","a click"],["light",900,"a click","Enter"],["light",900,"ArrowLeft","a click"],["light",1280,"ArrowLeft","Tab"]];
@@ -2521,7 +2525,7 @@ test("letters typed before and after the word a file is picked on from the @ men
       ["dark",900,"Enter","after it, then before it with Home",async()=>{await page.keyboard.type(" now",{delay:60});await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js now",7],
       ["light",900,"a click","before it with Home, then after it with End",async()=>{await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60});await page.keyboard.press("End");await page.keyboard.type(" now",{delay:60})},"Please Check @src/login.js now",30],
       ["dark",300,"Tab","after it, then before it with a click at the draft's start",async()=>{await page.keyboard.type(" now",{delay:60});await clickInDraft(page,0,1);await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js now",7],
-      ["light",300,"Enter","'!' straight after it, then before it with Home",async()=>{await page.keyboard.type("!",{delay:60});await page.keyboard.press("Home");await page.keyboard.type("Now ",{delay:60})},"Now Check @src/login.js !",4],
+      ["light",300,"Enter","'!' straight after it, then before it with Home",async()=>{await page.keyboard.type("!",{delay:60});await page.keyboard.press("Home");await page.keyboard.type("Now ",{delay:60})},"Now Check @src/login.js!",4],
     ];
     for(const [index,[mode,ms,pick,how,edit,draft,caret]] of cases.entries()){
       await switchMode(page,mode);
@@ -2539,7 +2543,7 @@ test("letters typed before and after the word a file is picked on from the @ men
     // Enter sends the message as it reads, with the file.
     await page.keyboard.press("Enter");
     await expect(page.getByText("Checked the login file now.",{exact:true})).toBeVisible({timeout:15_000});
-    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Now Check @src/login.js !"]);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Now Check @src/login.js!"]);
     await expect(page.locator(".user-bubble").last().locator(".user-attachments > span")).toHaveText(["login.js"]);
   }finally{await harness.close()}
 });
@@ -2558,7 +2562,7 @@ test("letters typed after the word a file is picked on from the @ menu while it 
     const fileIn=async release=>{const done=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await done).finished();await painted(page)};
     const cases=[
       ["dark",900,"Enter","' then debug' after it, then 'Please ' before it with Home",async()=>{await page.keyboard.type(" then debug",{delay:60});await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js then debug",7],
-      ["light",900,"a click","', it keeps failing' after it, then 'Please ' before it with a click at the draft's start",async()=>{await page.keyboard.type(", it keeps failing",{delay:40});await clickInDraft(page,0,1);await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js , it keeps failing",7],
+      ["light",900,"a click","', it keeps failing' after it, then 'Please ' before it with a click at the draft's start",async()=>{await page.keyboard.type(", it keeps failing",{delay:40});await clickInDraft(page,0,1);await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js, it keeps failing",7],
       ["dark",300,"Tab","' then debug' after it, the caret then put at the draft's start with Home",async()=>{await page.keyboard.type(" then debug",{delay:60});await page.keyboard.press("Home")},"Check @src/login.js then debug",0],
       ["light",300,"Enter","' then debug' after it, the caret then put after 'then' with a click",async()=>{await page.keyboard.type(" then debug",{delay:60});await clickInDraft(page,15,1)},"Check @src/login.js then debug",24],
     ];

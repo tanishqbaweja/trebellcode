@@ -2,9 +2,11 @@
 const WORD_END=".,;:!?)]}\"'`”’»…";
 // The @ word a pick puts a file in: its path after the @, its spaces kept, one each.
 const fileWord=path=>"@"+String(path||"").trim().replace(/\s+/g," ");
+// An @ word begins the draft or follows whitespace, an opening bracket or an opening quote ('(@log', '"@log'), never a letter
+// ('mail@example.com').
 export function fileMentionAt(text,caret){
   const value=String(text||"");const at=Math.max(0,Math.min(value.length,Number(caret)||0));
-  const prefix=value.slice(0,at);const match=prefix.match(/(^|\s)@([^\s@]*)$/);
+  const prefix=value.slice(0,at);const match=prefix.match(/(^|[\s([{"'`“‘«])@([^\s@]*)$/);
   if(!match)return null;
   // The menu looks for what is typed before the caret, and a pick replaces the whole word (but on a word that goes on past the picked
   // file's path, pickedFileMention), up to the next whitespace but for the punctuation that ends it, which stays.
@@ -53,11 +55,12 @@ export function pickedFileMention(text,mention,label,found=[]){
 }
 
 // caret: where the person's caret is in text, which stays before the word, moves with what follows it, and goes after the file in it.
+// A space follows the file unless whitespace or the punctuation that ends a word does ('(see @log)' keeps its bracket on the file).
 export function applyFileMention(text,mention,label,caret=mention?.end){
   const value=String(text||"");if(!mention)return {text:value,caret:value.length};
   const safe=String(label||"").trim().replace(/\s+/g," ");
   const nextChar=value[mention.end]||"";
-  const replacement=safe?`@${safe}${nextChar&&/\s/.test(nextChar)?"":" "}`:"";
+  const replacement=safe?`@${safe}${/\s/.test(nextChar)||nextChar&&WORD_END.includes(nextChar)?"":" "}`:"";
   const next=value.slice(0,mention.start)+replacement+value.slice(mention.end);
   return {text:next,caret:caret<=mention.start?caret:Math.max(caret,mention.end)+next.length-value.length};
 }

@@ -10,6 +10,19 @@ test("file mention parser targets only the active @ token",()=>{
   assert.equal(fileMentionAt("@old token more",15),null);
 });
 
+// An @ right after an opening bracket or quote begins a word, as one after a space does (tour L10-12), and a pick there keeps the
+// bracket and the punctuation after the word.
+test("an @ right after an opening bracket or quote opens the file menu",()=>{
+  assert.deepEqual(fileMentionAt("Quote it from (@secr",20),{start:15,end:20,query:"secr"});
+  assert.deepEqual(fileMentionAt("(@secret)",8),{start:1,end:8,query:"secret"});
+  assert.deepEqual(fileMentionAt('Read "@notes" first',12),{start:6,end:12,query:"notes"});
+  assert.deepEqual(fileMentionAt("[@log]",5),{start:1,end:5,query:"log"});
+  assert.deepEqual(fileMentionAt("@log",4),{start:0,end:4,query:"log"});
+  assert.equal(fileMentionAt("user@host",9),null);
+  assert.equal(fileMentionAt("a)@log",6),null);
+  assert.deepEqual(applyFileMention("(@secret)",fileMentionAt("(@secret)",8),"docs/secret.txt"),{text:"(@docs/secret.txt)",caret:17});
+});
+
 test("file mention parser takes the whole word with the caret inside it, the query up to the caret",()=>{
   assert.deepEqual(fileMentionAt("Check @log",9),{start:6,end:10,query:"lo"});
   assert.deepEqual(fileMentionAt("Check @log please",7),{start:6,end:10,query:""});
@@ -32,11 +45,15 @@ test("a file picked with the caret before the punctuation after its word, or ins
   assert.deepEqual(fileMentionAt("Look at @log.",11),{start:8,end:12,query:"lo"});
   assert.deepEqual(fileMentionAt("Check @log, then run it",10),{start:6,end:10,query:"log"});
   assert.deepEqual(fileMentionAt("Is it @log?!",9),{start:6,end:10,query:"lo"});
-  assert.deepEqual(applyFileMention("Look at @log.",fileMentionAt("Look at @log.",12),"src/login.js"),{text:"Look at @src/login.js .",caret:22});
-  assert.deepEqual(applyFileMention("Check @log, then run it",fileMentionAt("Check @log, then run it",10),"src/login.js"),{text:"Check @src/login.js , then run it",caret:20});
-  assert.deepEqual(applyFileMention("(see @log) please",fileMentionAt("(see @log) please",9),"src/login.js"),{text:"(see @src/login.js ) please",caret:19});
-  assert.deepEqual(applyFileMention('"see @log" now',fileMentionAt('"see @log" now',9),"src/login.js"),{text:'"see @src/login.js " now',caret:19});
-  assert.deepEqual(applyFileMention("See @log... ok",fileMentionAt("See @log... ok",8),"src/login.js"),{text:"See @src/login.js ... ok",caret:18});
+  // The punctuation stays on the file as it stood on the word, no space put before it (tour L10-11), the caret between them.
+  assert.deepEqual(applyFileMention("Look at @log.",fileMentionAt("Look at @log.",12),"src/login.js"),{text:"Look at @src/login.js.",caret:21});
+  assert.deepEqual(applyFileMention("Check @log, then run it",fileMentionAt("Check @log, then run it",10),"src/login.js"),{text:"Check @src/login.js, then run it",caret:19});
+  assert.deepEqual(applyFileMention("(see @log) please",fileMentionAt("(see @log) please",9),"src/login.js"),{text:"(see @src/login.js) please",caret:18});
+  assert.deepEqual(applyFileMention('"see @log" now',fileMentionAt('"see @log" now',9),"src/login.js"),{text:'"see @src/login.js" now',caret:18});
+  assert.deepEqual(applyFileMention("See @log... ok",fileMentionAt("See @log... ok",8),"src/login.js"),{text:"See @src/login.js... ok",caret:17});
+  assert.deepEqual(applyFileMention("(see @harb), please.",fileMentionAt("(see @harb), please.",10),"docs/harbor-notes.md"),{text:"(see @docs/harbor-notes.md), please.",caret:26});
+  // The word then names the file on its chip, so the menu stays shut on it.
+  assert.equal(namesFileAt("(see @docs/harbor-notes.md), please.",5,"docs/harbor-notes.md",26),true);
   // Punctuation inside the word is part of it: the dots of a path, a bracket with more of the path after it.
   assert.deepEqual(fileMentionAt("Open @src/App.jsx.",9),{start:5,end:17,query:"src"});
   assert.deepEqual(fileMentionAt("Open @app/(auth)/page.tsx now",10),{start:5,end:25,query:"app/"});
@@ -74,7 +91,7 @@ test("a pick put into a draft typed on before and after its word meanwhile finds
   assert.deepEqual(applyFileMention("Please Check @log now",both,"src/login.js",21),{text:"Please Check @src/login.js now",caret:30});
   const bang=movedFileMention("Check @log",at,"Now Check @log!",4);
   assert.deepEqual(bang,{start:10,end:14,query:"log"});
-  assert.deepEqual(applyFileMention("Now Check @log!",bang,"src/login.js",4),{text:"Now Check @src/login.js !",caret:4});
+  assert.deepEqual(applyFileMention("Now Check @log!",bang,"src/login.js",4),{text:"Now Check @src/login.js!",caret:4});
   // Letters taken away before the word and typed after it.
   assert.deepEqual(movedFileMention("Please check @log",{start:13,end:17,query:"log"},"check @log now",14),{start:6,end:10,query:"log"});
   // The same word twice in the draft: the one picked, where what was around it is kept.
