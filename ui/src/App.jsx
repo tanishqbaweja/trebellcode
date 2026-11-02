@@ -805,12 +805,19 @@ const CITE_SENTENCE="Use the cited assistant text as context.",CITE_NOTE=/( ?)Us
 // a queued follow-up loaded again.
 const CITE_FILE=/(?:^|[\\/])(?:\d{10,}-[0-9a-f]{8}-)+assistant-citation\.txt$/i;
 
-// What a refused or missing microphone means for dictation, by the browser's speech recognition error.
+// Why dictation stopped, by the browser's speech recognition error; any other error gets the last line. The mic shows on from the
+// press. A recognition the browser has not started listening for within DICTATION_WAIT_MS is let go, and one that ends without
+// starting, with DICTATION_SILENT: where the browser could not listen (headless Chromium has no speech service, so its recognition
+// never starts, errs or ends), two presses changed nothing, with no word (tour L10-22).
 const DICTATION_ERRORS={
   "not-allowed":"The microphone is blocked. Allow microphone access for Trebell Code to dictate.",
   "service-not-allowed":"The microphone is blocked. Allow microphone access for Trebell Code to dictate.",
   "audio-capture":"No microphone was found to dictate with.",
+  "network":"Dictation could not reach the browser's speech service.",
+  "no-speech":"No speech was heard. Press the mic and speak.",
+  "":"Dictation stopped: the browser could not listen.",
 };
+const DICTATION_SILENT="Dictation did not start: the browser is not listening. Allow the microphone if asked, then try again.",DICTATION_WAIT_MS=8000;
 // The composer drawn now: its field and the setter of its caret. A file picked from the @ menu goes into the composer drawn once the
 // file is in, which is another one when a page (Settings, History) took the chat's place meanwhile, and into App's draft while the
 // page is still up.
@@ -955,20 +962,23 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const priceConfig=savedPrice(settings,agentRuntime,model,provider);
   function dictate(){
     if(!speechSupported)return;
-    if(recognitionRef.current){recognitionRef.current.stop();return}
+    // A press stops the recognition on its way, also one the browser has not started listening for yet.
+    const current=recognitionRef.current;
+    if(current){recognitionRef.current=null;clearTimeout(current.wait);setListening(false);current.stop();return}
     const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
-    const recognition=new Recognition();recognitionRef.current=recognition;setDictationAlert(null);
-    recognition.lang=navigator.language||"en-US";
-    recognition.interimResults=false;
-    recognition.continuous=false;
-    recognition.onstart=()=>setListening(true);
-    recognition.onend=()=>{if(recognitionRef.current===recognition)recognitionRef.current=null;setListening(false)};
-    recognition.onerror=event=>{if(recognitionRef.current===recognition)recognitionRef.current=null;setListening(false);const text=DICTATION_ERRORS[event?.error];if(text)setDictationAlert({kind:"dictation",text})};
+    const recognition=new Recognition(),say=text=>setDictationAlert({kind:"dictation",text});recognitionRef.current=recognition;setDictationAlert(null);setListening(true);let started=false;
+    // This recognition lets the mic go, unless a press or a newer one has it: false then.
+    const end=()=>{clearTimeout(recognition.wait);if(recognitionRef.current!==recognition)return false;recognitionRef.current=null;setListening(false);return true};
+    recognition.wait=setTimeout(()=>{if(end()){try{recognition.abort()}catch{}say(DICTATION_SILENT)}},DICTATION_WAIT_MS);
+    Object.assign(recognition,{lang:navigator.language||"en-US",interimResults:false,continuous:false});
+    recognition.onstart=()=>{started=true;clearTimeout(recognition.wait)};
+    recognition.onend=()=>{if(end()&&!started)say(DICTATION_SILENT)};
+    recognition.onerror=event=>{const code=event?.error;if(end()&&code!=="aborted")say(DICTATION_ERRORS[code]||DICTATION_ERRORS[""])};
     recognition.onresult=(event)=>{
       const text=[...event.results].map(result=>result[0]?.transcript||"").join(" ").trim();
       if(text)setPrompt(prev=>(prev&& !/\s$/.test(prev)?prev+" ":"")+text);
     };
-    try{recognition.start()}catch(error){recognitionRef.current=null;setDictationAlert({kind:"dictation",text:"Dictation could not start: "+sentenceText(error?.message||String(error))})}
+    try{recognition.start()}catch(error){end();say("Dictation could not start: "+sentenceText(error?.message||String(error)))}
   }
   // The composer takes keys while the picked file imports, so the pick goes into the draft as it is once the file is in: on its word
   // where that is then, what was typed meanwhile kept and the caret in it (a word edited or erased meanwhile gets nothing, and its chip

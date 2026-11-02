@@ -3335,14 +3335,16 @@ test("Enter on a draft over the 200,000-character limit does what the disabled S
 });
 
 // The browser's speech recognition, scripted: "blocked" refuses the microphone as a browser does when its permission is denied
-// (an error "not-allowed", then the end), and "listen" keeps listening until stop() is called.
+// (an error "not-allowed", then the end), "listen" keeps listening until stop() is called, "network" cannot reach the speech
+// service (an error "network", then the end, as Electron's does), and "silent" never starts, errs or ends, as headless Chromium's
+// recognition without a speech service did on the tour (L10-22).
 async function scriptedDictation(page){
   await page.addInitScript(()=>{
     window.__dictation={mode:"blocked",starts:0,stops:0};
     class Recognition{
-      start(){window.__dictation.starts++;if(window.__dictation.mode==="unavailable")throw new DOMException("Speech recognition is not available.","NotSupportedError");setTimeout(()=>{if(window.__dictation.mode==="blocked"){this.onerror?.({error:"not-allowed"});this.onend?.()}else this.onstart?.()},30)}
-      stop(){window.__dictation.stops++;setTimeout(()=>this.onend?.(),30)}
-      abort(){this.stop()}
+      start(){window.__dictation.starts++;const mode=this.mode=window.__dictation.mode;if(mode==="unavailable")throw new DOMException("Speech recognition is not available.","NotSupportedError");if(mode==="silent")return;setTimeout(()=>{if(mode==="blocked"||mode==="network"){this.onerror?.({error:mode==="network"?"network":"not-allowed"});this.onend?.()}else this.onstart?.()},30)}
+      stop(){window.__dictation.stops++;if(this.mode!=="silent")setTimeout(()=>this.onend?.(),30)}
+      abort(){window.__dictation.aborts=(window.__dictation.aborts||0)+1;if(this.mode!=="silent")setTimeout(()=>{this.onerror?.({error:"aborted"});this.onend?.()},30)}
     }
     window.SpeechRecognition=Recognition;window.webkitSpeechRecognition=Recognition;
   });
@@ -3377,6 +3379,43 @@ test("dictation says when the microphone is blocked, and a second click on the m
     await expect(mic).toHaveAttribute("aria-pressed","true");
     await mic.click();
     await expect(mic).toHaveAttribute("aria-pressed","false");
+  }finally{await harness.close()}
+});
+
+// Where the browser cannot listen, dictation says why: its speech service out of reach (an error other than a blocked or missing
+// microphone), or a recognition the browser never starts, as headless Chromium's, which has no speech service. Two presses there
+// changed nothing on the tour, with no word (L10-22): now the mic shows on from the press, a second press turns it off, and one the
+// browser has not started listening for in 8 s is let go with a line that says so.
+test("dictation says why when the browser cannot listen, the mic shows on from the press, and the next press tries again",async({page})=>{
+  test.setTimeout(90_000);
+  await scriptedDictation(page);
+  const harness=await openComposerApp(page);
+  try{
+    const mic=page.getByRole("button",{name:"Voice dictation"}),alert=page.getByTestId("composer-alert");
+    await page.evaluate(()=>{window.__dictation.mode="network"});
+    await mic.click();
+    await expect(alert).toHaveText("Dictation could not reach the browser's speech service.");
+    await expect(mic).toHaveAttribute("aria-pressed","false");
+    await shootBoth(page,"dictation-speech-service-unreachable",()=>expect(alert).toBeInViewport());
+    // No start, no error and no end. The press turns the mic on, and a second press turns it off, with no line: the person stopped it.
+    await page.evaluate(()=>{window.__dictation.mode="silent"});
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","true");await expect(mic).toHaveAttribute("title","Listening… click to stop");await expect(alert).toHaveCount(0);
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","false");await expect(alert).toHaveCount(0);
+    // Pressed again and left: after 8 s the mic goes off and the composer says why.
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","true");
+    await expect(alert).toHaveText("Dictation did not start: the browser is not listening. Allow the microphone if asked, then try again.",{timeout:15_000});
+    await expect(mic).toHaveAttribute("aria-pressed","false");
+    await shootBoth(page,"dictation-never-started",()=>expect(alert).toBeInViewport());
+    // The next press starts a new one, which listens, and the line goes.
+    await page.evaluate(()=>{window.__dictation.mode="listen"});
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","true");await expect(alert).toHaveCount(0);
+    await mic.click();
+    await expect(mic).toHaveAttribute("aria-pressed","false");
+    expect(await page.evaluate(()=>window.__dictation)).toEqual({mode:"listen",starts:4,stops:2,aborts:1});
   }finally{await harness.close()}
 });
 
