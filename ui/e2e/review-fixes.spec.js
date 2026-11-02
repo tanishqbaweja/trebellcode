@@ -66,7 +66,7 @@ test("an opened thought keeps one thought per line without blank lines in lists 
     ["nested","- Parent item\n  - Child item\n- Sibling item"],
     ["hard-break","Hard break line one\\\nHard break line two"],
   ];
-  const reply="The reply keeps Markdown's soft break\nas a space, on one line.";
+  const reply="The reply keeps the line it was written on\nand the next line under it.";
   const thread={id:"review-reasoning-layout",name:"Reasoning layout fixture",preview:"Reasoning layout",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[{id:"turn-1",status:"completed",items:[
     {type:"userMessage",id:"user-1",content:[{type:"text",text:"Plan the login fix."}]},
     ...thoughts.map(([id,text])=>({type:"reasoning",id:"reasoning-"+id,summary:[],content:[text]})),
@@ -103,11 +103,11 @@ test("an opened thought keeps one thought per line without blank lines in lists 
     expect(itemTops).toHaveLength(3);
     const lineHeight=await texts.nth(2).evaluate(node=>parseFloat(getComputedStyle(node).lineHeight));
     for(let index=1;index<itemTops.length;index++)expect(itemTops[index]-itemTops[index-1]).toBeLessThan(lineHeight*1.6);
-    // A reply renders exactly as before: Markdown's soft break is a space, so the paragraph is one line with no break.
+    // A reply keeps a single newline as a line break too (L10-9), as GitHub shows a comment: two lines, as they were written.
     const answer=page.locator(".conversation-history .assistant-message-text").last();
-    await expect(answer).toHaveText(reply.replace("\n"," "));
-    await expect(answer.locator("br")).toHaveCount(0);
-    expect(await answer.locator("p").evaluate(node=>Math.round(node.getBoundingClientRect().height/parseFloat(getComputedStyle(node).lineHeight)))).toBe(1);
+    await expect(answer).toContainText("The reply keeps the line it was written on");await expect(answer).toContainText("and the next line under it.");
+    await expect(answer.locator("br")).toHaveCount(1);
+    expect(await answer.locator("p").evaluate(node=>Math.round(node.getBoundingClientRect().height/parseFloat(getComputedStyle(node).lineHeight)))).toBe(2);
     await rows.first().scrollIntoViewIfNeeded();await settle(page);
     await page.screenshot({path:join(shotsDir,"review-reasoning-breaks-dark-1280x1000.png"),animations:"disabled"});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await settle(page);

@@ -31,7 +31,8 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const [environmentError,setEnvironmentError]=useState("");
   const [selectedEnvironments,setSelectedEnvironments]=useState([]);
   const environmentOptions=useMemo(()=>[
-    {id:"local",name:"Local / legacy",type:"local"},
+    // Turns run on this computer (and those recorded before environments had ids) under the name the app gives it everywhere else.
+    {id:"local",name:"Local machine",type:"local"},
     ...(environmentData.profiles||[]).map(profile=>({id:profile.id,name:profile.name||profile.id,type:profile.type||"remote"})),
   ],[environmentData]);
   const environmentNames=useMemo(()=>Object.fromEntries(environmentOptions.map(item=>[item.id,item.name])),[environmentOptions]);

@@ -155,7 +155,7 @@ for(const mode of MODES){
         if(!opened&&focused.name.startsWith("SUMMARY")){opened=true;await page.keyboard.press("Enter");await expect(page.locator(".usage-environment-filter")).toHaveAttribute("open","")}
       }
       console.log("USAGE-TAB-STOPS "+mode+" "+JSON.stringify(stops,null,1));
-      expect(stops.map(stop=>stop.name),"the stops Tab meets").toEqual(["SUMMARY All environments","BUTTON All environments","INPUT Local / legacylocal","INPUT Build boxssh","SELECT Period","BUTTON Refresh","BUTTON  Clear local history","BUTTON  Use reset credit","SUMMARY Unavailable Codex account data"]);
+      expect(stops.map(stop=>stop.name),"the stops Tab meets").toEqual(["SUMMARY All environments","BUTTON All environments","INPUT Local machinelocal","INPUT Build boxssh","SELECT Period","BUTTON Refresh","BUTTON  Clear local history","BUTTON  Use reset credit","SUMMARY Unavailable Codex account data"]);
       for(const stop of stops)expect.soft(stop.ring,`${stop.name} shows a ring with focus`).toBe(true);
       // The summary's ring shows all round it, not cut away by the card it opens.
       const summary=page.locator(".codex-account-usage .capability-details>summary");

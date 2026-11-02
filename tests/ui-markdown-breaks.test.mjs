@@ -5,10 +5,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { remarkSoftBreaks, softBreaksToHardBreaks } from "../ui/src/markdown-breaks.js";
+import ChatMarkdown from "../ui/src/components/ChatMarkdown.jsx";
 
-// The HTML ChatMarkdown renders: GitHub-flavored Markdown, with the soft-break step for a thought and without it for a reply.
+// The HTML ChatMarkdown renders: GitHub-flavored Markdown with the soft-break step, for a thought and for a reply alike.
 const thought=markdown=>renderToStaticMarkup(createElement(ReactMarkdown,{remarkPlugins:[remarkGfm,remarkSoftBreaks]},markdown));
-const reply=markdown=>renderToStaticMarkup(createElement(ReactMarkdown,{remarkPlugins:[remarkGfm]},markdown));
+const reply=markdown=>renderToStaticMarkup(createElement(ChatMarkdown,{text:markdown}));
+// Markdown without the soft-break step, which the step leaves as it is where it has nothing to break.
+const plain=markdown=>renderToStaticMarkup(createElement(ReactMarkdown,{remarkPlugins:[remarkGfm]},markdown));
 
 test("a single newline in a thought becomes one line break, in any phrasing and any line ending",()=>{
   assert.equal(thought("First thought\nSecond thought"),"<p>First thought<br/>\nSecond thought</p>");
@@ -32,7 +35,7 @@ test("lists, code and single-line text gain no breaks",()=>{
     "`inline\ncode` stays code",
     "| a | b |\n| - | - |\n| 1 | 2 |",
     "One paragraph.\n\nAnother paragraph.",
-  ])assert.equal(thought(markdown),reply(markdown),markdown);
+  ])assert.equal(thought(markdown),plain(markdown),markdown);
   assert.doesNotMatch(thought("```\na\nb\n```"),/<br/);
 });
 
@@ -44,7 +47,7 @@ test("raw HTML in a thought keeps its lines, and an HTML block is a paragraph of
   assert.equal(thought("<!--\nnote one\n\nnote two\n-->"),"<p>&lt;!--<br/>\nnote one<br/>\n<br/>\nnote two<br/>\n--&gt;</p>");
   assert.equal(thought("Para one\n\n<!-- note -->\n\nPara two"),"<p>Para one</p>\n<p>&lt;!-- note --&gt;</p>\n<p>Para two</p>");
   assert.equal(thought("Use <span\nclass=\"x\">this</span> here"),"<p>Use &lt;span<br/>\nclass=&quot;x&quot;&gt;this&lt;/span&gt; here</p>");
-  assert.equal(thought("a <b>bold</b> word"),reply("a <b>bold</b> word"));
+  assert.equal(thought("a <b>bold</b> word"),plain("a <b>bold</b> word"));
 });
 
 test("in a list item written without blank lines, an HTML block stays on the lines next to its paragraph",()=>{
@@ -59,9 +62,16 @@ test("in a list item written without blank lines, an HTML block stays on the lin
   assert.equal(thought("- item\n\n  <div>\n  raw\n  </div>"),"<ul>\n<li>\n<p>item</p>\n<p>&lt;div&gt;<br/>\nraw<br/>\n&lt;/div&gt;</p>\n</li>\n</ul>");
 });
 
-test("a reply keeps Markdown's soft break as a newline in its text",()=>{
-  assert.equal(reply("First line\nsame paragraph"),"<p>First line\nsame paragraph</p>");
-  assert.equal(reply("<plan>\nstep\n</plan>"),"&lt;plan&gt;\nstep\n&lt;/plan&gt;");
+test("a reply written one item per line keeps its lines, as a thought and a GitHub comment do (L10-9)",()=>{
+  // The live tour's reply: one count per line, no bullets, which read as one run-on line.
+  assert.equal(reply("PNG image: 1309\nJPEG image: 9813\nGIF image: 77"),"<p>PNG image: 1309<br/>\nJPEG image: 9813<br/>\nGIF image: 77</p>");
+  assert.equal(reply("First line\nsame paragraph"),"<p>First line<br/>\nsame paragraph</p>");
+  assert.equal(reply("<plan>\nstep\n</plan>"),"<p>&lt;plan&gt;<br/>\nstep<br/>\n&lt;/plan&gt;</p>");
+  // Paragraphs, lists, code and a hard break render as before.
+  assert.equal(reply("One.\n\nTwo."),"<p>One.</p>\n<p>Two.</p>");
+  assert.equal(reply("- a\n- b"),"<ul>\n<li>a</li>\n<li>b</li>\n</ul>");
+  assert.match(reply("```\nx\ny\n```"),/<code>x\ny\n<\/code>/);
+  assert.equal(reply("one\\\ntwo"),"<p>one<br/>\ntwo</p>");
 });
 
 test("text and raw HTML are split, an HTML block becomes a paragraph, and code, inline code and childless nodes are left alone",()=>{

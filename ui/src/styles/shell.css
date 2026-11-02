@@ -337,7 +337,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .chat-markdown blockquote{padding:2px 12px;border-left:2px solid var(--line2);color:var(--tx2)}
 .conversation-column .chat-markdown hr{margin:14px 0;border:0;border-top:1px solid var(--line)}
 .conversation-column .chat-markdown table{display:block;width:max-content;max-width:100%;overflow-x:auto;border-collapse:collapse;font-size:12.5px;line-height:1.5}
-.conversation-column .chat-markdown :is(th,td){padding:5px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}
+/* A cell keeps its words and numbers whole (the reply's overflow-wrap:anywhere let a narrow window squeeze a table into "Jun/ip/er"
+   and "4/20/0"): a table wider than the reply scrolls sideways in its own box instead. */
+.conversation-column .chat-markdown :is(th,td){padding:5px 10px;border:1px solid var(--line);text-align:left;vertical-align:top;overflow-wrap:normal}
 .conversation-column .chat-markdown th{background:var(--bg2);color:var(--tx0);font-weight:600}
 .conversation-column .chat-markdown input[type=checkbox]{margin:0 6px 0 0;vertical-align:-1px;accent-color:var(--ac)}
 .conversation-column .chat-markdown li:has(>input[type=checkbox]){list-style:none;margin-left:-18px}

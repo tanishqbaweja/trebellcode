@@ -10,10 +10,9 @@ import { markdownStream } from "../markdown-blocks.js";
 // Assistant replies are Markdown, rendered with react-markdown and GitHub-flavored Markdown. Raw HTML in a
 // reply stays text (react-markdown only renders it with rehype-raw, which is not used), and react-markdown drops unsafe link
 // protocols such as javascript:.
-const REMARK_PLUGINS=[remarkGfm];
-// lineBreaks (a harness's thinking) also keeps a single newline as a line break, raw HTML's included; replies keep Markdown's
-// soft breaks.
-const LINE_BREAK_PLUGINS=[remarkGfm,remarkSoftBreaks];
+// A reply, like a harness's thinking, keeps a single newline as a line break (raw HTML's included), as GitHub shows a comment:
+// text the model wrote one item per line keeps its lines.
+const REMARK_PLUGINS=[remarkGfm,remarkSoftBreaks];
 
 // A link that is not an absolute web or mail link stays text, with its target in the tooltip.
 function MarkdownLink({href,children}){
@@ -76,11 +75,11 @@ function finishedReplyScope(value){
   return streamed&&(finished.startsWith(streamed)||streamed.startsWith(finished))?{from:0,kept:live.kept}:null;
 }
 
-// record, for StreamingMarkdown's tail, is a remark step that sees the parsed tree.
+// record, for StreamingMarkdown's tail, is a remark step that sees the parsed tree, before its soft breaks become line breaks.
 const ChatMarkdown=memo(function ChatMarkdown({text,lineBreaks=false,record=null}){
   const value=String(text||"");if(perf)(perf.markdown||=[]).push(value.length);
   const inLiveReply=Boolean(useContext(LiveCode)),[carried]=useState(()=>inLiveReply||lineBreaks?null:finishedReplyScope(value));
-  const markdown=<ReactMarkdown remarkPlugins={record?[remarkGfm,record]:lineBreaks?LINE_BREAK_PLUGINS:REMARK_PLUGINS} components={COMPONENTS}>{value}</ReactMarkdown>;
+  const markdown=<ReactMarkdown remarkPlugins={record?[remarkGfm,record,remarkSoftBreaks]:REMARK_PLUGINS} components={COMPONENTS}>{value}</ReactMarkdown>;
   return carried?<LiveCode value={carried}>{markdown}</LiveCode>:markdown;
 });
 export default ChatMarkdown;
