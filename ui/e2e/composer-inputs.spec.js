@@ -4678,3 +4678,55 @@ test("a selection longer than Cite takes shows Cite off, saying it is too long a
     await expect(cite).toHaveAttribute("title","Cite selected assistant text");
   }finally{await harness.close()}
 });
+
+// Each thread keeps its own draft and shelf, and so does the new task: a draft typed in one thread showed in the next thread opened,
+// typing there went on after it, and a file left on the shelf followed into New task, so text meant for one thread could be sent in
+// another (tour L10-17). Here two threads and the new task each get a draft, one of them a file, and each comes back as it was.
+test("each thread and the new task keep their own draft and shelf, and a send goes from the thread it was typed in",async({page},testInfo)=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Read the tide tables."}],others:["Second thread"]});
+  try{
+    const composer=page.getByTestId("composer");
+    const open=async name=>{
+      const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+      await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+      await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");await expect(composer).toBeEnabled();
+    };
+    const newTask=async()=>{await page.getByRole("button",{name:"New task",exact:true}).first().click();await expect(page.locator(".welcome h1")).toBeVisible()};
+    const notes=testInfo.outputPath("tide-notes.txt");await writeFile(notes,"High tide 06:12, low tide 12:24.\n");
+    // The first thread: a draft and a file on its shelf.
+    await composer.click();await page.keyboard.type("Draft A: read the tide tables.",{delay:15});
+    await chooseFiles(page,[notes]);await expect(chips(page).filter({hasText:"tide-notes.txt"})).toHaveCount(1);
+    await expect(chips(page).filter({hasText:"tide-notes.txt"})).not.toHaveAttribute("aria-busy","true");
+    // The second thread opens on an empty composer, and its own draft is typed there.
+    await open("Second thread");
+    await expect(composer).toHaveValue("");await expect(chips(page)).toHaveCount(0);
+    await composer.click();await page.keyboard.type("Draft B: compare the sizes.",{delay:15});
+    // The new task too.
+    await newTask();
+    await expect(composer).toHaveValue("");await expect(chips(page)).toHaveCount(0);
+    await composer.click();await page.keyboard.type("Draft N: plan the week.",{delay:15});
+    await shootBoth(page,"per-thread-draft-new-task",()=>expect(composer).toBeInViewport());
+    // Each comes back as it was left, the file with the first thread's draft.
+    await open("Composer thread");
+    await expect(composer).toHaveValue("Draft A: read the tide tables.");await expect(chips(page)).toHaveCount(1);await expect(chips(page).first()).toContainText("tide-notes.txt");
+    await shootBoth(page,"per-thread-draft-first-thread",()=>expect(composer).toBeInViewport());
+    await open("Second thread");
+    await expect(composer).toHaveValue("Draft B: compare the sizes.");await expect(chips(page)).toHaveCount(0);
+    await shootBoth(page,"per-thread-draft-second-thread",()=>expect(composer).toBeInViewport());
+    await newTask();
+    await expect(composer).toHaveValue("Draft N: plan the week.");await expect(chips(page)).toHaveCount(0);
+    // Typing goes on in the thread's own draft, and its send carries only that.
+    await open("Composer thread");
+    await composer.click();await page.keyboard.press("End");await page.keyboard.type(" Then summarise.",{delay:15});
+    await expect(composer).toHaveValue("Draft A: read the tide tables. Then summarise.");
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Read the tide tables.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(composer).toHaveValue("");await expect(chips(page)).toHaveCount(0);
+    const sent=sentTexts(harness);expect(sent,"the messages the first thread has").toHaveLength(2);
+    expect(sent[1]).toContain("Draft A: read the tide tables. Then summarise.");expect(sent[1]).not.toContain("Draft B");expect(sent[1]).not.toContain("Draft N");
+    // The others still hold theirs.
+    await open("Second thread");await expect(composer).toHaveValue("Draft B: compare the sizes.");
+    await newTask();await expect(composer).toHaveValue("Draft N: plan the week.");
+  }finally{await harness.close()}
+});

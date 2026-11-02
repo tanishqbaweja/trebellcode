@@ -737,18 +737,24 @@ test("a background send waiting for the turn support does not go once a thread i
     const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",draft="A draft for this thread";
     await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
     await expect(composer).toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue("");
-    // The thread opened meanwhile lets the composer go: no longer sending, with the task's text back as a draft that is kept, and its
-    // draft is the person's to write.
+    // The thread opened meanwhile lets the composer go: no longer sending, with the thread's own draft (none yet), which is the
+    // person's to write. The task's text went back to the new task it was typed in, as a draft that is kept: it came back in the
+    // thread's composer, where a send would have sent it there (tour L10-17).
     const row=page.locator(".thread-row").filter({hasText:"Native streaming"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
-    await expect(composer).not.toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue(task);
+    await expect(composer).not.toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue("");
     await expect(page.getByTestId("composer-sending")).toHaveCount(0);
-    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type(draft,{delay:5});await expect(composer).toHaveValue(draft);
+    await composer.click();await page.keyboard.type(draft,{delay:5});await expect(composer).toHaveValue(draft);
     await script.release();
     // Once the turn support has come the task does not start from that thread, whose composer and rows stay as they are.
     await settle(page);
     await expect(composer).toHaveValue(draft);await expect(row).toHaveClass(/active/);
     expect(fixture.threadStore.list("native"),"no task started").toHaveLength(1);await expect(page.locator(".thread-row")).toHaveCount(1);
     await shootModes(page,"background-send-thread-opened",()=>expect(composer).toHaveValue(draft));
+    // Back on New task, the task's text is there to send again, and the thread keeps its own draft.
+    await page.getByRole("button",{name:"New task",exact:true}).first().click();await expect(page.locator(".welcome h1")).toBeVisible();
+    await expect(composer).toHaveValue(task);
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).toHaveValue(draft);
+    expect(fixture.threadStore.list("native"),"still no task started").toHaveLength(1);
     await appStays(page);
   }finally{await script.drop();await fixture.close()}
 });

@@ -804,6 +804,16 @@ const CITE_SENTENCE="Use the cited assistant text as context.",CITE_NOTE=/( ?)Us
 // remote environment's copy): on the draft with its chip, as a plain attachment Edit from here brought back, or with the file chip of
 // a queued follow-up loaded again.
 const CITE_FILE=/(?:^|[\\/])(?:\d{10,}-[0-9a-f]{8}-)+assistant-citation\.txt$/i;
+// A context chip as one key, to tell chips apart.
+const chipKey=item=>typeof item==="string"?item:JSON.stringify(item);
+// What of a draft's files and context chips a send (sent) did not take, each chip going with its file (addContextPath), so a chip
+// never goes while its file stays on the shelf as a plain attachment.
+function lessSent({attachments=[],contextChips=[]},sent){
+  const sentChips=sent?.contextChips||[],files=new Set([...(sent?.attachments||[]),...sentChips.map(item=>item?.path).filter(Boolean)]),chips=new Set(sentChips.map(chipKey));
+  return {attachments:attachments.filter(path=>!files.has(path)),contextChips:contextChips.filter(item=>!chips.has(chipKey(item)))};
+}
+// A draft's text given back (next) before the composer's (current), between them a line (between), unless the composer has it.
+const draftBefore=(next,current,between)=>!next?current:!String(current||"").trim()?next:String(current).includes(next)?current:next.replace(/\s+$/,"")+between+current;
 
 // Why dictation stopped, by the browser's speech recognition error; any other error gets the last line. The mic shows on from the
 // press. A recognition the browser has not started listening for within DICTATION_WAIT_MS is let go, and one that ends without
@@ -1430,6 +1440,22 @@ export default function App(){
   // The draft of each send on its way, by its composer hold (send()): its files and context leave the composer when another thread
   // takes the view, and come back when the send's own thread is opened again before its turn starts (openThreadInternal).
   const sendDraftsRef=useRef(new WeakMap());
+  // Each thread keeps its own draft and shelf, and so does the new task (""): the view leaving one for another sets its draft aside
+  // here and brings back the other's, so text meant for one thread is never sent in another. A draft typed in one thread showed in
+  // the next one opened, and typing there went on after it (tour L10-17). draftNowRef: the composer as of the last render.
+  const threadDraftsRef=useRef(new Map()),draftNowRef=useRef(null);
+  draftNowRef.current={text:prompt,attachments,contextChips,queuedEditId,queueEditDraft};
+  // What is set aside for the view left (from, its thread's id): its draft, or the one a queued follow-up's edit set aside (the edit
+  // ends unsaved), less the files and context of a send on its way, which go with its hold, and with the text of a held one, which
+  // does not go once released, put back before it. Then the draft of the view shown (to) comes back, or an empty composer.
+  function swapThreadDraft(from,to){
+    const now=draftNowRef.current,drafts=threadDraftsRef.current,sending=submittingRef.current?sendDraftsRef.current.get(submittingRef.current):null;
+    const kept=now.queuedEditId?now.queueEditDraft||{}:now,aside={text:draftBefore(sending?.held&&String(sending.text||""),kept.text||"","\n\n"),...lessSent(kept,sending)};
+    drafts.delete(from=String(from||""));if(aside.text||aside.attachments.length||aside.contextChips.length)drafts.set(from,aside);
+    const next=drafts.get(to=String(to||""));drafts.delete(to);
+    setPrompt(next?.text||"");setAttachments(next?.attachments||[]);setContextChips(next?.contextChips||[]);setPromptHistoryIndex(-1);
+    if(now.queuedEditId){setQueuedEditId(null);setQueueEditDraft(null)}
+  }
   // The Stop on its way (stop()): the turn or send it is for, so a second press sends nothing more, and the thread it stops, whose
   // Stop reads "Stopping…" until the turn has ended. The turn notes keep the turns a Stop was sent for until they end, for a
   // thread left and opened again meanwhile (openThread).
@@ -3822,8 +3848,8 @@ export default function App(){
   // and again once the thread is opened.
   // A new task asked for from the new task (on it, or back from a page opened from it) keeps its unsent draft with the agent and the
   // collaboration mode chosen for it, and a send still on its way in the thread left goes on there without holding the new task's
-  // composer (send).
-  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;shownWelcomeRef.current=null;setNewTaskView(view=>view+1);setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;liveSendRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([]);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);providerAgentsListedRef.current=false;if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  // composer (send). One asked for from a thread sets the thread's draft aside and shows the new task's own (swapThreadDraft).
+  function showNewTask(){const leftNewTask=!activeThreadRef.current;if(!leftNewTask)swapThreadDraft(activeThreadRef.current.id,"");rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;shownWelcomeRef.current=null;setNewTaskView(view=>view+1);setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;liveSendRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);providerAgentsListedRef.current=false;if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -3972,8 +3998,9 @@ export default function App(){
     // The composer is held only for a send of the thread shown: another thread opened releases it, as a new task does (showNewTask).
     // The send's files and context go with its hold: the thread opened does not show them (a send from it would carry them again),
     // and the send's own thread, opened again before its turn starts, has them back. A send in the background still waiting for its
-    // script (held, sendInBackground) does not go once released, so its text comes back to the composer, as a draft that is kept.
-    if(previousThreadId!==thread.id&&submittingRef.current){const left=sendDraftsRef.current.get(submittingRef.current);dropSentDraft(left);if(left?.held)restoreSentDraft({text:left.text});submittingRef.current=null;setSubmitting(false)}
+    // script (held, sendInBackground) does not go once released, so its text comes back to its own thread's draft, as a draft that is
+    // kept: the view left keeps its draft (swapThreadDraft), and the thread opened shows its own.
+    if(previousThreadId!==thread.id){swapThreadDraft(previousThreadId,thread.id);if(submittingRef.current){submittingRef.current=null;setSubmitting(false)}}
     if(pendingSend?.view&&!submittingRef.current){submittingRef.current=pendingSend.view;setSubmitting(true);returnSentDraft(sendDraftsRef.current.get(pendingSend.view))}
     // A Stop already sent for the turn that still runs reads Stopping again, and a press sends no second one (stop()).
     const stoppedTurnKey=resumedRunning&&resumedTurnId?String(thread.id)+"\0"+resumedTurnId:null;
@@ -4424,9 +4451,8 @@ export default function App(){
   // The files and context chips that went with a send leave the composer, each chip with its file (addContextPath), so a chip never
   // goes while its file stays on the shelf as a plain attachment.
   function dropSentDraft(draft){
-    const sentChips=draft?.contextChips||[],files=new Set([...(draft?.attachments||[]),...sentChips.map(item=>item?.path).filter(Boolean)]),chips=new Set(sentChips.map(item=>typeof item==="string"?item:JSON.stringify(item)));
-    if(files.size)setAttachments(current=>current.filter(path=>!files.has(path)));
-    if(chips.size)setContextChips(current=>current.filter(item=>!chips.has(typeof item==="string"?item:JSON.stringify(item))));
+    if(draft?.attachments?.length||draft?.contextChips?.some(item=>item?.path))setAttachments(current=>lessSent({attachments:current},draft).attachments);
+    if(draft?.contextChips?.length)setContextChips(current=>lessSent({contextChips:current},draft).contextChips);
   }
   // The files and context of a send still on its way, back beside what the composer holds (its text is in the conversation).
   function returnSentDraft(draft){if(draft&&(draft.attachments?.length||draft.contextChips?.length))restoreFailedDraft({attachments:draft.attachments,contextChips:draft.contextChips})}
@@ -4436,17 +4462,12 @@ export default function App(){
   // a failed background draft, which went into the next message.
   function restoreSentDraft(draft){restoreFailedDraft(draft,"\n\n")}
   function restoreFailedDraft(draft,between="\n\n--- recovered failed background draft ---\n"){
-    setPrompt(current=>{
-      const next=String(draft?.text||"");if(!next)return current;
-      if(!String(current||"").trim())return next;
-      if(String(current).includes(next))return current;
-      return next.replace(/\s+$/,"")+between+current;
-    });
+    setPrompt(current=>draftBefore(String(draft?.text||""),current,between));
     if(draft?.attachments?.length)setAttachments(current=>[...new Set([...draft.attachments,...(current||[])])]);
     if(draft?.contextChips?.length)setContextChips(current=>{
       const merged=[];const seen=new Set();
       for(const item of [...(draft?.contextChips||[]),...(current||[])]){
-        const key=typeof item==="string"?item:JSON.stringify(item);
+        const key=chipKey(item);
         if(seen.has(key))continue;seen.add(key);merged.push(item);
       }
       return merged;
