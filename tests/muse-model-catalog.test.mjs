@@ -133,6 +133,9 @@ test("the read lists Muse Code's own commands: the skills of a session on the sa
   const byName=Object.fromEntries(museSkillCommands(SKILLS).map(command=>[command.name,command]));
   assert.deepEqual(byName.doctor,{name:"doctor",description:"Diagnose Muse Code product/runtime issues from installed binary evidence."});
   assert.deepEqual(byName.import,{name:"import",description:"Import a Claude Code, Codex, or Grok session",input:{hint:"<session-id-or-path>"}});
+  // A first sentence past 96 characters is cut at a word, so a menu row stays a line or two: Muse's ran to 250, seven lines a row.
+  assert.equal(byName["game-3d-visuals"].description,"Use for 3D work where the user wants a polished, art-directed look: recreating an object or…");
+  assert.ok(museSkillCommands(SKILLS).every(command=>command.description.length<=97),"every summary fits");
   // A row without a selector and a later row of one already listed are left out; a leading / is not part of the name.
   assert.deepEqual(museSkillCommands({skills:[{selector:"/ship",description:"Ships it. Then more.",displayName:"ship"},{selector:"ship",description:"Again."},{selector:"",description:"None."},{selector:"bare",description:"",displayName:"Bare one"}]}),[{name:"ship",description:"Ships it."},{name:"bare",description:"Bare one"}]);
   assert.deepEqual(museSkillCommands({}),[]);

@@ -141,14 +141,17 @@ async function askForModels(host,version){
 }
 
 // Muse Code's own slash commands, as the composer's / menu offers a harness's commands: the skills a session lists (skill/list, the
-// shortcuts Muse's own typed dispatch takes), each by its selector, with the first sentence of its description (else its name) and
-// its argument hint. A row without a selector, and a later row of one already listed, are left out. Trebell asked Muse for none, so
-// the / menu on Muse Code offered only Trebell's own commands (tour L10-13).
+// shortcuts Muse's own typed dispatch takes), each by its selector, with the first sentence of its description (else its name),
+// cut at a word to SKILL_SUMMARY_CHARS, and its argument hint. A row without a selector, and a later row of one already listed, are
+// left out. Trebell asked Muse for none, so the / menu on Muse Code offered only Trebell's own commands (tour L10-13). Muse's first
+// sentences run to 250 characters, which took a menu row to seven lines.
+const SKILL_SUMMARY_CHARS=96;
 export function museSkillCommands(result={}){
   const byName=new Map();
   for(const skill of Array.isArray(result?.skills)?result.skills:[]){
     const name=clean(skill?.selector).replace(/^\/+/,"");if(!name||byName.has(name))continue;
-    const said=clean(skill?.description),description=said.match(/^.*?[.!?](?=\s|$)/)?.[0]||said||clean(skill?.displayName),hint=clean(skill?.argumentHint);
+    const said=clean(skill?.description),sentence=said.match(/^.*?[.!?](?=\s|$)/)?.[0]||said;
+    const description=(sentence.length>SKILL_SUMMARY_CHARS?sentence.slice(0,SKILL_SUMMARY_CHARS).replace(/\s+\S*$/,"").replace(/[\s,;:]+$/,"")+"…":sentence)||clean(skill?.displayName),hint=clean(skill?.argumentHint);
     byName.set(name,{name,...(description?{description}:{}),...(hint?{input:{hint}}:{})});
   }
   return [...byName.values()];
