@@ -73,6 +73,8 @@ const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity","opencode","m
 // The tool kinds whose work ends with the call. A harness that ran any other (a command, a subagent, an MCP tool, a call of no kind)
 // may have left it running past its turn: a dev server or a watcher, or a Grok background task that answers in a wake turn of its own.
 const SETTLED_TOOL_KINDS=new Set(["read","edit","delete","move","search","fetch","switch_mode"]);
+// The statuses a stored tool call ends with: a later update of one goes nowhere (toolUpdateTurn).
+const SETTLED_ITEM_STATUSES=new Set(["completed","failed","declined","stopped","cancelled","canceled","rejected","skipped","notRun"]);
 function expandableNativeToolNamespaces(values=[]){
   const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   const active=requested.filter(name=>!RETIRED_NATIVE_TOOL_NAMESPACES.has(name));
@@ -819,6 +821,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(done)return forgetToolItem(threadId,toolCallId);
     let calls=toolWrites.get(threadId);if(!calls)toolWrites.set(threadId,calls=new Map());
     calls.set(toolCallId,{turnId,at:Date.now(),item:null,timer:null});
+  }
+  // The turn a tool update goes to: the one that holds its call. An update that comes after the call's turn ended (a run its harness let
+  // go on, a stop or a restart that cut it off) goes to that earlier turn, so a thread stores each call once, and one for a call that
+  // turn already settled is left out: the first result is the one kept (null). A call no turn holds yet starts in the turn running.
+  function toolUpdateTurn(threadId,toolCallId,turnId){
+    if(toolWrites.get(threadId)?.has(toolCallId))return toolWrites.get(threadId).get(toolCallId).turnId;
+    const turns=peekThread(threadId)?.turns||[];
+    for(let index=turns.length-1;index>=0;index--){
+      const item=(turns[index].items||[]).find(entry=>entry?.id===toolCallId);if(!item)continue;
+      if(turns[index].id===turnId||item.runsPastTurn===true)return turns[index].id;
+      return SETTLED_ITEM_STATUSES.has(item.status)?null:turns[index].id;
+    }
+    return turnId;
   }
   function deferToolItem(threadId,toolCallId,turnId,item){
     const entry=toolWrites.get(threadId)?.get(toolCallId),now=Date.now();
@@ -1610,10 +1625,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }else if(type==="tool_call_update"){
       const key=threadId+":"+String(update.toolCallId||"");
       const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
-      if(turnId){if(lifecycle.terminal)writeToolItem(threadId,String(update.toolCallId||""),turnId,item,{done:true});else deferToolItem(threadId,String(update.toolCallId||""),turnId,item)}
-      if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId,itemId:item.id,delta:lifecycle.outputDelta});
-      if(lifecycle.terminal){liveToolOutput.delete(key);emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()})}
-      else{if(lifecycle.output)liveToolOutput.set(key,lifecycle.output);emit("item/tool/progress",{threadId,turnId,item})}
+      const callTurnId=turnId&&toolUpdateTurn(threadId,String(update.toolCallId||""),turnId);if(turnId&&!callTurnId)return;
+      if(callTurnId){if(lifecycle.terminal)writeToolItem(threadId,String(update.toolCallId||""),callTurnId,item,{done:true});else deferToolItem(threadId,String(update.toolCallId||""),callTurnId,item)}
+      if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId:callTurnId,itemId:item.id,delta:lifecycle.outputDelta});
+      if(lifecycle.terminal){liveToolOutput.delete(key);emit("item/completed",{threadId,turnId:callTurnId,item,completedAtMs:Date.now()})}
+      else{if(lifecycle.output)liveToolOutput.set(key,lifecycle.output);emit("item/tool/progress",{threadId,turnId:callTurnId,item})}
     }else if(type==="plan"||type==="plan_update"||type==="plan_removed"){
       const planEvent=acpPlanEvent(update);
       if(turnId&&planEvent)emit("turn/plan/updated",{threadId,turnId,...planEvent});

@@ -103,18 +103,26 @@ function toolOutput(item={}){
   return item.success===false?"Tool execution failed.":"Tool completed.";
 }
 
+// A call stored twice (a late update that an earlier build wrote into the turn running then) goes out once, where it was made, with
+// the output it settled with first: a provider takes exactly one output for each call and refuses the whole request otherwise.
+const SETTLED_TOOL_STATUSES=new Set(["completed","failed","declined","cancelled","canceled","rejected","skipped","stopped","notRun"]);
+const toolCallItem=item=>item?.type==="dynamicToolCall"&&item.namespace&&item.tool;
+
 export function nativeMessagesFromThread(thread={}, {afterTurnId=null}={}){
   const messages=[];
   const turns=Array.isArray(thread.turns)?thread.turns:[];
   const boundary=afterTurnId==null?-1:turns.findIndex(turn=>String(turn?.id||"")===String(afterTurnId));
   const source=boundary>=0?turns.slice(boundary+1):turns;
+  const settled=new Map(),sent=new Set();
+  for(const turn of source)for(const item of Array.isArray(turn.items)?turn.items:[])if(toolCallItem(item)&&item.id&&!settled.has(String(item.id))&&SETTLED_TOOL_STATUSES.has(item.status))settled.set(String(item.id),item);
   for(const turn of source){
     for(const item of Array.isArray(turn.items)?turn.items:[]){
       if(item?.type==="userMessage"){
         const text=itemText(item.content);if(text)messages.push({role:"user",content:text});
-      }else if(item?.type==="dynamicToolCall"&&item.namespace&&item.tool){
+      }else if(toolCallItem(item)){
+        if(item.id){if(sent.has(String(item.id)))continue;sent.add(String(item.id))}
         messages.push({role:"assistant",content:"",toolCalls:[{id:String(item.id||randomUUID()),namespace:String(item.namespace),name:String(item.tool),arguments:item.arguments||{}}]});
-        messages.push({role:"tool",toolCallId:String(item.id||""),content:toolOutput(item)});
+        messages.push({role:"tool",toolCallId:String(item.id||""),content:toolOutput(item.id&&settled.get(String(item.id))||item)});
       }else if(item?.type==="agentMessage"&&item.text){
         messages.push({role:"assistant",content:String(item.text)});
       }
@@ -645,10 +653,20 @@ export class NativeAgentSession{
     if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
     const controllerToolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
     const rawExecutor=call=>this.executeTool(call,controllerToolContext);
+    // A call is settled once, as the model saw it: one the loop settled while its run went on (its time limit's watchdog gave up on
+    // it, or its executor threw) is reported with the loop's result, and its run's own result, when it comes, is not reported again.
+    const openCalls=new Map();
+    const toolUpdate=(call,kind,fields)=>this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,...fields}});
+    const settledByLoop=event=>{
+      const data=event?.name==="native.tool.completed"&&event.data?.success!==true?event.data:null,open=data?openCalls.get(String(data.callId)):null;if(!open)return;
+      openCalls.delete(String(data.callId));open.settled=true;
+      const output={success:false,error:String(data.error||"Tool execution failed."),...(data.exitCode!=null?{exitCode:data.exitCode}:{})};
+      toolUpdate(open.call,open.kind,{rawOutput:output,content:contentItems(output),status:"failed"});
+    };
     // takenRead: filled in when the call moves a process's cursor, so a failure before the model has the result can give it back.
     const shapedExecutor=async(call,takenRead)=>{
       if(draftsOn)this.#withdrawDraft("tool");
-      const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other";
+      const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other",open={call,kind,settled:false};openCalls.set(String(call.id),open);
       const internalRecoveryRead=call.namespace==="trebell_workspace"&&call.name==="read_file"&&/^native-recovery-(?:snapshot|restore-check)-/.test(String(call.id||""));
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
       // A status call's wait (wait_ms) also ends, with the status as usual, when the person steers the turn.
@@ -754,7 +772,8 @@ export class NativeAgentSession{
       }
       const replaceText=call.namespace==="trebell_workspace"&&call.name==="replace_text";
       const modelOutput=terminalRun?compactTerminalModelOutput(modelSource):replaceText?replaceTextModelOutput(modelSource):modelSource,failed=uiOutput?.success===false;
-      this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,rawOutput:uiOutput,content:contentItems(replaceText?modelOutput:uiOutput),status:failed?"failed":"completed"}});
+      if(openCalls.get(String(call.id))===open)openCalls.delete(String(call.id));
+      if(!open.settled)toolUpdate(call,kind,{rawOutput:uiOutput,content:contentItems(replaceText?modelOutput:uiOutput),status:failed?"failed":"completed"});
       return modelToolResult(modelOutput);
     };
     // A call that throws reaches the model as a failure, without the output its process read took, so the read is given back:
@@ -772,9 +791,10 @@ export class NativeAgentSession{
     };
     let openAiControlGateResponseId="";
     // With server compaction configured, record on every model request whether context_management rides on it.
-    const loopOnEvent=this.openAiServerCompactionThreshold&&typeof this.onEvent==="function"
+    const forwardEvent=this.openAiServerCompactionThreshold&&typeof this.onEvent==="function"
       ?event=>this.onEvent(event?.name==="native.model.requested"?{...event,data:{...(event.data||{}),serverCompactionArmed:Boolean(this.openAiServerCompactionRequest())}}:event)
       :this.onEvent;
+    const loopOnEvent=event=>{try{settledByLoop(event)}catch{}forwardEvent?.(event)};
     // A prompt the completion gate judges is only answered once the gate accepts, and one that names a tool to call is rejected
     // without that call, so neither shows drafts; both are decided on the exact messages the loop starts from.
     // Read only refuses every change, so the loop answers a request for one instead of pushing toward it, and the gate never judges it.
