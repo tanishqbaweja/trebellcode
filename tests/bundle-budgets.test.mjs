@@ -162,6 +162,12 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // harness of a model, which holds what Trebell Native's prices in Settings' Custom models card and the Settings search's price
 // words add to the Settings page, 370 / 151 bytes. The first bundle went from 614.4 / 199.3 to 614.8 / 199.6 KB and the lazy chunks
 // from 817.9 / 271.0 to 817.8 / 271.0 KB.
+// Landed with them (land-214), the fixes to Native's automatic check turn (its card's plain words and a check that was not allowed
+// shown as stopped, with the automatic repair and check starters made one and the two worktree setup waits made one) and to Muse
+// Code's sandbox (no UI code) took the lazy chunks to 816.8 / 271.1 KB: turn-support.js 49,633 / 16,380 to 48,602 / 16,469 bytes. They
+// raise no limit either: turn-support.js answers Trebell's tool calls through one helper, notes a slash command's rows through
+// another and takes the alert sentence App already has from composer-state.js, 46,618 / 16,395 bytes, so the lazy chunks are
+// 814.8 / 271.0 KB and the first bundle stays 614.8 / 199.6 KB.
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:818.7,gzipKB:271.0}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 

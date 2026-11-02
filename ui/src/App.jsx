@@ -18,7 +18,7 @@ import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx"
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, ruleRuns, shadowedKeybindings, shortcutHint } from "./keybindings.js";
 import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
-import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
+import { isVideoAttachment, restoreQueuedDraft, sentenceText } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, movedFileMention, namesFileAt, offeredFileMentions, pickedFileMention, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
@@ -466,8 +466,6 @@ async function resumeWithBoundedHistory(rpc,params,onAnswer=()=>{}){
 }
 
 function titleOf(thread){return threadTitle(thread)}
-// A message as a sentence: trimmed, with a full stop unless it already ends in one (or in ! ? …).
-function sentenceText(value){const text=String(value||"").trim();return !text||/[.!?…]$/.test(text)?text:text+"."}
 function modelLabel(id){return String(id||"")}
 function compactModelLabel(id){
   const full=modelLabel(id);

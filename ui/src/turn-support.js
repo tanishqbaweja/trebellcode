@@ -16,7 +16,7 @@ import { requestTurnVerificationPlan, verificationPlanEvent, verificationStepWor
 import { maybeStartAutomaticVerificationContinuation, maybeStartAutomaticVerificationRepair } from "./auto-verification-continuation.js";
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
-import { isVideoAttachment } from "./composer-state.js";
+import { isVideoAttachment, sentenceText } from "./composer-state.js";
 import { fanoutWorkspaceError, threadForWorktree } from "./fanout-utils.js";
 import { threadListParams } from "./thread-list-query.js";
 import { configuredModelOptions } from "../../src/model-options.mjs";
@@ -30,112 +30,79 @@ import { codexGoalFirstMessage } from "../../src/codex-goal-start.mjs";
 
 export { repositoryContextEntries } from "./context-provenance.js";
 
-function sentenceText(value){const text=String(value||"").trim();return !text||/[.!?…]$/.test(text)?text:text+"."}
-
 async function recordBrowserVerificationEvidence(client,params,tool,result,success=true){
   const threadId=String(params?.threadId||"").trim(),turnId=String(params?.turnId||"").trim();if(!client?.request||!threadId||!turnId)return;
   const evidence=browserVerificationReceipt({tool,result,success,callId:params?.callId||params?.toolCallId||null});if(!evidence)return;
   await client.request("thread/verification/evidence/record",{threadId,turnId,evidence}).catch(()=>null);
 }
 
-// A tool the agent calls that Trebell itself answers (item/tool/call): each answer goes back on the socket that asked.
+// A tool the agent calls that Trebell itself answers (item/tool/call): each answer goes back on the socket that asked. answer runs a
+// tool's work and sends back the content it gives, or, when it throws, the error's text as a failure, after failed (the browser
+// records the failure as evidence).
 export function answerToolCall({client,message,permissionMode,activeThread,linkPullRequestUrl,projectPath,workspaceEnvironmentId,runtimeCapabilities,delegateTask,loadSharedToolCatalog}){
-  const p=message.params||{};
-  if(p.namespace==="trebell_browser"){
-    (async()=>{
-      try{
-        if(!window.trebellDesktop?.browser)throw new Error("Agent browser is only available in the desktop app.");
-        const {sharedToolResponseContent}=await loadSharedToolCatalog();
-        let result;
-        if(p.tool==="open")result=await window.trebellDesktop.browser.navigate(p.arguments?.url);
-        else if(p.tool==="back")result=await window.trebellDesktop.browser.back();
-        else if(p.tool==="forward")result=await window.trebellDesktop.browser.forward();
-        else if(p.tool==="reload")result=await window.trebellDesktop.browser.reload();
-        else if(p.tool==="snapshot")result=await window.trebellDesktop.browser.snapshot();
-        else if(p.tool==="click")result=await window.trebellDesktop.browser.click(p.arguments?.ref);
-        else if(p.tool==="type")result=await window.trebellDesktop.browser.type(p.arguments?.ref,p.arguments?.text);
-        else if(p.tool==="runtime")result=await window.trebellDesktop.browser.runtime();
-        else if(p.tool==="set_viewport")result=await window.trebellDesktop.browser.setViewport(p.arguments?.width,p.arguments?.height);
-        else if(p.tool==="screenshot"){
-          const shot=await window.trebellDesktop.browser.screenshot();
-          await recordBrowserVerificationEvidence(client,p,p.tool,shot,true);
-          client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({url:shot.url,title:shot.title,width:shot.width,height:shot.height})}]),success:true});
-          return;
-        }else throw new Error("Unknown Trebell browser tool: "+p.tool);
-        await recordBrowserVerificationEvidence(client,p,p.tool,result,true);
-        client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
-      }catch(error){
-        await recordBrowserVerificationEvidence(client,p,p.tool,null,false);
-        client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
-      }
-    })();
-    return;
-  }
-  if(p.namespace==="trebell_computer"){
-    (async()=>{
-      try{
-        if(!desktopBridgeToolAvailability(window.trebellDesktop).computer)throw new Error("Computer use is only available in the Windows desktop app.");
-        const args=p.arguments||{};
-        if(p.tool!=="screenshot"&&permissionMode!=="full")throw new Error("Desktop mouse and keyboard control requires Full access mode.");
-        const {sharedToolResponseContent}=await loadSharedToolCatalog();
-        if(p.tool==="screenshot"){
-          const shot=await window.trebellDesktop.computer.screenshot();
-          client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_computer",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({width:shot.width,height:shot.height,displayId:shot.displayId,originX:shot.originX,originY:shot.originY,scaleFactor:shot.scaleFactor})}]),success:true});
-          return;
-        }
-        let result;
-        if(p.tool==="move")result=await window.trebellDesktop.computer.move(args.x,args.y);
-        else if(p.tool==="click")result=await window.trebellDesktop.computer.click(args);
-        else if(p.tool==="scroll")result=await window.trebellDesktop.computer.scroll(args.delta);
-        else if(p.tool==="type")result=await window.trebellDesktop.computer.type(args.text);
-        else if(p.tool==="key")result=await window.trebellDesktop.computer.key(args.key);
-        else throw new Error("Unknown Trebell computer tool: "+p.tool);
-        client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_computer",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
-      }catch(error){
-        client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
-      }
-    })();
-    return;
-  }
-  if(p.namespace==="trebell_source_control"){
-    (async()=>{
-      try{
-        if(p.tool!=="link_pull_request")throw new Error("Unknown Trebell source-control tool: "+p.tool);
-        if(!activeThread?.id)throw new Error("A Trebell thread must be open before linking a pull request.");
-        const result=await linkPullRequestUrl(p.arguments?.url,"agent");
-        client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify({linked:true,number:result?.link?.number,url:result?.link?.url})}],success:true});
-      }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
-    })();
-    return;
-  }
-  if(p.namespace==="trebell_repo"){
-    (async()=>{
-      try{
-        if(!projectPath)throw new Error("A workspace must be open before querying repository intelligence.");
-        const args=p.arguments||{},params=new URLSearchParams({path:projectPath});if(workspaceEnvironmentId)params.set("environmentId",workspaceEnvironmentId);
-        let result;
-        if(p.tool==="search_symbols"){params.set("q",String(args.query||""));if(args.limit!=null)params.set("limit",String(args.limit));result=await api("/api/context/symbols?"+params)}
-        else if(p.tool==="file_relations"){params.set("file",String(args.path||""));result=await api("/api/context/relations?"+params)}
-        else throw new Error("Unknown Trebell repository tool: "+p.tool);
-        client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
-      }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
-    })();
-    return;
-  }
-  if(p.namespace==="trebell_delegate"){
-    (async()=>{
-      try{
-        if(p.tool!=="delegate")throw new Error("Unknown Trebell delegation tool: "+p.tool);
-        if(!runtimeCapabilities.delegation||!runtimeCapabilities.dynamicTools)throw new Error("The active runtime cannot invoke Trebell delegation tools.");
-        const result=await delegateTask(p.arguments||{});
-        client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify({
-          started:true,parentThreadId:result.parentThreadId,threadId:result.thread?.id||null,turnId:result.turnId||null,
-          cwd:result.workspace?.cwd||null,branch:result.workspace?.branch||null,isolation:result.spec?.isolation||null,permissions:result.spec?.permissions||null,model:result.spec?.model||null,budget:result.spec?.budget||null,
-        })}],success:true});
-      }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
-    })();
-    return;
-  }
+  const p=message.params||{},json=value=>[{type:"inputText",text:JSON.stringify(value)}];
+  const answer=(run,failed)=>{(async()=>{
+    try{client.respond(message.id,{contentItems:await run(),success:true})}
+    catch(error){await failed?.();client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
+  })()};
+  if(p.namespace==="trebell_browser")return answer(async()=>{
+    const browser=window.trebellDesktop?.browser;
+    if(!browser)throw new Error("Agent browser is only available in the desktop app.");
+    const {sharedToolResponseContent}=await loadSharedToolCatalog();
+    let result;
+    if(p.tool==="open")result=await browser.navigate(p.arguments?.url);
+    else if(["back","forward","reload","snapshot","runtime"].includes(p.tool))result=await browser[p.tool]();
+    else if(p.tool==="click")result=await browser.click(p.arguments?.ref);
+    else if(p.tool==="type")result=await browser.type(p.arguments?.ref,p.arguments?.text);
+    else if(p.tool==="set_viewport")result=await browser.setViewport(p.arguments?.width,p.arguments?.height);
+    else if(p.tool==="screenshot"){
+      const shot=await browser.screenshot();
+      await recordBrowserVerificationEvidence(client,p,p.tool,shot,true);
+      return sharedToolResponseContent("trebell_browser",[{type:"inputImage",imageUrl:shot.dataUrl},...json({url:shot.url,title:shot.title,width:shot.width,height:shot.height})]);
+    }else throw new Error("Unknown Trebell browser tool: "+p.tool);
+    await recordBrowserVerificationEvidence(client,p,p.tool,result,true);
+    return sharedToolResponseContent("trebell_browser",json(result));
+  },()=>recordBrowserVerificationEvidence(client,p,p.tool,null,false));
+  if(p.namespace==="trebell_computer")return answer(async()=>{
+    if(!desktopBridgeToolAvailability(window.trebellDesktop).computer)throw new Error("Computer use is only available in the Windows desktop app.");
+    const args=p.arguments||{},computer=window.trebellDesktop.computer;
+    if(p.tool!=="screenshot"&&permissionMode!=="full")throw new Error("Desktop mouse and keyboard control requires Full access mode.");
+    const {sharedToolResponseContent}=await loadSharedToolCatalog();
+    if(p.tool==="screenshot"){
+      const shot=await computer.screenshot();
+      return sharedToolResponseContent("trebell_computer",[{type:"inputImage",imageUrl:shot.dataUrl},...json({width:shot.width,height:shot.height,displayId:shot.displayId,originX:shot.originX,originY:shot.originY,scaleFactor:shot.scaleFactor})]);
+    }
+    let result;
+    if(p.tool==="move")result=await computer.move(args.x,args.y);
+    else if(p.tool==="click")result=await computer.click(args);
+    else if(p.tool==="scroll")result=await computer.scroll(args.delta);
+    else if(p.tool==="type")result=await computer.type(args.text);
+    else if(p.tool==="key")result=await computer.key(args.key);
+    else throw new Error("Unknown Trebell computer tool: "+p.tool);
+    return sharedToolResponseContent("trebell_computer",json(result));
+  });
+  if(p.namespace==="trebell_source_control")return answer(async()=>{
+    if(p.tool!=="link_pull_request")throw new Error("Unknown Trebell source-control tool: "+p.tool);
+    if(!activeThread?.id)throw new Error("A Trebell thread must be open before linking a pull request.");
+    const result=await linkPullRequestUrl(p.arguments?.url,"agent");
+    return json({linked:true,number:result?.link?.number,url:result?.link?.url});
+  });
+  if(p.namespace==="trebell_repo")return answer(async()=>{
+    if(!projectPath)throw new Error("A workspace must be open before querying repository intelligence.");
+    const args=p.arguments||{},params=new URLSearchParams({path:projectPath});if(workspaceEnvironmentId)params.set("environmentId",workspaceEnvironmentId);
+    if(p.tool==="search_symbols"){params.set("q",String(args.query||""));if(args.limit!=null)params.set("limit",String(args.limit));return json(await api("/api/context/symbols?"+params))}
+    if(p.tool==="file_relations"){params.set("file",String(args.path||""));return json(await api("/api/context/relations?"+params))}
+    throw new Error("Unknown Trebell repository tool: "+p.tool);
+  });
+  if(p.namespace==="trebell_delegate")return answer(async()=>{
+    if(p.tool!=="delegate")throw new Error("Unknown Trebell delegation tool: "+p.tool);
+    if(!runtimeCapabilities.delegation||!runtimeCapabilities.dynamicTools)throw new Error("The active runtime cannot invoke Trebell delegation tools.");
+    const result=await delegateTask(p.arguments||{});
+    return json({
+      started:true,parentThreadId:result.parentThreadId,threadId:result.thread?.id||null,turnId:result.turnId||null,
+      cwd:result.workspace?.cwd||null,branch:result.workspace?.branch||null,isolation:result.spec?.isolation||null,permissions:result.spec?.permissions||null,model:result.spec?.model||null,budget:result.spec?.budget||null,
+    });
+  });
   client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for "+(p.namespace||"default")+"/"+p.tool}],success:false});
 }
 
@@ -281,6 +248,8 @@ async function runCodexGoalCommand(deps,command){
 // keeps what it holds, and false for text that names no command, which App then sends as a message.
 export async function runSlashCommand(deps,text){
   const {currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt,setGoal,setEvents,setComposerAlert,askForModel}=deps;
+  // A row of what a command did, or why it could not, in the conversation.
+  const note=(id,title,kind="error",raw={})=>setEvents(prev=>[...prev,{id:id+"-"+Date.now(),kind,title,status:"done",raw}]);
   const [command,...rest]=text.split(/\s+/);
   const recipe=(currentProject?.recipes||[]).find(item=>item.name===command);
   if(recipe){
@@ -300,8 +269,8 @@ export async function runSlashCommand(deps,text){
         pending:true,
       });
       if(execution.permissionMode&&execution.permissionMode!==permissionMode)setPermissionMode(execution.permissionMode);
-      setEvents(prev=>[...prev,{id:"recipe-"+Date.now(),kind:"tool",title:`Started project recipe ${recipe.name}`,status:"done",raw:{recipe:recipe.name,permissionMode:execution.permissionMode,model:execution.model||model,maxChildren:execution.goalPatch?.childAgentBudget??null}}]);
-    }catch(error){setEvents(prev=>[...prev,{id:"recipe-error-"+Date.now(),kind:"error",title:`Could not run ${recipe.name}: ${error.message||String(error)}`,status:"done",raw:{}}])}
+      note("recipe",`Started project recipe ${recipe.name}`,"tool",{recipe:recipe.name,permissionMode:execution.permissionMode,model:execution.model||model,maxChildren:execution.goalPatch?.childAgentBudget??null});
+    }catch(error){note("recipe-error",`Could not run ${recipe.name}: ${error.message||String(error)}`)}
     return true;
   }
   if(command==="/compact"){
@@ -309,13 +278,13 @@ export async function runSlashCommand(deps,text){
   }
   if(command==="/ps"){
     if(runtimeCapabilities.backgroundProcesses&&activeThread?.id)openRightPanel("runtime");
-    else setEvents(prev=>[...prev,{id:"ps-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose background process controls`,status:"done",raw:{}}]);
+    else note("ps-unavailable",`${agentRuntimeLabel} does not expose background process controls`);
     return true
   }
   if(command==="/stop"){
-    if(!runtimeCapabilities.backgroundProcesses||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"stop-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose background process controls`,status:"done",raw:{}}]);return true}
-    try{await rpc.request("thread/backgroundTerminals/clean",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"background-stop-"+Date.now(),kind:"tool",title:"Stopped agent background processes",status:"done",raw:{}}])}
-    catch(error){setEvents(prev=>[...prev,{id:"background-stop-error-"+Date.now(),kind:"error",title:"Could not stop background processes: "+(error.message||String(error)),status:"done",raw:{}}])}
+    if(!runtimeCapabilities.backgroundProcesses||!activeThread?.id||!rpc){note("stop-unavailable",`${agentRuntimeLabel} does not expose background process controls`);return true}
+    try{await rpc.request("thread/backgroundTerminals/clean",{threadId:activeThread.id});note("background-stop","Stopped agent background processes","tool")}
+    catch(error){note("background-stop-error","Could not stop background processes: "+(error.message||String(error)))}
     return true
   }
   if(command==="/model"){openProviderSettings();return true}
@@ -323,15 +292,15 @@ export async function runSlashCommand(deps,text){
   if(command==="/diff"){openRightPanel("diff");return true}
   if(command==="/git"){openRightPanel("source");return true}
   if(command==="/preview"){openRightPanel("preview");return true}
-  if(command==="/agents"){if(runtimeCapabilities.delegation)openRightPanel("agents");else setEvents(prev=>[...prev,{id:"agents-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose delegated-agent controls`,status:"done",raw:{}}]);return true}
+  if(command==="/agents"){if(runtimeCapabilities.delegation)openRightPanel("agents");else note("agents-unavailable",`${agentRuntimeLabel} does not expose delegated-agent controls`);return true}
   // /review is the header's Review, and a review that does not start says why the same way.
   if(command==="/review"){await runUserAction(startReview,"Could not start review");return true}
   if(command==="/feedback"){
-    if(agentRuntime!=="codex"||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"feedback-unavailable-"+Date.now(),kind:"error",title:"Codex feedback requires an existing Codex thread",status:"done",raw:{}}]);return true}
+    if(agentRuntime!=="codex"||!activeThread?.id||!rpc){note("feedback-unavailable","Codex feedback requires an existing Codex thread");return true}
     try{
       const result=await rpc.request("feedback/upload",{classification:"bug",reason:rest.join(" ").trim()||null,threadId:activeThread.id,includeLogs:true});
-      setEvents(prev=>[...prev,{id:"feedback-"+Date.now(),kind:"tool",title:`Feedback uploaded${result?.threadId?` · ${result.threadId}`:""}`,status:"done",raw:result||{}}]);
-    }catch(error){setEvents(prev=>[...prev,{id:"feedback-error-"+Date.now(),kind:"error",title:"Feedback upload failed: "+(error.message||String(error)),status:"done",raw:{}}])}
+      note("feedback",`Feedback uploaded${result?.threadId?` · ${result.threadId}`:""}`,"tool",result||{});
+    }catch(error){note("feedback-error","Feedback upload failed: "+(error.message||String(error)))}
     return true;
   }
   if(command==="/goal"){
