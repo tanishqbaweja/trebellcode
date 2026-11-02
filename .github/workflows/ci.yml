@@ -30,7 +30,12 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+      # The runner's own TEMP is a short 8.3 path (C:\Users\RUNNER~1\...), while git and Node give back the long form of the
+      # same folder, so tests that compare paths of the repositories they make there would fail on the runner alone.
       - name: Run the unit and integration tests
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: npm test
 
   ui:
