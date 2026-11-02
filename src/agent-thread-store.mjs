@@ -5,7 +5,7 @@ import { isToolCallItem } from "./goal-state.mjs";
 import { SqliteAgentThreadStore, threadFromRow } from "./sqlite-agent-thread-store.mjs";
 
 function clone(value){return JSON.parse(JSON.stringify(value))}
-const TERMINAL_TOOL_STATUSES=new Set(["completed","failed","cancelled","canceled","rejected","declined","skipped"]);
+const TERMINAL_TOOL_STATUSES=new Set(["completed","failed","cancelled","canceled","rejected","declined","skipped","notRun"]);
 const REASONING_PART_LIMIT=64*1024;
 // How much parsed history the store keeps: the 2 threads used last, at most 32 M characters of their stored JSON, each dropped after
 // 50 s to a minute unused (slackMs, see #armCacheTimer).

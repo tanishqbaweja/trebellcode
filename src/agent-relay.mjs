@@ -75,6 +75,8 @@ const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity","opencode","m
 const SETTLED_TOOL_KINDS=new Set(["read","edit","delete","move","search","fetch","switch_mode"]);
 // The statuses a stored tool call ends with: a later update of one goes nowhere (toolUpdateTurn).
 const SETTLED_ITEM_STATUSES=new Set(["completed","failed","declined","stopped","cancelled","canceled","rejected","skipped","notRun"]);
+// What a call waiting on its approval is answered when the relay closes (Trebell stops or restarts): it never ran, and its row says so.
+const APPROVAL_CUT_OFF="Trebell closed before this was approved, so it did not run.";
 function expandableNativeToolNamespaces(values=[]){
   const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   const active=requested.filter(name=>!RETIRED_NATIVE_TOOL_NAMESPACES.has(name));
@@ -1625,6 +1627,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }else if(type==="tool_call_update"){
       const key=threadId+":"+String(update.toolCallId||"");
       const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
+      // A Native call that failed only because the close cut off its approval did not run: its row reads not run and says why.
+      if(item.type==="dynamicToolCall"&&item.status==="failed"&&item.rawOutput?.error===APPROVAL_CUT_OFF){item.status="notRun";item.rawOutput=APPROVAL_CUT_OFF}
       const callTurnId=turnId&&toolUpdateTurn(threadId,String(update.toolCallId||""),turnId);if(turnId&&!callTurnId)return;
       if(callTurnId){if(lifecycle.terminal)writeToolItem(threadId,String(update.toolCallId||""),callTurnId,item,{done:true});else deferToolItem(threadId,String(update.toolCallId||""),callTurnId,item)}
       if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId:callTurnId,itemId:item.id,delta:lifecycle.outputDelta});
@@ -1643,8 +1647,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const used=Number(update.used)||(input+output+cached+cacheWrite+reasoning),size=Number(update.size)||0;
       const snapshot={totalTokens:used,inputTokens:input||Math.max(0,used-output-reasoning),cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning};
       // Tokens carried from an earlier turn (Claude Code's meter before this turn's first request) show, but are not this turn's
-      // usage: only a cost of its own that comes with them is.
-      const runtimeSession=sessions.get(threadId),own=update.carried?(update.cost?Object.fromEntries(Object.keys(snapshot).map(key=>[key,0])):null):snapshot;
+      // usage: only a cost of its own that comes with them is. A Native session names itself (source): its last update can come as a
+      // close takes it out of the list, and the turn it ends still records what its provider answered.
+      const runtimeSession=source||sessions.get(threadId),own=update.carried?(update.cost?Object.fromEntries(Object.keys(snapshot).map(key=>[key,0])):null):snapshot;
       if(runtimeSession&&own)runtimeSession.__usage={usage:own,cost:update.cost||null,at:Date.now()};
       // A harness that reports what its context holds apart from the turn's tokens sends it: Claude Code and Trebell Native their latest
       // request's prompt (context, by kind of token), Muse Code what its context holds (contextTokens, from session/contextUsage). The
@@ -2548,7 +2553,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     server.off("upgrade",upgrade);
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}
     socketContexts.clear();
-    for(const pending of pendingServer.values()){clearTimeout(pending.timer);pending.reject(new Error("The relay closed"))}pendingServer.clear();
+    for(const pending of pendingServer.values()){clearTimeout(pending.timer);pending.reject(new Error(pending.method==="item/tool/requestApproval"?APPROVAL_CUT_OFF:"The relay closed"))}pendingServer.clear();
     for(const client of wss.clients){try{client.terminate()}catch{}}
     await closeSessions();await nativeBackgroundProcesses.closeAll();
     try{wss.close()}catch{}
