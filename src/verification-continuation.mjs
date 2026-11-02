@@ -1,3 +1,4 @@
+import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
 import { nextVerificationAction } from "./verification-loop.mjs";
 
 export const MAX_AUTOMATIC_VERIFICATION_CONTINUATIONS=5;
@@ -29,6 +30,8 @@ export function verificationContinuationContext({record,nextAction}={}){
   return [
     "Trebell verification continuation",
     "Run only the next required verification step shown below. Use normal Trebell tools and permission policy. Do not claim the check passed unless the tool actually ran and produced evidence. Do not broaden scope or edit code merely to make verification easier.",
+    // A behavioral step has no command of its own: the check turn's last command is read as its check (collectVerificationEvidence).
+    ...(step.kind==="behavioral"?["This step has no command of its own, so Trebell keeps the last command you run in this turn as its check: exit code 0 passes it and any other exit code fails it. Run that check last."]:[]),
     JSON.stringify(payload,null,2).slice(0,12_000),
   ].join("\n\n");
 }
@@ -67,4 +70,13 @@ export function verificationCheckNotApproved({turnItems=[],traces=[]}={}){
     if(["dynamicToolCall","mcpToolCall"].includes(item?.type)&&(notApproved(item.rawOutput)||array(item.contentItems).some(part=>notApproved(parsed(part?.text)))))return true;
   }
   return array(traces).some(trace=>trace?.name==="permission.resolved"?/^(?:decline|cancel|reject|deny|error)/i.test(String(trace.status||"")):trace?.name==="item/completed"&&String(trace?.data?.item?.status||"").toLowerCase()==="declined");
+}
+
+// The server's reading of a check turn (plan-turn), started from the record whose plan and evidence it is given: the evidence the turn
+// observed, and stopped when its check was not allowed. The step it ran is that record's next step (as thread/verification/continue
+// chose it); a check that was allowed and ran is read for that step too, so a behavioral step's check is kept. A check that was not
+// allowed is read for nothing of its own: an earlier command of the turn is not its check.
+export function verificationCheckTurnReading({plan,evidence=[],turnItems=[],traces=[]}={}){
+  const stopped=verificationCheckNotApproved({turnItems,traces})?"not-approved":null,step=stopped?null:nextVerificationAction({plan,evidence}).nextStep;
+  return {stopped,observed:collectVerificationEvidence({plan,turnItems,traces,checkedStepId:step?.id||null})};
 }

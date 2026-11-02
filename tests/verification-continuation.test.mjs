@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MAX_AUTOMATIC_VERIFICATION_CONTINUATIONS, verificationCheckNotApproved, verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationRefusal, verificationContinuationState } from "../src/verification-continuation.mjs";
+import { MAX_AUTOMATIC_VERIFICATION_CONTINUATIONS, verificationCheckNotApproved, verificationCheckTurnReading, verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationRefusal, verificationContinuationState } from "../src/verification-continuation.mjs";
+import { mergeVerificationEvidence, nextVerificationAction } from "../src/verification-loop.mjs";
 import { MAX_AUTOMATIC_VERIFICATION_ACTIONS, verificationAutomationAttempt, verificationAutomationChainState } from "../src/verification-automation.mjs";
 
 const plan={risk:"medium",steps:[{id:"diagnostics",kind:"diagnostics",scope:"changed",cost:"low",required:true,reason:"Check syntax"},{id:"tests",kind:"tests",scope:"affected",cost:"medium",required:true,command:"npm test",reason:"Run tests"}]};
@@ -58,4 +59,21 @@ test("a check turn whose check was denied or never answered reads as not approve
   assert.equal(verificationCheckNotApproved({turnItems:[{...native,rawOutput:{success:false,exitCode:1,timedOut:true,signal:"SIGKILL"}}]}),false);
   assert.equal(verificationCheckNotApproved({traces:[{name:"permission.resolved",status:"accept"}]}),false);
   assert.equal(verificationCheckNotApproved({}),false);
+});
+
+test("a check turn's reading keeps its behavioral check, and reads nothing of its own once the check was not allowed",()=>{
+  const behaviorPlan={risk:"low",steps:[{id:"focused_behavior",kind:"behavioral",scope:"changed-behavior",cost:"medium",required:true,evidence:["stated-acceptance-behavior"]}]};
+  const ran=(id,command,rawOutput)=>({type:"dynamicToolCall",id,namespace:"trebell_terminal",tool:"run",status:rawOutput.exitCode===0?"completed":"failed",arguments:{command},rawOutput});
+  const allowed=verificationCheckTurnReading({plan:behaviorPlan,evidence:[],turnItems:[ran("check","node check.js",{success:true,exitCode:0})]});
+  assert.equal(allowed.stopped,null);assert.deepEqual(allowed.observed,[{stepId:"focused_behavior",status:"passed",exitCode:0,evidence:["stated-acceptance-behavior"],source:"turn-tool",toolCallId:"check"}]);
+  assert.equal(nextVerificationAction({plan:behaviorPlan,evidence:mergeVerificationEvidence([],allowed.observed)}).action,"complete");
+  // The check turn is told that its last command is the check; a step with a command of its own is not.
+  assert.match(verificationContinuationContext(verificationContinuationState([{id:"b1",turnId:"user-turn",plan:behaviorPlan,evidence:[]}])),/last command you run in this turn as its check: exit code 0 passes it/);
+  assert.doesNotMatch(verificationContinuationContext(verificationContinuationState([{id:"t1",turnId:"user-turn",plan,evidence:[]}])),/last command you run/);
+  // Denied after a look that ran: the look is not the check, and the chain stops.
+  const denied=verificationCheckTurnReading({plan:behaviorPlan,evidence:[],turnItems:[ran("look","cat check.js",{success:true,exitCode:0}),ran("check","node check.js",{success:false,error:"Tool execution was not approved.",decision:"CONFIRM"})]});
+  assert.equal(denied.stopped,"not-approved");assert.deepEqual(denied.observed,[]);
+  // A step with its own command is read by its command, as before.
+  const tests=verificationCheckTurnReading({plan,evidence:[{stepId:"diagnostics",status:"passed",errorCount:0}],traces:[{name:"item/completed",data:{item:{id:"t",command:"npm test",exitCode:1}}}]});
+  assert.deepEqual(tests,{stopped:null,observed:[{stepId:"tests",status:"failed",exitCode:1,source:"runtime-trace",toolCallId:"t"}]});
 });

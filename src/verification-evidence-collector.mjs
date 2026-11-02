@@ -17,7 +17,8 @@ function commandMatches(actual,expected){
   const left=normalizeCommand(actual),right=normalizeCommand(expected);if(!left||!right)return false;
   return left===right||left.startsWith(right+" ");
 }
-function finiteExitCode(value){const number=Number(value);return Number.isFinite(number)?Math.trunc(number):null}
+// A command that never ran or never ended has no exit code (null): it neither passes nor fails a check.
+function finiteExitCode(value){if(value==null||value==="")return null;const number=Number(value);return Number.isFinite(number)?Math.trunc(number):null}
 function terminalItem(item={}){return ["completed","failed"].includes(String(item.status||"").toLowerCase())}
 
 function commandCandidates(turnItems=[],traces=[]){
@@ -86,7 +87,12 @@ function browserEvidence(plan,traces=[]){
   return evidence;
 }
 
-export function collectVerificationEvidence({plan,turnItems=[],traces=[]}={}){
+// The last command a turn ran: its own items are in order, the journal's traces newest first.
+function lastCommand(rows){return rows.filter(row=>row.source==="turn-tool").at(-1)||rows.find(row=>row.source==="runtime-trace")||null}
+
+// checkedStepId: the step a check turn ran, named by the server's reading of that turn once its check was allowed. A behavioral step
+// has no command of its own, so the last command the check turn ran is its check: passed on exit 0, failed otherwise (which goes to repair).
+export function collectVerificationEvidence({plan,turnItems=[],traces=[],checkedStepId=null}={}){
   const evidence=[],diagnostics=diagnosticsEvidence(plan,turnItems);if(diagnostics)evidence.push(diagnostics);
   const commands=commandCandidates(turnItems,traces);
   for(const step of array(plan?.steps)){
@@ -94,6 +100,8 @@ export function collectVerificationEvidence({plan,turnItems=[],traces=[]}={}){
     const match=[...commands].reverse().find(item=>commandMatches(item.command,step.command));if(!match)continue;
     evidence.push({stepId:step.id,status:match.exitCode===0?"passed":"failed",exitCode:match.exitCode,source:match.source,toolCallId:match.id});
   }
+  const checked=checkedStepId?array(plan?.steps).find(step=>step?.kind==="behavioral"&&step.id===String(checkedStepId)):null,ran=checked&&lastCommand(commands);
+  if(ran)evidence.push({stepId:checked.id,status:ran.exitCode===0?"passed":"failed",exitCode:ran.exitCode,evidence:["stated-acceptance-behavior"],source:ran.source,toolCallId:ran.id});
   evidence.push(...browserEvidence(plan,traces));
   return evidence;
 }

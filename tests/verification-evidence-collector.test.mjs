@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { assessVerification } from "../src/verification-assessor.mjs";
 import { collectVerificationEvidence } from "../src/verification-evidence-collector.mjs";
 
 test("verification evidence collector binds completed Native diagnostics and commands without storing output",()=>{
@@ -88,4 +89,29 @@ test("responsive visual evidence counts only viewport sizes that were actually s
   assert.deepEqual(collectVerificationEvidence({plan,traces}),[
     {stepId:"visual",screenshots:1,viewports:1,source:"browser-receipt",toolCallIds:["shot-mobile","viewport-mobile"]},
   ]);
+});
+
+test("a check turn's last command is its behavioral step's check: passed on exit 0, failed otherwise, and only for the step it ran",()=>{
+  const plan={paths:["parse-kv.js"],steps:[{id:"diagnostics",kind:"diagnostics",required:true},{id:"focused_behavior",kind:"behavioral",required:true,evidence:["stated-acceptance-behavior"]}]};
+  const run=(id,command,exitCode)=>({type:"dynamicToolCall",id,namespace:"trebell_terminal",tool:"run",status:exitCode===0?"completed":"failed",arguments:{command,args:["check.js"]},rawOutput:{exitCode,stdout:"PRIVATE"}});
+  const passed=collectVerificationEvidence({plan,turnItems:[run("look","cat",1),run("check","node",0)],checkedStepId:"focused_behavior"});
+  assert.deepEqual(passed,[{stepId:"focused_behavior",status:"passed",exitCode:0,evidence:["stated-acceptance-behavior"],source:"turn-tool",toolCallId:"check"}]);
+  assert.equal(assessVerification({plan:{steps:[plan.steps[1]]},evidence:passed}).status,"verified");
+  const failed=collectVerificationEvidence({plan,turnItems:[run("check","node",2)],checkedStepId:"focused_behavior"});
+  assert.equal(failed[0].status,"failed");assert.equal(assessVerification({plan:{steps:[plan.steps[1]]},evidence:failed}).status,"failed");
+  // A working turn's own commands, and a check turn for another step, are no behavioral check.
+  assert.deepEqual(collectVerificationEvidence({plan,turnItems:[run("check","node",0)]}),[]);
+  assert.deepEqual(collectVerificationEvidence({plan,turnItems:[run("check","node",0)],checkedStepId:"diagnostics"}),[]);
+  // Codex's commands come as journal traces, newest first.
+  const traces=[{name:"item/completed",data:{item:{id:"newest",command:"node check.js",exitCode:0}}},{name:"item/completed",data:{item:{id:"older",command:"node broken.js",exitCode:1}}}];
+  assert.deepEqual(collectVerificationEvidence({plan,traces,checkedStepId:"focused_behavior"}).map(item=>[item.toolCallId,item.status]),[["newest","passed"]]);
+  assert.doesNotMatch(JSON.stringify(passed),/PRIVATE/);
+});
+
+test("a command with no exit code (declined, or never started) neither passes nor fails a check",()=>{
+  const plan={steps:[{id:"tests",kind:"tests",required:true,command:"npm test"},{id:"focused_behavior",kind:"behavioral",required:true,evidence:["stated-acceptance-behavior"]}]};
+  const traces=[{name:"item/completed",data:{item:{id:"declined",type:"commandExecution",command:"npm test",status:"declined",exitCode:null}}}];
+  assert.deepEqual(collectVerificationEvidence({plan,traces}),[]);
+  assert.deepEqual(collectVerificationEvidence({plan,traces,checkedStepId:"focused_behavior"}),[]);
+  assert.deepEqual(collectVerificationEvidence({plan,traces:[{name:"item/completed",data:{item:{id:"ran",command:"npm test",exitCode:0}}}]}),[{stepId:"tests",status:"passed",exitCode:0,source:"runtime-trace",toolCallId:"ran"}]);
 });

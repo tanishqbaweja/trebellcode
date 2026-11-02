@@ -72,7 +72,7 @@ import { verificationRepairAttempt, verificationRepairChainState, verificationRe
 import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
 import { runAutomaticVerificationEvidence } from "./verification-auto-runner.mjs";
 import { mergeVerificationEvidence } from "./verification-loop.mjs";
-import { verificationCheckNotApproved, verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationRefusal, verificationContinuationState } from "./verification-continuation.mjs";
+import { verificationCheckTurnReading, verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationRefusal, verificationContinuationState } from "./verification-continuation.mjs";
 import { verificationAutomationAttempt, verificationAutomationChainState } from "./verification-automation.mjs";
 import { normalizeBrowserVerificationReceipt } from "./browser-verification-evidence.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
@@ -3167,11 +3167,11 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           const sourceRecord=state.verificationRecords({threadId,limit:100}).find(item=>String(item?.id||"")===String(continuationChain.sourceRecordId))||null;
           if(sourceRecord){
             const environmentId=meta?.environmentId??null,root=sourceRecord.projectPath||meta?.cwd||process.cwd(),remote=remoteEnvironmentProfile(environmentId),verificationIo=remote?createRemoteContextIo({environments,environmentId,root}):null,agentTurn=agentThreads.get(threadId)?.turns?.find(turn=>String(turn?.id||"")===turnId)||null,traces=eventJournal.list({threadId,turnId,limit:500});
-            const observed=collectVerificationEvidence({plan:sourceRecord.plan,turnItems:agentTurn?.items||[],traces}),merged=mergeVerificationEvidence(sourceRecord.evidence,observed),automatic=await runAutomaticVerificationEvidence({contextEngine,plan:sourceRecord.plan,evidence:merged,root,io:verificationIo}),assessment=contextEngine.assessVerification({plan:sourceRecord.plan,evidence:automatic.evidence});
+            const {observed,stopped}=verificationCheckTurnReading({plan:sourceRecord.plan,evidence:sourceRecord.evidence,turnItems:agentTurn?.items||[],traces}),merged=mergeVerificationEvidence(sourceRecord.evidence,observed),automatic=await runAutomaticVerificationEvidence({contextEngine,plan:sourceRecord.plan,evidence:merged,root,io:verificationIo}),assessment=contextEngine.assessVerification({plan:sourceRecord.plan,evidence:automatic.evidence});
             const record=state.recordVerification({environmentId,projectPath:root,threadId,turnId,plan:sourceRecord.plan,evidence:automatic.evidence,assessment}),nextAction=contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence});
             // A check the person did not allow ends the chain's automatic checks (thread/verification/continue refuses the next one), and the
             // window, told so (stopped) and given the chain's first record (rootRecordId, the key it checks a step once by), asks for none.
-            const stopped=verificationCheckNotApproved({turnItems:agentTurn?.items||[],traces})?"not-approved":null,rootRecordId=String(continuationChain.rootRecordId||sourceRecord.id);
+            const rootRecordId=String(continuationChain.rootRecordId||sourceRecord.id);
             if(stopped)state.updateThreadMeta(threadId,{verificationContinuationChain:{...continuationChain,stopped}});
             eventJournal.record({environmentId,threadId,turnId,category:"verification",name:"verification.continuation_evaluated",status:assessment.status,data:{recordId:record.id,sourceRecordId:sourceRecord.id,evidenceCount:record.evidence.length,newEvidenceCount:observed.length,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null,stopped}});
             return json(res,200,{supported:true,continuation:true,sourceRecordId:sourceRecord.id,rootRecordId,...(stopped?{stopped}:{}),checkpointId:null,threadId,turnId,changedPaths:[],record,nextAction});
