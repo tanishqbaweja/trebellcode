@@ -2353,9 +2353,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
         // A Muse Code message in a mode its host cannot take while Muse writes its report there is refused before it goes, as turn/start
         // refuses it (MuseAgentSession.modeRefusal), so the person keeps the draft and the report goes on; one in the host's mode goes in.
-        // The refusal carries the words for a follow-up of Trebell's queue sent now, which stays queued (data.queued).
-        const profile=agentPermissionProfilePatch(params).permissionProfile,museRefusal=session instanceof MuseAgentSession?session.modeRefusal(profile):null;
-        if(museRefusal)throw Object.assign(new Error(museRefusal),{code:MESSAGE_NOT_SENT,rpcData:{queued:session.modeRefusal(profile,{queued:true})}});
+        // The refusal carries the words for a follow-up of Trebell's queue sent now, which stays queued (data.queued). So is one that
+        // starts with one of Muse's own commands, which runs only as a message of its own (MuseAgentSession.commandSteerRefusal).
+        const profile=agentPermissionProfilePatch(params).permissionProfile,museRefusal=session instanceof MuseAgentSession?session.modeRefusal(profile)||session.commandSteerRefusal(params.input):null;
+        if(museRefusal)throw Object.assign(new Error(museRefusal),{code:MESSAGE_NOT_SENT,rpcData:{queued:session.modeRefusal(profile,{queued:true})||session.commandSteerRefusal(params.input,{queued:true})}});
         const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome}));
         const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})},...fileInputs(params.input)]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});

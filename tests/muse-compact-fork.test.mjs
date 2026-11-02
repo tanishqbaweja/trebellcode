@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { threadHistoryHandoff } from "../src/thread-history-handoff.mjs";
 import { FakeMuse, startSession, until, settlesWithin } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
@@ -238,6 +239,31 @@ test("through the relay, a message steered in another mode while Muse writes its
     assert.match(relay.reply(thread.id),/Steered: Go on in Full access\./);
     assert.equal((await relay.frames("turn/steer")).length,1);
     assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"]]);
+  }finally{await relay.close()}
+});
+
+// A message that starts with one of Muse's own commands runs it only as a message of its own (a skill part of turn/start): steered
+// into a running turn (steer follow-ups, or Send now on a queued one) it reached Muse as words. It is refused as not sent, as a mode
+// the host cannot take is, so the person keeps the draft, and a queued one stays queued (data.queued) and goes as its own message
+// once the turn ends (review of tour L10-13). Any other message steers.
+test("through the relay, a message steered into a running turn that starts with one of Muse's own commands is refused as not sent, nothing of it reaching Muse, and any other steers",{timeout:90_000},async()=>{
+  const relay=await museRelay("trebell-muse-command-steer-",{environment:{MUSE_FAKE_HOLD:"1",MUSE_FAKE_SKILLS:fileURLToPath(new URL("./fixtures/muse/skill-list-1.4.13.json",import.meta.url))}});
+  try{
+    assert.ok((await relay.manager.models("muse")).inventory.commands.some(command=>command.name==="grill"),"Muse lists /grill");
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"full"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Look over the release plan"}],permissionProfile:"full"});
+    await eventually(async()=>(await relay.frames("turn/start")).length===1&&relay.threadStore.get(thread.id).turns[0]?.status==="inProgress","the running turn");
+    const running=relay.threadStore.get(thread.id).turns[0];
+    await assert.rejects(relay.rpc("turn/steer",{threadId:thread.id,expectedTurnId:running.id,input:[{type:"text",text:"/grill the release plan"}],permissionProfile:"full"}),{
+      code:-31000,
+      message:"Muse Code runs /grill only as a message of its own, not inside a running turn. Send it again once this turn ends.",
+      data:{queued:"Muse Code runs /grill only as a message of its own, so it stays queued and goes once this turn ends."},
+    });
+    assert.equal((await relay.frames("turn/steer")).length,0,"nothing of it reached Muse");
+    assert.equal(JSON.stringify(relay.threadStore.get(thread.id).turns).includes("/grill"),false,"nothing of it is stored");
+    await relay.rpc("turn/steer",{threadId:thread.id,expectedTurnId:running.id,input:[{type:"text",text:"Go on with the dates"}],permissionProfile:"full"});
+    await relay.completed(thread.id,1);
+    assert.equal((await relay.frames("turn/steer")).length,1,"an ordinary message steers");
   }finally{await relay.close()}
 });
 

@@ -311,6 +311,16 @@ export class MuseAgentSession{
   // before its turn starts, or before it steers it into the report (turn/steer names the message's mode), so the person keeps their
   // draft and the thread the mode its host runs; prompt refuses it too. queued: the words for a follow-up of Trebell's queue sent
   // now, which stays queued.
+  // A message that starts with one of Muse Code's own commands runs it only as a message of its own (a skill part of turn/start,
+  // prompt): steered into a running turn, it reached Muse as words. The relay refuses such a steer as not sent, as it does a mode
+  // its host cannot take, so the person keeps the draft, and a follow-up of Trebell's queue sent now stays queued (queued: the words
+  // for it) and goes as a message of its own once the turn ends. null: any other message, which steers.
+  commandSteerRefusal(parts,{queued=false}={}){
+    const skill=museSkillInput(parts,new Set((this.#catalog()?.commands||[]).map(command=>command?.name)));
+    if(!skill)return null;
+    const command="/"+skill[0].selector;
+    return queued?`Muse Code runs ${command} only as a message of its own, so it stays queued and goes once this turn ends.`:`Muse Code runs ${command} only as a message of its own, not inside a running turn. Send it again once this turn ends.`;
+  }
   modeRefusal(mode=this.permissionMode,{queued=false}={}){
     if(!this.launched||this.dead||!this.needsRelaunch(mode))return null;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
