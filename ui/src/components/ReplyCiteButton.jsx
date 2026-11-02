@@ -106,13 +106,14 @@ export default function ReplyCiteButton({containerRef,onCite}){
 }
 
 // Cite: the reply, or the text selected in it, goes to the composer as a context file, with the sentence that asks the agent to use
-// it (citeSentence, once: citeNote finds it). App's own, passed as deps.
+// it (citeSentence, once: citeNote finds it). App's own, passed as deps. Its chip gives the length of what was cited: it named the
+// thread after it, which for a thread with no name yet was the thread's id (tour L10-15).
 export async function citeAssistant({activeThread,addContextAttachment,setPrompt,citeNote,citeSentence},message,excerpt=""){
   const selected=String(excerpt||"").trim();
   const source=selected||message?.text?.trim();if(!source)return;
   const threadLabel=activeThread?.name||activeThread?.id||"current thread";
   const text=[selected?"Assistant response excerpt":"Assistant response citation","Thread: "+threadLabel,message?.id?"Message: "+message.id:null,"",source].filter(value=>value!=null).join("\n");
-  await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:selected?"Assistant excerpt":"Assistant citation",detail:selected?`${selected.length.toLocaleString()} chars · ${threadLabel}`:threadLabel});
+  await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:selected?"Assistant excerpt":"Assistant citation",detail:`${source.length.toLocaleString()} chars`});
   setPrompt(prev=>citeNote.test(prev)?prev:(prev?prev+" ":"")+citeSentence+" ");
   return true;
 }
