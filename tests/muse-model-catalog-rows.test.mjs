@@ -105,7 +105,7 @@ test("the read's host keeps the read-only arguments whatever options it is given
   assert.equal(launch.key,"a-test-key","an API-key profile's key reaches its read (authMethod passed on)");
   assert.equal(muse.sent("initialize")[0].params.clientInfo.version,"2.1.0");
   assert.equal(child.exitCode,0,"closed before the read answered");
-  assert.deepEqual(Object.keys(catalog),["models","metadata","preferred","museHome"]);
+  assert.deepEqual(Object.keys(catalog),["models","metadata","preferred","museHome","commands"]);
   assert.deepEqual([catalog.models,catalog.preferred],[["muse-a"],"muse-a"]);
   const signedIn=fakeChild(),seen=[];
   new FakeMuse(signedIn,{handlers:{"model/list":()=>metaList()}});

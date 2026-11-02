@@ -110,16 +110,16 @@ export function museModelCatalog(result={}){
   return {models:[...rows.keys()],metadata,preferred:metadata.find(row=>row.isDefault)?.id??null};
 }
 
-// One read: 8 s for the host to answer initialize, 12 s for the whole read, and 2 s for the host to exit once its input closes
-// (it keeps no session log to save) before its process tree is stopped.
-const READ_BOUNDS=Object.freeze({startMs:8_000,totalMs:12_000,exitGraceMs:2_000});
+// One read: 8 s for the host to answer initialize, 12 s for the whole read, 4 s more for the skills its session lists, and 2 s for
+// the host to exit once its input closes (it keeps no session log to save) before its process tree is stopped.
+const READ_BOUNDS=Object.freeze({startMs:8_000,totalMs:12_000,skillsMs:4_000,exitGraceMs:2_000});
 
 // The host and bound of one read, from readMuseModelCatalog's options. The host's arguments are always the read-only probe's
 // (`muse serve --disable-shell --disable-write --no-session-log`); every option not named here goes to the host as it is.
-function listReadPlan({command,env,cwd=process.cwd(),version="0.0.0",startupTimeoutMs=READ_BOUNDS.startMs,timeoutMs=READ_BOUNDS.totalMs,shutdownTimeoutMs=READ_BOUNDS.exitGraceMs,...hostOptions}={}){
+function listReadPlan({command,env,cwd=process.cwd(),version="0.0.0",startupTimeoutMs=READ_BOUNDS.startMs,timeoutMs=READ_BOUNDS.totalMs,skillsTimeoutMs=READ_BOUNDS.skillsMs,shutdownTimeoutMs=READ_BOUNDS.exitGraceMs,...hostOptions}={}){
   return {
     version,
-    totalMs:timeoutMs,
+    totalMs:timeoutMs,skillsMs:skillsTimeoutMs,
     host:{...hostOptions,command,env,cwd,startupTimeoutMs,shutdownTimeoutMs,args:museServeArgs("read-only",{sessionLog:false})},
   };
 }
@@ -140,19 +140,47 @@ async function askForModels(host,version){
   return host.connection.request("model/list",{});
 }
 
+// Muse Code's own slash commands, as the composer's / menu offers a harness's commands: the skills a session lists (skill/list, the
+// shortcuts Muse's own typed dispatch takes), each by its selector, with the first sentence of its description (else its name) and
+// its argument hint. A row without a selector, and a later row of one already listed, are left out. Trebell asked Muse for none, so
+// the / menu on Muse Code offered only Trebell's own commands (tour L10-13).
+export function museSkillCommands(result={}){
+  const byName=new Map();
+  for(const skill of Array.isArray(result?.skills)?result.skills:[]){
+    const name=clean(skill?.selector).replace(/^\/+/,"");if(!name||byName.has(name))continue;
+    const said=clean(skill?.description),description=said.match(/^.*?[.!?](?=\s|$)/)?.[0]||said||clean(skill?.displayName),hint=clean(skill?.argumentHint);
+    byName.set(name,{name,...(description?{description}:{}),...(hint?{input:{hint}}:{})});
+  }
+  return [...byName.values()];
+}
+
+// The skills a session on the read's host lists, which a new chat's / menu offers before the chat has a session of its own. MSP
+// lists skills per session only; this host keeps no session log (its sessions are ephemeral), so the session started for the list
+// is not kept, and it takes no permission profile and names no session id (Muse names it). Bounded on its own (ms): a host that
+// cannot list them in time gives none, and the model list stands.
+async function askForSkills(host,ms){
+  const work=(async()=>{
+    const started=await host.connection.command("session/start",{providerId:META},{maxAttempts:1}),sessionId=clean(started?.session?.sessionId);
+    return sessionId?museSkillCommands(await host.connection.request("skill/list",{sessionId})):[];
+  })();
+  return settleWithin(work,ms,()=>new Error("Muse Code did not list its skills in time.")).catch(()=>[]);
+}
+
 // The Muse home the host's initialize named (the account's, by its sign-in), whose usage reports the Usage page reads, or null.
 function namedMuseHome(host){
   const home=host.initializeResult?.museHome;
   return typeof home==="string"&&home.trim()?home:null;
 }
 
-// Reads Muse Code's model list: museModelCatalog's answer plus museHome. The host is closed before the read settles, whatever
-// happened; a failure to close it is not the read's.
+// Reads Muse Code's model list: museModelCatalog's answer plus museHome, and the commands its sessions offer (askForSkills) when it
+// lists models (a signed-out Muse has none, and starts no session). The host is closed before the read settles, whatever happened;
+// a failure to close it is not the read's.
 export async function readMuseModelCatalog(options={}){
   const plan=listReadPlan(options),host=new MuseHost(plan.host);
   try{
     const answer=await settleWithin(askForModels(host,plan.version),plan.totalMs,()=>new Error(`Muse Code did not list its models within ${Math.round(plan.totalMs/1000)} seconds.`));
-    return {...museModelCatalog(answer),museHome:namedMuseHome(host)};
+    const catalog=museModelCatalog(answer);
+    return {...catalog,museHome:namedMuseHome(host),commands:catalog.models.length?await askForSkills(host,plan.skillsMs):[]};
   }finally{
     await host.close().catch(()=>{});
   }

@@ -20,6 +20,7 @@ import { keepThreadMeta } from "./test-home.js";
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-harness/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));
+const SKILL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/skill-list-1.4.13.json",import.meta.url));
 const windows=process.platform==="win32";
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
@@ -50,7 +51,7 @@ function offlineGlobalFetch(){
 
 // failing: while the file it names is there (from the start with serveFails), the stand-in's host exits as Muse does with a
 // malformed settings file.
-async function startMuseHarness({serveFails=false}={}){
+async function startMuseHarness({serveFails=false,skills=false}={}){
   const offline=offlineGlobalFetch();
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-e2e-")),repo=join(root,"muse-repo"),log=join(root,"muse.log");await mkdir(repo,{recursive:true});
   const failing=join(root,"serve-fails");if(serveFails)await writeFile(failing,"3");
@@ -58,7 +59,7 @@ async function startMuseHarness({serveFails=false}={}){
   const launcher=join(folder,windows?"muse.cmd":"muse");
   await writeFile(launcher,windows?`@echo off\r\nsetlocal\r\n"${process.execPath}" "${FAKE_MUSE}" %*\r\nexit /b %ERRORLEVEL%\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${FAKE_MUSE}" "$@"\n`);
   if(!windows)await chmod(launcher,0o755);
-  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,MUSE_FAKE_SERVE_FAIL:failing}}]},meta=new Map();
+  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,MUSE_FAKE_SERVE_FAIL:failing,...(skills?{MUSE_FAKE_SKILLS:SKILL_LIST}:{})}}]},meta=new Map();
   const state={settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...(windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")})};
   // Meta's channel manifest is not read from here: the update reading of Settings' listings finds it unavailable.
@@ -89,7 +90,7 @@ async function routeMuseApp(page,harness){
   await page.route(/\/api\/runtime$/,async route=>json(route,{agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeStatus:await manager.probe("muse"),provider:"openai",providerReady:true,appServerReady:true,appServerExitCode:null,activeEnvironment:null,appServerError:null,logs:[]}));
   await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],activeProjectId:project.id,threadMeta:{}}));
   await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,Object.assign(settings,route.request().postDataJSON()||{})):json(route,settings));
-  await page.route(/\/api\/models$/,route=>json(route,{agentRuntime:"muse",ready:true,models:listed.models,defaultModel:listed.preferred||null,metadata:{provider:"muse",agentRuntime:"muse",source:listed.source,models:listed.metadata},error:listed.error||null}));
+  await page.route(/\/api\/models$/,route=>json(route,{agentRuntime:"muse",ready:true,models:listed.models,defaultModel:listed.preferred||null,metadata:{provider:"muse",agentRuntime:"muse",source:listed.source,models:listed.metadata},error:listed.error||null,...(listed.inventory?{inventory:listed.inventory}:{})}));
   // As the GUI server answers: its own listing (Settings' open and Refresh) reads Muse Code's list again.
   await page.route(/\/api\/agent-runtimes$/,async route=>json(route,await manager.snapshot(route.request().method()==="GET"?{refresh:true}:{})));
   await page.route(/\/api\/agent-runtime-auth$/,route=>{
@@ -273,6 +274,45 @@ test("the composer lists Muse Code's models and the Thinking levels each offers,
     await expect(page.locator(".sidebar-provider strong")).toHaveText("Muse Code");
     await expect(page.locator(".thread-row.active")).toContainText("muse-spark-1.3-contributor");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-thread-reply-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+// Muse Code's own commands are the skills its sessions list (skill/list; Muse 1.4.13's in a fresh home, as recorded): the / menu of
+// a new chat offers them from the window's start, beside Trebell's own, and one picked and sent runs as Muse's command (a skill part
+// with what follows it as its arguments), not as words to the model. The / menu on Muse Code offered only Trebell's own commands, and
+// Trebell never asked Muse for its own (tour L10-13).
+test("the / menu on Muse Code offers Muse Code's own commands from the window's start, and one picked runs as Muse's command",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startMuseHarness({skills:true});
+  try{
+    const {listed}=await routeMuseApp(page,harness);
+    expect(listed.inventory.commands.map(command=>command.name)).toEqual(["blender","create-plugin","create-skill","doctor","game-3d-visuals","grill","import","manage-settings","migrate","plan","resume-claude","resume-codex","threejs","threejs:threejs"]);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),menu=page.locator(".composer-wrap .slash-menu");
+    await composer.click();await page.keyboard.type("/");
+    // Muse's commands after Trebell's own, each with the first sentence Muse gives of it; Muse's /plan stands behind Trebell's.
+    await expect(menu.locator("button strong").filter({hasText:/^\/(doctor|grill|migrate|import)$/})).toHaveText(["/doctor","/grill","/import","/migrate"]);
+    await expect(menu.locator("button").filter({has:page.locator("strong",{hasText:/^\/doctor$/})})).toContainText("Diagnose Muse Code product/runtime issues from installed binary evidence.");
+    await expect(menu.locator("button strong",{hasText:/^\/plan$/})).toHaveCount(1);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await menu.locator("button").filter({has:page.locator("strong",{hasText:/^\/doctor$/})}).scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-slash-menu-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    await composer.click();await page.keyboard.press("End");await page.keyboard.type("gri");
+    await expect(menu.locator("button strong")).toHaveText(["/grill"]);
+    await page.keyboard.press("Enter");await expect(composer).toHaveValue("/grill ");
+    await page.keyboard.type("the release plan");await page.keyboard.press("Enter");
+    await expect(page.getByText("RAN /grill: the release plan",{exact:true})).toBeVisible({timeout:20_000});
+    // Muse got the command as a skill part, alone: no runtime notes or working context as words beside it.
+    const turns=await harness.frames("turn/start");
+    expect(turns).toHaveLength(1);
+    expect(turns[0].params.input).toEqual([{type:"skill",selector:"grill",arguments:"the release plan"}]);
+    // A message that only starts with a / is an ordinary message.
+    await composer.click();await page.keyboard.type("/tmp holds the build output");await page.keyboard.press("Enter");
+    await expect(page.getByText(/^Muse fixture reply on /).last()).toBeVisible({timeout:20_000});
+    const second=(await harness.frames("turn/start"))[1];
+    expect(second.params.input.some(part=>part.type==="skill")).toBe(false);
+    expect(JSON.stringify(second.params.input)).toContain("/tmp holds the build output");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-skill-command-ran-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
 

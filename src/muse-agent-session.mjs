@@ -105,6 +105,18 @@ export function museInputParts(parts=[]){
   return input;
 }
 
+// A message that starts with one of Muse Code's own commands (the skills its sessions list, selectors: their names): the turn input
+// that runs it, a skill part with the rest of the line as its arguments, then the person's other parts (pictures, files). Muse runs
+// a skill only from a skill part (msp.d.ts TurnInputPart); typed as text, "/doctor" reached the model as words. As an ACP harness's
+// listed command goes (acpSlashCommandPrompt), Trebell's working context and runtime notes stay out of it. null: an ordinary message.
+export function museSkillInput(parts=[],selectors=new Set()){
+  const user=(Array.isArray(parts)?parts:[]).filter(part=>part?.[NATIVE_PROMPT_PROVENANCE]?.kind!=="working_context"),first=user.find(part=>part?.type==="text");
+  const match=/^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text(first?.text).trim());
+  if(!match||!selectors.has(match[1]))return null;
+  const words=text(match[2]).trim();
+  return [{type:"skill",selector:match[1],...(words?{arguments:words}:{})},...user.filter(part=>part!==first).map(part=>turnInput(part)).filter(Boolean)];
+}
+
 // What Muse's transcript shows for the turn: the person's own words, without Trebell's working context or runtime notes.
 export function museDisplayText(parts=[]){
   const list=Array.isArray(parts)?parts:[];
@@ -427,8 +439,8 @@ export class MuseAgentSession{
     // turns. While Muse's own work holds this host (a compaction, or the report it writes) no host is relaunched, so a message in a mode
     // this host was not launched for is refused rather than run with the old mode's sandbox, profile and approvals.
     if(this.launched&&this.needsRelaunch(this.permissionMode))throw refuse(new SessionRefusalError(this.modeRefusal()||"Muse Code's host was started for another mode, so the message was not sent. Send it again to start Muse Code in this mode."));
-    let input,displayText;
-    try{input=museInputParts(parts);displayText=museDisplayText(parts)}catch(error){throw refuse(error)}
+    let input,displayText,skill;
+    try{skill=museSkillInput(parts,new Set((this.#catalog()?.commands||[]).map(command=>command?.name)));input=skill||museInputParts(parts);displayText=museDisplayText(parts)}catch(error){throw refuse(error)}
     if(running?.wake&&!this.takeOverWake())throw new Error("Muse Code already has a running turn.");
     let turn=prepared||(running?.wake?this.activePrompt:null);
     if(!turn){turn=this.#newTurn(this.connection.mintCommandId());this.activePrompt=turn;this.lastTurn=turn}
@@ -441,8 +453,8 @@ export class MuseAgentSession{
         const reasoningEffort=this.#turnEffort();
         ack=await this.#command("turn/start",{
           sessionId:this.sessionId,
-          // Muse takes no system context, so Trebell's runtime notes lead the turn's input.
-          input:[{type:"text",text:runtimeInstructions({harness:"Muse Code",model:this.model})},...input],
+          // Muse takes no system context, so Trebell's runtime notes lead the turn's input, but for one of Muse's own commands.
+          input:skill||[{type:"text",text:runtimeInstructions({harness:"Muse Code",model:this.model})},...input],
           ...(displayText?{displayText}:{}),
           // Each turn names the folder: a resumed session keeps the roots it had.
           workspaceRoots:[this.turnRoot],ifBusy:"queue",...(reasoningEffort?{reasoningEffort}:{}),

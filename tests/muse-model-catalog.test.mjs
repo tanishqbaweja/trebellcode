@@ -4,8 +4,9 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
-import { MuseAgentSession } from "../src/muse-agent-session.mjs";
-import { museModelCatalog, museModelEfforts, museModelName, readMuseModelCatalog, resolveMuseReasoningEffort } from "../src/muse-model-catalog.mjs";
+import { MuseAgentSession, museSkillInput } from "../src/muse-agent-session.mjs";
+import { museModelCatalog, museModelEfforts, museModelName, museSkillCommands, readMuseModelCatalog, resolveMuseReasoningEffort } from "../src/muse-model-catalog.mjs";
+import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
 import { normalizeRuntimeReasoningEffort, supportedReasoningEfforts } from "../src/model-reasoning-effort.mjs";
 
 // Muse Code's model list and what a Muse Code session does with it: the
@@ -116,8 +117,71 @@ test("the list is read from a short read-only host: no shell, no writes, no sess
   assert.equal(spawned[0].options.windowsHide,true);assert.equal(spawned[0].options.env.MUSE_NO_AUTO_UPDATE,"1");
   assert.deepEqual(muse.sent("initialize")[0].params.capabilities,{requestedCapabilities:[]});
   assert.deepEqual(muse.sent("model/list").map(frame=>frame.params),[{}]);
-  assert.equal(muse.sent("session/start").length,0);
+  // The one session it starts, to list Muse's own commands, names no session, folder or permission profile: Muse names them, and a
+  // host with no session log keeps none of it. It runs no turn and resumes nothing.
+  assert.deepEqual(muse.sent("session/start").map(({params:{commandId,...rest}})=>[typeof commandId,rest]),[["string",{providerId:"meta"}]]);
+  assert.equal(muse.sent("turn/start").length+muse.sent("session/resume").length,0);
   assert.equal(child.exitCode,0,"its input closed, the host ended");
+});
+
+// Muse Code's own commands, as the composer's / menu offers them: the skills a session lists (skill/list, Muse 1.4.13's in a fresh
+// home as recorded), each by its selector, with the first sentence Muse gives of it and its argument hint. Trebell never asked Muse
+// for them, so the / menu on Muse Code offered only Trebell's own commands (tour L10-13).
+const SKILLS=JSON.parse(readFileSync(new URL("./fixtures/muse/skill-list-1.4.13.json",import.meta.url),"utf8")).result;
+test("the read lists Muse Code's own commands: the skills of a session on the same read-only host, by selector, first sentence and hint",async()=>{
+  assert.deepEqual(museSkillCommands(SKILLS).map(command=>command.name),["blender","create-plugin","create-skill","doctor","game-3d-visuals","grill","import","manage-settings","migrate","plan","resume-claude","resume-codex","threejs","threejs:threejs"]);
+  const byName=Object.fromEntries(museSkillCommands(SKILLS).map(command=>[command.name,command]));
+  assert.deepEqual(byName.doctor,{name:"doctor",description:"Diagnose Muse Code product/runtime issues from installed binary evidence."});
+  assert.deepEqual(byName.import,{name:"import",description:"Import a Claude Code, Codex, or Grok session",input:{hint:"<session-id-or-path>"}});
+  // A row without a selector and a later row of one already listed are left out; a leading / is not part of the name.
+  assert.deepEqual(museSkillCommands({skills:[{selector:"/ship",description:"Ships it. Then more.",displayName:"ship"},{selector:"ship",description:"Again."},{selector:"",description:"None."},{selector:"bare",description:"",displayName:"Bare one"}]}),[{name:"ship",description:"Ships it."},{name:"bare",description:"Bare one"}]);
+  assert.deepEqual(museSkillCommands({}),[]);
+  const child=fakeChild(),sessionIds=[];
+  const muse=new FakeMuse(child,{
+    "session/start":params=>{const sessionId=params.sessionId||"01a19e03-d13e-7c80-a3e0-1c59ade633a2";sessionIds.push(sessionId);return {session:{sessionId,status:"idle",providerId:"meta",modelId:null,kind:"root"},viewCursor:"pending"}},
+    "skill/list":params=>params.sessionId===sessionIds[0]?SKILLS:Promise.reject(Object.assign(new Error("session not found"),{code:-32020,kind:"sessionNotFound"})),
+  });
+  const catalog=await readMuseModelCatalog({command:"muse",env:{PATH:""},spawnFn:()=>child,stopTree:fakeStop});
+  assert.deepEqual(catalog.commands,museSkillCommands(SKILLS));
+  assert.deepEqual(muse.sent("skill/list").map(frame=>frame.params),[{sessionId:"01a19e03-d13e-7c80-a3e0-1c59ade633a2"}]);
+  assert.equal(child.exitCode,0,"the host ended");
+  // A host that does not know skill/list, or does not answer it within its bound, gives no commands, and the models stand.
+  const unknown=fakeChild();new FakeMuse(unknown,{"session/start":()=>({session:{sessionId:"s-1",status:"idle"}}),"skill/list":()=>Promise.reject(Object.assign(new Error("method not found: skill/list"),{code:-32601,kind:"methodNotFound"}))});
+  const plain=await readMuseModelCatalog({command:"muse",env:{},spawnFn:()=>unknown,stopTree:fakeStop});
+  assert.deepEqual([plain.models.length>0,plain.commands],[true,[]]);
+  const silent=fakeChild();new FakeMuse(silent,{"session/start":()=>({session:{sessionId:"s-2",status:"idle"}}),"skill/list":()=>undefined});
+  const started=Date.now(),waited=await readMuseModelCatalog({command:"muse",env:{},skillsTimeoutMs:80,shutdownTimeoutMs:50,spawnFn:()=>silent,stopTree:fakeStop});
+  assert.deepEqual([waited.models.length>0,waited.commands],[true,[]]);assert.ok(Date.now()-started<3000,"the skills' own bound");
+  // A signed-out Muse lists no models, and starts no session for commands it could not run.
+  const signedOut=fakeChild(),out=new FakeMuse(signedOut,{"model/list":()=>({...LIST,models:[]})});
+  assert.deepEqual((await readMuseModelCatalog({command:"muse",env:{},spawnFn:()=>signedOut,stopTree:fakeStop})).commands,[]);
+  assert.equal(out.sent("session/start").length,0);
+});
+
+// A message that starts with one of Muse's own commands runs it: the turn's input is a skill part with the rest of the line as its
+// arguments, then the person's other parts, without Trebell's working context or runtime notes, which would make it words to the
+// model. Typed as text, "/grill" reached Muse's model as words. Any other message that starts with a / is an ordinary one.
+test("a message starting with one of Muse's own commands runs it as a skill part, alone; any other message is an ordinary one",async()=>{
+  const selectors=new Set(["grill","doctor","threejs:threejs"]);
+  const working={type:"text",text:"Trebell context: the repository map",[NATIVE_PROMPT_PROVENANCE]:{kind:"working_context"}};
+  assert.deepEqual(museSkillInput([working,{type:"text",text:"/grill the release plan"}],selectors),[{type:"skill",selector:"grill",arguments:"the release plan"}]);
+  assert.deepEqual(museSkillInput([{type:"text",text:"  /doctor  "}],selectors),[{type:"skill",selector:"doctor"}]);
+  assert.deepEqual(museSkillInput([{type:"text",text:"/threejs:threejs a spinning cube\nwith shadows"}],selectors),[{type:"skill",selector:"threejs:threejs",arguments:"a spinning cube\nwith shadows"}]);
+  for(const text of ["/tmp holds the build output","grill the plan","/grills","/ grill",""])assert.equal(museSkillInput([{type:"text",text}],selectors),null,text);
+  assert.equal(museSkillInput([{type:"text",text:"/grill"}],new Set()),null,"no commands listed");
+  const catalog={...museModelCatalog(LIST),commands:museSkillCommands(SKILLS)};
+  for(const [parts,check] of [
+    [[working,{type:"text",text:"/grill the release plan"}],input=>assert.deepEqual(input,[{type:"skill",selector:"grill",arguments:"the release plan"}])],
+    [[{type:"text",text:"/tmp holds the build output"}],input=>{
+      assert.equal(input.some(part=>part.type==="skill"),false);
+      assert.match(input[0].text,/Muse Code/,"an ordinary message leads with Trebell's runtime notes");
+      assert.equal(input.at(-1).text,"/tmp holds the build output");
+    }],
+  ]){
+    const {session,muse}=await museSession({catalog});
+    try{await session.prompt(parts);check(muse.sent("turn/start")[0].params.input)}
+    finally{await session.close()}
+  }
 });
 
 test("a host that does not start within 8 s, or does not list within 12 s in all, fails the read and is closed",async()=>{

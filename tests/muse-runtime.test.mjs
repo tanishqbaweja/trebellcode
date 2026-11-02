@@ -39,6 +39,8 @@ const entries=async log=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n
 const launches=async log=>(await entries(log)).filter(entry=>entry.start);
 const hosts=async log=>(await launches(log)).filter(entry=>entry.start[0]==="serve");
 const frames=async(log,method)=>(await entries(log)).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame);
+// What the read-only host that lists Muse Code's models and commands received (fake-muse.cjs logs it apart).
+const listingFrames=async(log,method)=>(await entries(log)).filter(entry=>entry.listingFrame?.method===method).map(entry=>entry.listingFrame);
 async function eventually(check,label,ms=15_000){const end=Date.now()+ms;while(!(await check())){if(Date.now()>end)throw new Error("timed out waiting for "+label);await new Promise(done=>setTimeout(done,25))}}
 
 // The status checks' CLI runs, as the manager's own runner makes them, for the stand-in only: any other CLI answers as not installed,
@@ -157,11 +159,11 @@ test("Muse Code's status check: not found, a failed --version (no host, nothing 
     const [host]=await hosts(signedOut.log);
     assert.deepEqual(host.start,["serve","--disable-shell","--disable-write","--no-session-log"],"a short read-only host with no session log");
     assert.equal(host.env.MUSE_NO_AUTO_UPDATE,"1");
-    const [initialize]=await frames(signedOut.log,"initialize");
+    const [initialize]=await listingFrames(signedOut.log,"initialize");
     assert.deepEqual(initialize.params.capabilities.requestedCapabilities,[],"the listing host asks for no session capabilities");
     assert.equal(initialize.params.clientInfo.name,"trebell_code");
-    assert.deepEqual((await frames(signedOut.log,"model/list")).map(frame=>frame.params),[{}]);
-    assert.equal((await frames(signedOut.log,"session/start")).length,0,"listing models starts no session");
+    assert.deepEqual((await listingFrames(signedOut.log,"model/list")).map(frame=>frame.params),[{}]);
+    assert.equal((await listingFrames(signedOut.log,"session/start")).length+(await frames(signedOut.log,"session/start")).length,0,"listing models starts no session");
     const models=await signedOut.manager.models("muse");
     assert.deepEqual(models.models,[]);assert.match(models.error,/listed no models/);
   }finally{await signedOut.close()}
@@ -201,6 +203,33 @@ test("Muse Code's models are its own list, read once per binary and version: pol
     assert.equal(updated.version,"1.4.14-R7100.1");
     assert.equal((await hosts(fixture.log)).length,3,"another version lists its models again");
   }finally{await fixture.close()}
+});
+
+// Muse Code's own commands come with its model list, as Claude Code's, Grok Build's and OpenCode's do: the skills a session on the
+// same read-only host lists (skill/list), which the composer's / menu offers from the window's start. Trebell asked Muse for none
+// (tour L10-13). A Muse that lists no skills, or does not know skill/list, gives the models alone.
+test("Muse Code's own commands come with its model list, read on the same short read-only host, for the / menu of a new chat",{timeout:60_000},async()=>{
+  const fixture=await museFixture("trebell-muse-skills-",{environment:{MUSE_FAKE_SKILLS:fileURLToPath(new URL("./fixtures/muse/skill-list-1.4.13.json",import.meta.url))}});
+  try{
+    const listed=await fixture.manager.models("muse");
+    assert.deepEqual(listed.models,["muse-wonder-1.0","muse-spark-1.3","muse-spark-1.2","muse-spark-1.3-contributor"]);
+    assert.deepEqual(listed.inventory.commands.map(command=>command.name),["blender","create-plugin","create-skill","doctor","game-3d-visuals","grill","import","manage-settings","migrate","plan","resume-claude","resume-codex","threejs","threejs:threejs"]);
+    assert.deepEqual(listed.inventory.commands.find(command=>command.name==="migrate"),{name:"migrate",description:"Migrate Claude Code / Codex memory and MCP servers into Muse",input:{hint:"[memory|mcp] [claude|codex]"}});
+    const [host]=await hosts(fixture.log);
+    assert.deepEqual(host.start,["serve","--disable-shell","--disable-write","--no-session-log"],"the short read-only host, with no session log");
+    assert.equal((await hosts(fixture.log)).length,1,"one host lists both");
+    const [start]=await listingFrames(fixture.log,"session/start"),[skills]=await listingFrames(fixture.log,"skill/list");
+    assert.equal(Object.hasOwn(start.params,"sessionId"),false,"Muse names the session it lists them in");
+    assert.equal(typeof skills.params.sessionId,"string");
+    assert.equal((await listingFrames(fixture.log,"turn/start")).length+(await frames(fixture.log,"turn/start")).length,0,"no turn runs");
+    // The list a session resolves a typed command against.
+    assert.deepEqual(fixture.manager.museModelCatalog({id:"muse-default"}).commands.map(command=>command.name),listed.inventory.commands.map(command=>command.name));
+  }finally{await fixture.close()}
+  const plain=await museFixture("trebell-muse-no-skills-");
+  try{
+    const listed=await plain.manager.models("muse");
+    assert.equal(listed.models.length,4);assert.equal("inventory" in listed,false);
+  }finally{await plain.close()}
 });
 
 test("a model list Muse Code could not read is kept for a minute and then read again: the polls of that minute start no host and say to press Refresh, and a session start's check reads it again at once",{timeout:60_000},async()=>{

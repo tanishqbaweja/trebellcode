@@ -20,6 +20,10 @@
 //                          refused (missing_run) whatever it says
 //   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,048,576 the context holds after each plain turn (session/tokenUsage and
 //                          session/contextUsage), as a long conversation's does
+//   MUSE_FAKE_SKILLS       a file holding skill/list's answer ({"result":...}, as skill-list-1.4.13.json records Muse 1.4.13's in a
+//                          fresh home); without it skill/list is a method this host does not know. A turn whose input is a skill
+//                          part replies RAN /<selector>, with its arguments after a colon
+// session/start names the session Trebell names, or one of its own when Trebell names none, as Muse does.
 //   MUSE_FAKE_SANDBOX      what initialize says of the host's sandbox (sandboxAvailability): "available" unless it says
 //                          "unavailable", as Muse Code 1.4.13's host answers on Windows. Then a command the person (or Muse's reviewer)
 //                          allows is never started: its tool call fails with Muse's environment failure, and the turn replies
@@ -110,6 +114,8 @@ function startTurn(sessionId,params,{usage=null}={}){
   notify("turn/started",sessionId,{turnId,commandId:turnId});
   notify("item/completed",sessionId,{item:{itemId:turnId+"-user",kind:"userMessage",turnId,revision:1,status:"completed",text:words}});
   notify("item/started",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:1,status:"inProgress",text:""}});
+  const skill=(params.input||[]).find(part=>part.type==="skill");
+  if(skill){reply(sessionId,turn,`RAN /${skill.selector}${skill.arguments?": "+skill.arguments:""}`);return void setTimeout(()=>complete(sessionId,turnId),20)}
   if(/spawn subagent/i.test(words))return spawnSubagent(sessionId,turnId,turn);
   if(/run workflow/i.test(words))return runWorkflow(sessionId,turnId,turn);
   if(/ask approval|reviewer decides/i.test(words))return askApproval(sessionId,turnId,/reviewer decides/i.test(words));
@@ -321,9 +327,15 @@ const answers={
   initialize:params=>({serverInfo:{name:"muse",version:"1.4.13"},userAgent:"muse-build/1.4.13 (serve; fake)",museHome:"~/.local/share/muse",platformFamily:process.platform==="win32"?"windows":"unix",platformOs:process.platform==="win32"?"windows":process.platform,schema:{version:1,fingerprint:"sha256:7fddaf646dbc317e5fcac0785e135eb04df14fbb0db1863089dfd6da21730e5b"},grantedCapabilities:[...(params?.capabilities?.requestedCapabilities||[])],experimentalApi:false,sessionDurability:argv.includes("--no-session-log")?"ephemeral":"durable",sandboxAvailability:process.env.MUSE_FAKE_SANDBOX==="unavailable"?"unavailable":"available"}),
   "model/list":()=>catalog(),
   "session/start":params=>{
-    const state={modelId:params.modelId||"muse-spark-1.2",workspaceRoot:params.workspaceRoot};sessions.set(params.sessionId,state);
-    if(process.env.MUSE_FAKE_CHILD_ASK_HOLD)later(process.env.MUSE_FAKE_CHILD_ASK_HOLD,0,()=>askApproval(params.sessionId,state.lastTurnId||"background",false,{child:true}));
-    return {session:sessionRecord(params.sessionId,state),viewCursor:`v:${params.sessionId}:${++cursor}`};
+    const sessionId=params.sessionId||require("node:crypto").randomUUID();
+    const state={modelId:params.modelId||"muse-spark-1.2",workspaceRoot:params.workspaceRoot};sessions.set(sessionId,state);
+    if(process.env.MUSE_FAKE_CHILD_ASK_HOLD)later(process.env.MUSE_FAKE_CHILD_ASK_HOLD,0,()=>askApproval(sessionId,state.lastTurnId||"background",false,{child:true}));
+    return {session:sessionRecord(sessionId,state),viewCursor:`v:${sessionId}:${++cursor}`};
+  },
+  "skill/list":params=>{
+    if(!process.env.MUSE_FAKE_SKILLS)throw Object.assign(new Error("method not found: skill/list"),{code:-32601,kind:"methodNotFound"});
+    if(!sessions.has(params.sessionId))throw Object.assign(new Error(`session ${params.sessionId} not found`),{code:-32020,kind:"sessionNotFound"});
+    return JSON.parse(fs.readFileSync(process.env.MUSE_FAKE_SKILLS,"utf8")).result;
   },
   "session/resume":params=>{
     if(process.env.MUSE_FAKE_FORGET&&fs.existsSync(process.env.MUSE_FAKE_FORGET))throw Object.assign(new Error(`session ${params.sessionId} not found`),{code:-32020,kind:"sessionNotFound"});
@@ -374,7 +386,9 @@ const answers={
 readline.createInterface({input:process.stdin}).on("line",line=>{
   if(!line.trim())return;
   let frame;try{frame=JSON.parse(line)}catch{return}
-  log({frame});
+  // The read-only host Trebell starts to list Muse's models and commands (--no-session-log) logs what it receives as listingFrame, so
+  // the frames of a thread's hosts read apart from its session/start and skill/list.
+  log(argv.includes("--no-session-log")?{listingFrame:frame}:{frame});
   if(frame.id===undefined||!frame.method)return;
   const hold=process.env.MUSE_FAKE_START_HOLD;
   if(frame.method==="initialize"&&hold&&fs.existsSync(hold))return void setTimeout(function held(){if(fs.existsSync(hold))return void setTimeout(held,25);write({jsonrpc:"2.0",id:frame.id,result:answers.initialize(frame.params||{})})},25);

@@ -1496,9 +1496,10 @@ export class AgentRuntimeManager{
     if(instance.kind==="native")return {models:[],metadata:[],source:"provider"};
     if(instance.kind==="codex")return {models:[],metadata:[],source:"codex"};
     const status=await this.probe(instance,{environmentId});if(!status.available)return {models:[],metadata:[],source:"unavailable",error:status.message};
-    // Muse Code's are the list its status check read; Refresh reads it again.
+    // Muse Code's are the list its status check read; Refresh reads it again. The same read's skills are Muse Code's own commands,
+    // which the composer's / menu offers from the window's start (muse-model-catalog.mjs askForSkills).
     if(instance.kind==="muse"){
-      try{const catalog=await this.#museCatalog(instance,status.version);return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live"}}
+      try{const catalog=await this.#museCatalog(instance,status.version);return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live",...(catalog.commands?.length?{inventory:{commands:catalog.commands}}:{})}}
       catch(error){return {models:[],metadata:[],source:"unavailable",error:"Muse Code could not list its models: "+(error?.message||String(error))}}
     }
     if(instance.kind==="opencode"){
