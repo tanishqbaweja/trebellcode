@@ -1902,7 +1902,8 @@ export default function App(){
       // the column's is held.
       const pending=pendingHistoryPrependRef.current;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();
       if(pending.anchor)node.style.overflowAnchor="none";
-      if(placeHistoryAnchor(node,pending.anchor))setHistoryHold(node,historyHoldAfterScroll(node,node.firstElementChild?.getBoundingClientRect().height));
+      const column=node.firstElementChild;
+      if(placeHistoryAnchor(node,pending.anchor))setHistoryHold(node,historyHoldAfterScroll(node,column?.getBoundingClientRect().height));
       else node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
       followConversationEndRef.current=false;
       const settle={threadId,node,anchor:pending.anchor,top:node.scrollTop,frame:0,attempts:0};historyAnchorSettleRef.current=settle;
@@ -1921,7 +1922,6 @@ export default function App(){
         const live=conversationScrollRef.current;
         if(historyAnchorSettleRef.current===settle&&live&&!historyAnchorDisturbed(live,settle.anchor,settle.top)&&restoreHistoryPrependAnchor(live,settle.anchor))settle.top=live.scrollTop;
       };
-      const column=node.firstElementChild;
       if(pending.anchor&&column&&typeof ResizeObserver!=="undefined"){settle.observer=new ResizeObserver(resized);for(const box of [...column.children,...column.querySelector(".conversation-history")?.children||[]])settle.observer.observe(box)}
       settle.frame=requestAnimationFrame(step);
       return;
