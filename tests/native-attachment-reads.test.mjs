@@ -100,7 +100,7 @@ function assertOnlyAttachedRead(result){
   for(const message of result.toolMessages)for(const secret of [OTHER_THREAD,OUTSIDE])assert.equal(message.includes(secret),false,"the model never sees "+secret+": "+message.slice(0,300));
 }
 
-for(const permissionProfile of ["supervised","read-only","edits","full"]){
+for(const permissionProfile of ["supervised","read-only","edits","auto","full"]){
   test(`${permissionProfile}: Native is told of an attached document's text and reads the thread's attachments where they are, without asking`,{timeout:180_000},async t=>{
     const fixture=await attachmentFixture(t),thread=await fixture.start(permissionProfile);
     const result=await fixture.turn(thread,permissionProfile,[
