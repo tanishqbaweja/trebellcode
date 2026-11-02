@@ -113,13 +113,17 @@ for(const permissionProfile of ["supervised","read-only","edits","auto","full"])
       // The text's path written from the project, as a model may write it (tour L10's fix check, 2026-11-02 16:16Z).
       read(relative(fixture.repo,fixture.document+".txt")),
       {namespace:"trebell_repo",name:"read_source",arguments:{path:relative(fixture.repo,fixture.document+".txt").replaceAll("\\","/")}},
+      {namespace:"trebell_repo",name:"search_code",arguments:{query:"vault code",path:fixture.document+".txt"}},
     ],attachedInput(fixture));
     assert.match(result.userMessages[0],new RegExp(`Attached resource: report\\.docx \\(${escaped(fixture.document)}\\), readable as text at ${escaped(fixture.document+".txt")}`),"the line names the document's text");
     assert.match(result.userMessages[0],new RegExp(`Attached resource: notes\\.txt \\(${escaped(fixture.notes)}\\)(?!, readable)`),"a plain file is named as before");
     assert.deepEqual(result.asked,[],"no read of an attachment asks");
-    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,true,true,true,true],"every attachment was read, and the project's file too");
+    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,true,true,true,true,true],"every attachment was read, and the project's file too");
     assert.match(result.toolMessages[5],new RegExp(DOCUMENT_FACT),"a path from the project to the document's text reads it");
     assert.match(result.toolMessages[6],new RegExp(DOCUMENT_FACT));
+    const found=JSON.parse(result.toolMessages[7]);
+    assert.match(found,/\n1 match in 1 file \(path: /,"a search of the document's text finds its line");
+    assert.ok(found.includes("\n  3: The vault code is "+DOCUMENT_FACT+"."),found);
     assert.match(result.toolMessages[0],new RegExp(DOCUMENT_FACT),"the document's text was read");
     assert.match(result.toolMessages[1],new RegExp(NOTES_FACT),"the person's own attached file was read");
     assert.match(result.toolMessages[2],new RegExp(DOCUMENT_FACT));
@@ -139,14 +143,14 @@ test("Supervised and Read only: only the thread's own attachments are read outsi
       read(join(fixture.attachments,"..","attachments","1761500000001-cd34ef56-other.txt")),
       {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.other}},
       {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.outside}},
-      {namespace:"trebell_repo",name:"search_code",arguments:{query:"VAULT",path:fixture.document+".txt"}},
+      {namespace:"trebell_repo",name:"search_code",arguments:{query:"SECRET",path:fixture.other}},
       {namespace:"trebell_workspace",name:"write_file",arguments:{path:fixture.document+".txt",content:"overwritten"}},
       read(relative(fixture.repo,fixture.other)),
     ],attachedInput(fixture));
     assert.deepEqual(result.asked,[],`${permissionProfile}: a path out of the project is refused, not offered for approval`);
     assert.deepEqual(result.rows.map(row=>row.success),[false,false,false,false,false,false,false,false,false],`${permissionProfile}: none of them ran`);
     assertOnlyAttachedRead(result);
-    assert.equal(result.toolMessages[6].includes(DOCUMENT_FACT),false,"a search does not reach an attachment");
+    assert.match(result.toolMessages[6],/outside the active workspace/,"a search of another thread's attachment is refused");
     // A thread that has no attachment cannot read another thread's.
     const bare=await fixture.start(permissionProfile);
     const other=await fixture.turn(bare,permissionProfile,[read(fixture.document+".txt")]);
@@ -168,9 +172,15 @@ test("Supervised and Read only: a long document's text is read to its end with r
       {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.document+".txt",startLine:11_995,maxLines:400}},
       {namespace:"trebell_repo",name:"read_source",arguments:{path:(fixture.document+".txt").replaceAll("\\","/"),startLine:1,endLine:3}},
       {namespace:"trebell_repo",name:"read_source",arguments:{path:fixture.document,startLine:1}},
+      {namespace:"trebell_repo",name:"search_code",arguments:{query:"END-[A-Z]+-\\d+",regex:true,path:fixture.document+".txt"}},
+      {namespace:"trebell_repo",name:"search_code",arguments:{query:"the tide came in",path:fixture.document+".txt",limit:2}},
     ],attachedInput(fixture));
     assert.deepEqual(result.asked,[],`${permissionProfile}: no read of an attachment asks`);
-    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,false],`${permissionProfile}: the text's lines are read, the Word file's own bytes are not text`);
+    assert.deepEqual(result.rows.map(row=>row.success),[true,true,true,false,true,true],`${permissionProfile}: the text's lines are read, the Word file's own bytes are not text`);
+    const [last,many]=[JSON.parse(result.toolMessages[4]),JSON.parse(result.toolMessages[5])];
+    assert.match(last,/\n1 match in 1 file /);assert.ok(last.includes("\n  12001: The last line holds END-OCHRE-9001."),last);
+    assert.match(many,/\n12000 matches in 1 file \(path: [^)]*\); 2 shown with text, the rest by line number\n/,"a case-blind search counts every line it found");
+    assert.ok(many.includes("\n  1: Line 1. The tide came in")&&many.includes("\n  2: Line 2. The tide came in"),many);
     assert.equal(result.toolMessages[0].includes("END-OCHRE-9001"),false,"one read_file gives the text's first megabyte only");
     assert.match(result.toolMessages[1],/^"Line 11995\. The tide[^]*Line 12000\. The tide[^]*The last line holds END-OCHRE-9001\./,"read_source reads the text's last lines");
     assert.match(result.toolMessages[2],/^"Line 1\. The tide[^]*Line 3\. The tide[^]*nets\."$/,"and the first three");

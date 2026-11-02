@@ -64,6 +64,11 @@ test("the runner's read_source reads the project and refuses a file outside it, 
   const results=[await outcome("src/app.js"),await outcome(join(root,"outside.txt")),await outcome("../outside.txt")];
   if(process.env.TREBELL_PRINT_DIGESTS)console.log("sources",JSON.stringify(results));
   assert.equal(digest(results),"6b1920331158309ea061a0a81fc4516f271007ce94237cd8b2ce46874c53d28c");
+  // And so does every search_code, a search scoped to a file outside the project too.
+  const search=async args=>JSON.stringify(await executor({namespace:"trebell_repo",name:"search_code",arguments:args})).split(JSON.stringify(root).slice(1,-1)).join("<root>").split("\\\\").join("/");
+  const searches=[await search({query:"answer"}),await search({query:"outside",path:join(root,"outside.txt")}),await search({query:"outside",path:"../outside.txt"})];
+  if(process.env.TREBELL_PRINT_DIGESTS)console.log("searches",JSON.stringify(searches));
+  assert.equal(digest(searches),"8b9b43c44678e7ccccf300c22b3207227465e3b2381f96dc246e8cbe79631301");
 });
 
 test("the runner's built-in read_file reads in the workspace and refuses a file outside it, with the same results",async t=>{

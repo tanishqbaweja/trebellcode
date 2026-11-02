@@ -1238,7 +1238,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const executeTool=createNativeToolExecutor({
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         discoverRepositoryTools,directTool:requested=>exposedToolNamed(tools,requested),outputStore,
-        projectAvailable:!projectless,attachedSource:attachedFiles?args=>attachedFiles.readSource(args):null,
+        projectAvailable:!projectless,attachedSource:attachedFiles?(name,args)=>name==="search_code"?attachedFiles.searchCode(args):attachedFiles.readSource(args):null,
         policyContext:()=>({...nativePolicyContext({
           permissionProfile:normalizePermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),workspace:runtimeCwd,projectAvailable:!projectless,
           desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),delegationAvailable:namespaceNames.has("trebell_delegate"),

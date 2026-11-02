@@ -52,9 +52,11 @@ export function createNativeToolExecutor({
       return {...base,workspace:override.workspace??base.workspace??root??null,projectAvailable:override.projectAvailable??base.projectAvailable??(projectAvailable==null?Boolean(root):Boolean(projectAvailable)),...override};
     },
     execute:async call=>{
-      // attachedSource(arguments): the lines of a file attached to the thread that a read_source asks for, read where the file is (the
-      // relay's list of the thread's attachments), else null. Without it (the benchmark runner) every read_source reads the project.
-      if(typeof attachedSource==="function"&&call.namespace==="trebell_repo"&&call.name==="read_source"){const read=await attachedSource(call.arguments||{});if(read)return read}
+      // attachedSource(name, arguments): what a read_source or a search_code of a file attached to the thread asks for, read where the
+      // file is (the relay's list of the thread's attachments), else null. Without it (the benchmark runner) both read the project.
+      if(typeof attachedSource==="function"&&call.namespace==="trebell_repo"&&(call.name==="read_source"||call.name==="search_code")){
+        const read=await attachedSource(call.name,call.arguments||{});if(read)return formatRepositorySearchResult(call.name,read)??read;
+      }
       const repositoryInvocation=repositoryCall(call);
       if(repositoryInvocation){
         const result=await invokeRepositoryTool(repositoryHandlers,repositoryInvocation.definition,repositoryInvocation.args);
