@@ -839,7 +839,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
       <Section title="Import agent configuration" icon={RefreshCw} count={migrations?(migrations.items||[]).length:undefined}>
         <p>Detect reusable configuration from supported external coding agents in your home directory and this workspace.</p>
-        <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy||!!migrationImportId}>Scan</button>{(migrationImportId||migrations?.items?.length>0)&&<button onClick={importExternalConfig} disabled={!!busy||!!migrationImportId}>{migrationImportId?"Importing…":"Import "+migrations.items.length+(migrations.items.length===1?" item":" items")}</button>}</div>
+        <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy||!!migrationImportId}>Scan</button>{(migrationImportId||migrations?.items?.length>0)&&<button onClick={importExternalConfig} disabled={!!busy||!!migrationImportId}>{migrationImportId?"Importing…":"Import "+countLabel(migrations.items.length,"item")}</button>}</div>
         <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||humanizeIdentifier(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{humanizeIdentifier(item.itemType)}</em></div>)}</div>
         {(migrations?.connectors||[]).length>0&&<p>{migrations.connectors.length} connector candidate{migrations.connectors.length===1?"":"s"} detected.</p>}
         {migrationMessage&&<p className="capability-status">{migrationMessage}</p>}
