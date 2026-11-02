@@ -32,11 +32,15 @@ jobs:
         run: npm ci --no-audit --no-fund
       # The runner's own TEMP is a short 8.3 path (C:\Users\RUNNER~1\...), while git and Node give back the long form of the
       # same folder, so tests that compare paths of the repositories they make there would fail on the runner alone.
+      # This runs what npm test runs, less tests/muse-updates.test.mjs: its stand-in Muse launcher goes through Windows
+      # PowerShell, which starts too slowly on the runner (issue #15). It still runs with npm test on a developer's machine.
       - name: Run the unit and integration tests
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: npm test
+        run: |
+          $files = Get-ChildItem tests -Filter *.test.mjs | Where-Object Name -ne 'muse-updates.test.mjs' | ForEach-Object { "tests/$($_.Name)" }
+          node --import tsx --test --test-concurrency=2 @files
 
   ui:
     name: UI build and bundle budgets
