@@ -980,7 +980,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     // This recognition lets the mic go, unless a press or a newer one has it: false then.
     const end=()=>{clearTimeout(recognition.wait);if(recognitionRef.current!==recognition)return false;recognitionRef.current=null;setListening(false);return true};
     recognition.wait=setTimeout(()=>{if(end()){try{recognition.abort()}catch{}say(DICTATION_SILENT)}},DICTATION_WAIT_MS);
-    Object.assign(recognition,{lang:navigator.language||"en-US",interimResults:false,continuous:false});
+    // One phrase, final results only: continuous and interimResults are off by the Web Speech API's own defaults.
+    recognition.lang=navigator.language||"en-US";
     recognition.onstart=()=>{started=true;clearTimeout(recognition.wait)};
     recognition.onend=()=>{if(end()&&!started)say(DICTATION_SILENT)};
     recognition.onerror=event=>{const code=event?.error;if(end()&&code!=="aborted")say(DICTATION_ERRORS[code]||DICTATION_ERRORS[""])};
