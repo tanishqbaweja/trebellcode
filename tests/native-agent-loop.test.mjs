@@ -7429,3 +7429,20 @@ test("native terminal time limit still ends a command that runs past it once app
   // The whole limit and its grace count from the answer: 1 s + 3.5 s after it, not after the call began.
   const timeout=events.find(event=>event.name==="native.tool.watchdog_timeout");assert.ok(timeout);assert.ok(timeout.seenAt-answeredAt>=4_400,`settled ${timeout.seenAt-answeredAt} ms after the answer`);
 });
+
+test("native terminal time limit of a command nobody is asked about still runs from its call, as with Full access",async()=>{
+  let turns=0,calledAt=0;const events=[],seen=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"run the check"}],onEvent:event=>events.push({...event,seenAt:Date.now()}),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{turns++;return turns===1?{text:"",toolCalls:[{id:"call-full-access",namespace:"trebell_terminal",name:"run",arguments:'{"command":"hung-check","args":[],"timeout_ms":1000}'}],usage:{}}:{text:"bounded",toolCalls:[],usage:{}}},
+    // An executor that never asks (the benchmark runner's, Full access): the call carries the hook, invisible to copies, and the clock
+    // never stops.
+    executeTool:async call=>{calledAt=Date.now();seen.push(Object.keys(structuredClone(call)),JSON.parse(JSON.stringify(call,(key,value)=>key==="signal"?undefined:value)));return await new Promise(()=>{})},
+  });
+  assert.equal(result.text,"bounded");assert.equal(typeof seen[0],"object");assert.equal(seen[0].includes("onApprovalWait"),false);
+  const abort=events.find(event=>event.name==="native.tool.watchdog_abort"),timeout=events.find(event=>event.name==="native.tool.watchdog_timeout");
+  // 1 s limit + 0.5 s before the abort and + 3.5 s before the call is settled, counted from the call as before.
+  assert.ok(abort.seenAt-calledAt>=1_400&&abort.seenAt-calledAt<2_400,`aborted ${abort.seenAt-calledAt} ms after the call`);
+  assert.ok(timeout.seenAt-calledAt>=4_400&&timeout.seenAt-calledAt<5_400,`settled ${timeout.seenAt-calledAt} ms after the call`);
+});
