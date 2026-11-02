@@ -24,6 +24,9 @@ function pngProblem(bytes){
   while(offset<bytes.length){
     if(offset+8>bytes.length){if(!data.length)return "the file is cut off between chunks";cut=true;break}
     const length=bytes.readUInt32BE(offset),type=bytes.toString("latin1",offset+4,offset+8);
+    // A chunk's type is four ASCII letters. Before any pixel data, bytes that do not read as a chunk are no PNG at all (a PNG signature
+    // in front of text, say), so the reason names no chunk; after it they are judged by the pixel data, as a cut file is.
+    if(!data.length&&!/^[A-Za-z]{4}$/.test(type))return "it is not a valid PNG image";
     if(length>0x7fffffff||offset+12+length>bytes.length){
       if(type!=="IDAT"&&!data.length)return `the file is cut off inside its ${type} chunk`;
       if(type==="IDAT"&&header)data.push(bytes.subarray(offset+8,Math.min(bytes.length,offset+8+length)));
@@ -96,11 +99,13 @@ function webpProblem(bytes){
   const end=size+8;let offset=12,image=false,extended=false;
   while(offset+8<=end){
     const type=bytes.toString("latin1",offset,offset+4),length=bytes.readUInt32LE(offset+4),body=offset+8;
-    if(body+length>end)return `it is cut off inside its ${type.trim()} chunk`;
+    // The first chunk is named before its size is trusted, so bytes that are no WebP chunk (text after the header, say) are said to be
+    // that, not a cut chunk with a name read from them.
     if(offset===12){
       if(type==="VP8X")extended=true;
       else if(type!=="VP8 "&&type!=="VP8L")return "its first chunk is not a VP8, VP8L or VP8X image chunk";
     }
+    if(body+length>end)return `it is cut off inside its ${type.trim()} chunk`;
     if(type==="VP8 "){
       if(length<10||bytes[body+3]!==0x9d||bytes[body+4]!==0x01||bytes[body+5]!==0x2a)return "its VP8 frame header is invalid";
       if(!(bytes.readUInt16LE(body+6)&0x3fff)||!(bytes.readUInt16LE(body+8)&0x3fff))return "its VP8 frame header gives a zero size";

@@ -65,3 +65,19 @@ test("Native image check names what keeps a provider from decoding an image",()=
   const noFrame=Buffer.from(TINY_WEBP),vp8=noFrame.indexOf(Buffer.from("VP8 ","latin1"));noFrame[vp8+8+3]=0;
   assert.match(imageDecodeProblem(noFrame,"image/webp"),/VP8 frame header is invalid/);
 });
+
+// L10-F-7 (2026-11-02): a file that is a PNG signature followed by text (tour L10's pictures-ws-broken.png, these very 35 bytes) was
+// "cut off inside its  is  chunk", a chunk name read from the text. Bytes that do not read as a chunk before any pixel data are no
+// PNG at all, and a WebP header followed by anything but an image chunk says so the same way, with no name read from those bytes.
+test("Native image check says an image whose bytes after its signature are no chunks is not valid, naming no chunk read from them",()=>{
+  const textAfterSignature=Buffer.from("iVBORw0KGgp0aGlzIGlzIG5vdCByZWFsbHkgYW4gaW1hZ2U=","base64");
+  assert.equal(textAfterSignature.subarray(8).toString("latin1"),"this is not really an image");
+  assert.equal(imageDecodeProblem(textAfterSignature,"image/png"),"it is not a valid PNG image");
+  assert.equal(imageDecodeProblem(Buffer.concat([PIXEL_PNG.subarray(0,8),Buffer.from("\u0000\u0000\u0000\u000d1234")]),"image/png"),"it is not a valid PNG image","a chunk type of digits is no chunk");
+  const riffText=Buffer.concat([Buffer.from("RIFF","latin1"),Buffer.alloc(4),Buffer.from("WEBPthis is not really an image","latin1")]);riffText.writeUInt32LE(riffText.length-8,4);
+  assert.equal(imageDecodeProblem(riffText,"image/webp"),"its first chunk is not a VP8, VP8L or VP8X image chunk");
+  // Every other reason reads as before: a real chunk cut off still names it, and bytes after the pixel data are judged by the pixels.
+  assert.equal(imageDecodeProblem(PIXEL_PNG.subarray(0,20),"image/png"),"the file is cut off inside its IHDR chunk");
+  assert.equal(imageDecodeProblem(Buffer.concat([png({width:5,height:3,end:false}),Buffer.from("trailing text, not a chunk")]),"image/png"),null);
+  assert.equal(imageDecodeProblem(TINY_WEBP.subarray(0,40),"image/webp"),`the file is shorter than its RIFF size (40 of ${TINY_WEBP.readUInt32LE(4)+8} bytes), so it looks cut off`);
+});
