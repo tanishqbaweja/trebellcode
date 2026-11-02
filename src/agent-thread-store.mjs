@@ -5,6 +5,13 @@ import { isToolCallItem } from "./goal-state.mjs";
 import { SqliteAgentThreadStore, threadFromRow } from "./sqlite-agent-thread-store.mjs";
 
 function clone(value){return JSON.parse(JSON.stringify(value))}
+// How long a turn ran up to nowMs: to the millisecond from startedAtMs, which a turn started since keeps beside its start in seconds, so
+// a reopened turn shows the time it showed live; in whole seconds for one stored before (startedAt alone).
+function turnDurationMs(turn,nowMs){
+  const startedMs=Number(turn?.startedAtMs);
+  if(Number.isFinite(startedMs)&&startedMs>0)return Math.max(0,nowMs-startedMs);
+  return turn?.startedAt?Math.max(0,(Math.floor(nowMs/1000)-turn.startedAt)*1000):null;
+}
 const TERMINAL_TOOL_STATUSES=new Set(["completed","failed","cancelled","canceled","rejected","declined","skipped","notRun"]);
 const REASONING_PART_LIMIT=64*1024;
 // How much parsed history the store keeps: the 2 threads used last, at most 32 M characters of their stored JSON, each dropped after
@@ -179,7 +186,7 @@ export class AgentThreadStore{
     if(index>=0)this.data.threads[index]=next;else this.data.threads.unshift(next);return next;
   }
   reconcileRestart({continueAfterRestart=false}={}){
-    const now=Math.floor(Date.now()/1000),recoverable=[],changed=[],candidateIds=new Set(this.storage.activeThreadIds());
+    const nowMs=Date.now(),now=Math.floor(nowMs/1000),recoverable=[],changed=[],candidateIds=new Set(this.storage.activeThreadIds());
     for(const thread of this.data.threads)if(thread.status?.type==="active")candidateIds.add(thread.id);
     for(const id of candidateIds){
       const thread=this.storage.get(id);if(!thread)continue;
@@ -189,15 +196,15 @@ export class AgentThreadStore{
       changed.push(thread);
       const recoverySafety=activeTurn?interruptedTurnRecoverySafety(activeTurn):{safe:true,uncertainTools:[]};
       if(activeTurn&&continueAfterRestart&&thread.providerSessionId&&recoverySafety.safe){
-        activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;
+        activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=turnDurationMs(activeTurn,nowMs);
         activeTurn.error={message:"Trebell restarted while this turn was running. Recovery is queued."};
         thread.status={type:"idle"};thread.recovery={pending:true,turnId:activeTurn.id,createdAt:now};recoverable.push({threadId:thread.id,turnId:activeTurn.id,runtime:thread.runtime});
       }else if(activeTurn&&continueAfterRestart&&thread.providerSessionId&&!recoverySafety.safe){
-        activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;
+        activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=turnDurationMs(activeTurn,nowMs);
         activeTurn.error={message:recoverySafety.message};
         thread.status={type:"systemError"};thread.recovery={pending:false,blocked:true,turnId:activeTurn.id,createdAt:now,reason:recoverySafety.reason,message:recoverySafety.message,uncertainTools:recoverySafety.uncertainTools};
       }else{
-        if(activeTurn){activeTurn.status="failed";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;activeTurn.error={message:"Agent session was interrupted by a Trebell restart. Send a new message to continue."}}
+        if(activeTurn){activeTurn.status="failed";activeTurn.completedAt=now;activeTurn.durationMs=turnDurationMs(activeTurn,nowMs);activeTurn.error={message:"Agent session was interrupted by a Trebell restart. Send a new message to continue."}}
         thread.status={type:"systemError"};delete thread.recovery;
       }
       // A turn that does not go on ends with the calls it still had pending stopped, as the relay ends a stopped or failed turn's
@@ -250,10 +257,12 @@ export class AgentThreadStore{
   #turnOf(threadId,turnId){
     const thread=this.peek(threadId),turn=thread?.turns?.find(item=>item.id===turnId);return turn?{thread,turn}:null;
   }
-  // inputFiles: the files the message went with ({type,path,name}, agent-relay fileInputs), kept after its text.
-  addTurn(threadId,{id=randomUUID(),inputText="",inputFiles=[],items=[],status="inProgress",startedAt=Math.floor(Date.now()/1000)}={}){
+  // inputFiles: the files the message went with ({type,path,name}, agent-relay fileInputs), kept after its text. model (the name the
+  // window gave it, modelLabel) and permissionProfile: what the message was sent with, which the reopened thread names over its
+  // replies as the live window did.
+  addTurn(threadId,{id=randomUUID(),inputText="",inputFiles=[],items=[],status="inProgress",startedAtMs=Date.now(),startedAt=Math.floor(startedAtMs/1000),model=null,modelLabel=null,permissionProfile=null}={}){
     const current=this.peek(threadId);if(!current)return null;
-    const turn={id,status,startedAt,completedAt:null,durationMs:null,error:null,items:[
+    const turn={id,status,startedAt,startedAtMs,...(model?{model:String(model)}:{}),...(modelLabel?{modelLabel:String(modelLabel)}:{}),...(permissionProfile?{permissionProfile:String(permissionProfile)}:{}),completedAt:null,durationMs:null,error:null,items:[
       ...(inputText?[{type:"userMessage",id:`user-${id}`,clientId:null,content:[{type:"text",text:redactSecretText(inputText,{environment:this.env})},...inputFiles]}]:[]),
       ...items,
     ]};
@@ -279,8 +288,8 @@ export class AgentThreadStore{
   }
   finishTurn(threadId,turnId,{status="completed",error=null}={}){
     const found=this.#turnOf(threadId,turnId);if(!found)return null;
-    const completedAt=Math.floor(Date.now()/1000),turn={...found.turn,status,error,completedAt};
-    turn.durationMs=turn.startedAt?Math.max(0,(completedAt-turn.startedAt)*1000):null;
+    const nowMs=Date.now(),completedAt=Math.floor(nowMs/1000),turn={...found.turn,status,error,completedAt};
+    turn.durationMs=turnDurationMs(turn,nowMs);
     const thread={...found.thread,status:status==="failed"?{type:"systemError"}:{type:"idle"}};delete thread.recovery;thread.updatedAt=completedAt;this.#persistTurn(thread,turn);this.#cacheMetadata(thread);return clone(turn);
   }
   rename(id,name){return this.update(id,{name:String(name||"").trim()||null})}

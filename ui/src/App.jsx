@@ -466,6 +466,7 @@ async function resumeWithBoundedHistory(rpc,params,onAnswer=()=>{}){
 }
 
 function titleOf(thread){return threadTitle(thread)}
+const LAST_MODEL_KEY="trebell-last-model:";
 function modelLabel(id){return String(id||"")}
 function compactModelLabel(id){
   const full=modelLabel(id);
@@ -2384,14 +2385,16 @@ export default function App(){
     }
   }
 
-  // The model Trebell's first load lands on: the open thread's (one opened while its harness still listed its models), else the open
-  // project's default, else the catalog's own; with none of them listed, applyModelCatalog decides (a harness's first model, or
-  // Native asking which).
+  // The model Trebell's first load lands on: the open thread's (one opened while its harness still listed its models), else the one
+  // the composer had last (LAST_MODEL_KEY), as a New task keeps it while Trebell runs, else the open project's default, else the
+  // catalog's own; with none of them listed, applyModelCatalog decides (a harness's first model, or Native asking which).
   const startupModelChoice=useLatestCallback((ids,catalogDefault)=>{
     const thread=activeThreadRef.current;
     const threadModel=!thread?null:agentRuntime==="codex"?(codexThreadState?.threadId===thread.id?codexThreadState.model:null):thread.model;
-    return [threadModel,currentProject?.effectiveSettings?.defaultModel,catalogDefault].find(id=>id&&ids.includes(id))||"";
+    let last=null;try{last=localStorage.getItem(LAST_MODEL_KEY+agentRuntime)}catch{}
+    return [threadModel,last,currentProject?.effectiveSettings?.defaultModel,catalogDefault].find(id=>id&&ids.includes(id))||"";
   });
+  useEffect(()=>{if(model)try{localStorage.setItem(LAST_MODEL_KEY+agentRuntimeRef.current,model)}catch{}},[model]);
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
@@ -3332,12 +3335,13 @@ export default function App(){
     }
     else if(message.method==="turn/completed"){
       const completedTurnId=p.turn?.id||p.turnId||null,completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:receivedAt;
-      // The reply's "done · 3.2s": measured here when this window saw the turn start, else the harness's own duration.
+      // The reply's "done · 3.2s": the turn's own time when it was kept to the millisecond (startedAtMs, which the reopened thread
+      // shows too), else measured here when this window saw the turn start, else the harness's own duration.
       const outcomeKey=turnInfoKey(threadId,completedTurnId),outcomeStatus=turnOutcomeStatus(p.turn?.status||"completed");
       if(outcomeKey){
         const startedAtMs=turnClockRef.current.get(outcomeKey);turnClockRef.current.delete(outcomeKey);
         const measuredMs=startedAtMs?Math.max(0,receivedAt-startedAtMs):null,reportedMs=Number(p.turn?.durationMs);
-        const durationMs=measuredMs||(Number.isFinite(reportedMs)&&reportedMs>0?reportedMs:null),error=turnFailureText(p.turn);
+        const durationMs=(p.turn?.startedAtMs>0&&reportedMs>0?reportedMs:measuredMs)||(Number.isFinite(reportedMs)&&reportedMs>0?reportedMs:null),error=turnFailureText(p.turn);
         // A repeated completion (a replay after a reconnect) keeps the time measured the first time; one that ends the turn anew
         // replaces it (recordTurnCompletion). The error is what a turn without a reply shows once the card moves on.
         if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:recordTurnCompletion(prev[outcomeKey],{status:outcomeStatus,durationMs,completedAt:completedAtMs/1000,error})}));
@@ -3971,7 +3975,7 @@ export default function App(){
     const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(queueNowRef.current.threadMeta[thread.id]?.trebellQueue||savedMeta.trebellQueue||[],localQueueStartRef.current,WINDOW_KEY);
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
-    activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!reopeningCurrentThread)shownWelcomeRef.current=null;if(!preserveSection&&sectionRef.current===from&&!openRunRef.current?.pageAsked)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;liveSendRef.current=null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!reopeningCurrentThread)shownWelcomeRef.current=null;if(!preserveSection&&sectionRef.current===from&&!openRunRef.current?.pageAsked)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;liveSendRef.current=null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||openedThread.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     // A hold a Stop put on its queue holds it again after a reload or a restart, with the follow-ups it shows (holdQueue).
     if(!useNativeQueue&&savedMeta.trebellQueueHeld&&!holdKnownRef.current.has(String(thread.id)))holdQueue(thread.id,true,{saved:true});
     // The turn that still runs (resumedTurnId) gets back on its live card the MCP progress and the diff it had, those sent while the
@@ -4369,7 +4373,7 @@ export default function App(){
       const turnContext={...repositoryContextEntries(contextPacket,agentRuntime==="native"?nativeTurnContextOptions(text):{seedOnly:false,currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(inputText??text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;if(shown())setActiveTurnId(turnId);if(turnId&&liveSendRef.current?.threadId===String(thread.id))liveSendRef.current={threadId:String(thread.id),turnId:String(turnId)};if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null,modelLabel:modelMeta?.[modelId]?.name||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(inputText??text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;if(shown())setActiveTurnId(turnId);if(turnId&&liveSendRef.current?.threadId===String(thread.id))liveSendRef.current={threadId:String(thread.id),turnId:String(turnId)};if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
       // The thread runs a turn again, so a queue a Stop held goes on once it ends.
       if(!pendingSend.stopped)holdQueue(thread.id,false);
       // An answer with no start time names a turn Codex has queued, which it can interrupt only once it has started it

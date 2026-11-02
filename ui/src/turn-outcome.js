@@ -42,15 +42,16 @@ export function turnFailureText(turn){
   return (String(error.additionalDetails??"").trim()||String(error.message??"").trim()||notice.hint)?notice.title:"";
 }
 
-// How finished turns ended, by turn id, from a page of history turns. Imported history reports durationMs 0, which is
-// not a measurement, so it is dropped. completedAt (seconds) tells a later completion of a turn from a replay of one.
+// How finished turns ended, by turn id, from a page of history turns, with the model and permission mode a turn was sent with when
+// the thread keeps them (the relay's turns do). Imported history reports durationMs 0, which is not a measurement, so it is dropped.
+// completedAt (seconds) tells a later completion of a turn from a replay of one.
 export function turnOutcomesFromTurns(turns=[]){
   const out={};
   for(const turn of turns||[]){
     const id=turn?.id;if(!id)continue;
     const status=turnOutcomeStatus(turn.status);if(!status)continue;
-    const error=turnFailureText(turn),completedAt=positiveDuration(turn.completedAt);
-    out[String(id)]={status,durationMs:positiveDuration(turn.durationMs),...(completedAt?{completedAt}:{}),...(error?{error}:{})};
+    const error=turnFailureText(turn),completedAt=positiveDuration(turn.completedAt),model=String(turn.modelLabel||"")||String(turn.model||"").split("/").filter(Boolean).pop(),mode=permissionModeLabel(turn.permissionProfile);
+    out[String(id)]={status,durationMs:positiveDuration(turn.durationMs),...(completedAt?{completedAt}:{}),...(error?{error}:{}),...(model?{model}:{}),...(mode?{mode}:{})};
   }
   return out;
 }
@@ -68,8 +69,9 @@ export function mergeTurnOutcomes(current={},threadId,turns=[]){
     const later=Boolean(known.status&&known.completedAt&&outcome.completedAt>known.completedAt),{error:knownError,...kept}=known;
     const merged=later?{...kept,...outcome}:{...kept,status:known.status||outcome.status,durationMs:known.durationMs??outcome.durationMs};
     const completedAt=later?outcome.completedAt:known.completedAt??outcome.completedAt;if(completedAt)merged.completedAt=completedAt;
+    for(const fact of ["model","mode"]){const value=known[fact]||outcome[fact];if(value)merged[fact]=value}
     const error=later?outcome.error:knownError||outcome.error;if(error)merged.error=error;else delete merged.error;
-    if(known.status===merged.status&&known.durationMs===merged.durationMs&&known.mode===merged.mode&&known.error===merged.error&&known.completedAt===merged.completedAt)continue;
+    if(known.status===merged.status&&known.durationMs===merged.durationMs&&known.mode===merged.mode&&known.model===merged.model&&known.error===merged.error&&known.completedAt===merged.completedAt)continue;
     if(next===current)next={...current};
     next[key]=merged;
   }
@@ -140,8 +142,8 @@ export function turnOutcomePill(info){
   return {label:time?word+" · "+time:word,tone:status==="interrupted"?"warn":"err"};
 }
 
-// The heading over a turn's replies: the harness, then the model and the permission mode the turn was sent with, which only the
-// window that sent it knows (a reload names the harness alone).
+// The heading over a turn's replies: the harness, then the model and the permission mode the turn was sent with, as the window that
+// sent it knows them and as the thread keeps them for a reload.
 function turnHeading(harnessLabel,info){return harnessLabel?[harnessLabel,info?.model,info?.mode].filter(Boolean).join(" · "):""}
 
 // Per assistant message id: the heading its row shows (first reply of a turn) and the outcome pill (last reply of a

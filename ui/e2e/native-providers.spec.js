@@ -479,10 +479,11 @@ for(const mode of MODES)test(`Native on a provider that names no default model a
     await expect(picker).toHaveText("muse-spark-1.3");
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-choice-picked-${mode}.png`});
 
-    // After a reload a new task assumes nothing again, and the thread opened again keeps the model it was started with.
+    // After a reload a new task opens on the model the person picked last, as a new task does while Trebell runs (no model Trebell
+    // chose for them), and the thread opened again keeps the model it was started with.
     await page.reload();
     await expect(composer).toBeVisible({timeout:15_000});
-    await expect(picker).toHaveText("Choose a model",{timeout:15_000});
+    await expect(picker).toHaveText("muse-spark-1.3",{timeout:15_000});
     const row=page.locator(".thread-row").first();await expect(row).toBeVisible({timeout:15_000});await row.locator(".thread-main").click();
     await expect(picker).toHaveText("muse-spark-1.3",{timeout:15_000});
     await composer.fill("One more follow-up");await send.click();

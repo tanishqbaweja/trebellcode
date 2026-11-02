@@ -864,6 +864,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
   }
+  // The last context reading of each thread whose turn runs, kept on the thread when the turn ends (finishTurn).
+  const tokenReadings=new Map();
   // A turn that was stopped or failed ends the calls it still had pending as stopped, in the thread and in the open window before its
   // turn/completed: a harness may run a call it calls pending (Antigravity's commands and Cursor's edits go from pending to completed with
   // nothing between), so one cut off with its turn may have run, and the ACP client marks a turn's unfinished calls cancelled. A call still
@@ -871,6 +873,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // (runsPastTurn) is left to its own updates (cutOffCall). A turn a Trebell restart ends gets the same (reconcileRestart), and a read of a
   // thread a build before them stored gives such calls stopped too (withCutOffCalls).
   function finishTurn(threadId,turnId,{status="completed",error=null}={}){
+    // The thread keeps its context reading as its turn ended, which the composer shows when the thread is opened again.
+    const reading=tokenReadings.get(threadId);if(reading){tokenReadings.delete(threadId);threadStore.update(threadId,{tokenUsage:reading},{touch:false})}
     if(status!=="completed"){
       flushToolWrites(threadId);
       const cut=(peekThread(threadId)?.turns?.find(turn=>turn.id===turnId)?.items||[]).filter(cutOffCall);
@@ -1658,7 +1662,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const context=update.context&&typeof update.context==="object"?update.context:null,contextTokens=Number(update.contextTokens)>0?Number(update.contextTokens):0;
       const last=context?{totalTokens:Number(context.totalTokens)||0,inputTokens:Number(context.inputTokens)||0,cachedInputTokens:Number(context.cachedInputTokens)||0,cacheWriteInputTokens:Number(context.cacheWriteInputTokens)||0,outputTokens:Number(context.outputTokens)||0,reasoningOutputTokens:Number(context.reasoningOutputTokens)||0}
         :contextTokens?{totalTokens:contextTokens,inputTokens:contextTokens,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0}:snapshot;
-      emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage:{total:snapshot,last,modelContextWindow:size||null,cost:update.cost||null}});
+      const tokenUsage={total:snapshot,last,modelContextWindow:size||null,cost:update.cost||null};tokenReadings.set(threadId,tokenUsage);
+      emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage});
     }else if(type==="diff"){
       emit("turn/diff/updated",{threadId,turnId,diff:update.diff||[]});
     }else if(type==="claude_fork_materialized"){
@@ -2245,7 +2250,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // thread and the window show this turn running after it (MuseAgentSession.takeOverWake). The message's Muse turn is made here, so
       // a report Muse starts while this turn gathers its context joins it rather than starting a turn of its own after it.
       if(session instanceof MuseAgentSession&&session.takeOverWake())await wakeSettlements.get(session)?.catch(()=>{});
-      const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress"});session.__assistant="";
+      const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress",model:params.model||session.model||thread.model||null,modelLabel:typeof params.modelLabel==="string"?params.modelLabel.slice(0,120):null,permissionProfile:(threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||null});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
       if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
