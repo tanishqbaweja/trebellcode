@@ -883,6 +883,20 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>h1{font-size:18px}
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.suggestions{margin-top:10px}
 }
+/* The room the drawer leaves above the composer decides too, whatever the window's height: the scroller is a size container while
+   it holds the hero, and as its room shrinks the mark, the subtitle, the starters and at last the title give way, so a tall drawer
+   never cuts the hero (the mark showed cut in half behind the composer with the drawer at its tallest, tour L10-23). */
+.main-frame.terminal-open .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){container-type:size}
+@container (max-height:250px){.main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.welcome-mark{display:none}}
+@container (max-height:190px){
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{padding-block:4px}
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>p{display:none}
+}
+@container (max-height:130px){
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:0}
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.suggestions{display:none}
+}
+@container (max-height:40px){.main-frame.terminal-open .chat-workspace .conversation-column>.welcome>h1{display:none}}
 
 /* Docked inspector wider than 900px: the main column may shrink, and App clamps --right-panel-width to the window, so the
    panel never runs past the right edge (960-1140px windows). Its test is the overlay drawer's below, negated, so every width,
