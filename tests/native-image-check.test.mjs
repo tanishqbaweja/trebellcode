@@ -74,6 +74,7 @@ test("Native image check says an image whose bytes after its signature are no ch
   assert.equal(textAfterSignature.subarray(8).toString("latin1"),"this is not really an image");
   assert.equal(imageDecodeProblem(textAfterSignature,"image/png"),"it is not a valid PNG image");
   assert.equal(imageDecodeProblem(Buffer.concat([PIXEL_PNG.subarray(0,8),Buffer.from("\u0000\u0000\u0000\u000d1234")]),"image/png"),"it is not a valid PNG image","a chunk type of digits is no chunk");
+  assert.equal(imageDecodeProblem(Buffer.concat([PIXEL_PNG.subarray(0,8),Buffer.from("abcdefghijklmnopqrstuvwxyz","latin1")]),"image/png"),"it is not a valid PNG image","text of letters only names no chunk either: a PNG starts with IHDR");
   const riffText=Buffer.concat([Buffer.from("RIFF","latin1"),Buffer.alloc(4),Buffer.from("WEBPthis is not really an image","latin1")]);riffText.writeUInt32LE(riffText.length-8,4);
   assert.equal(imageDecodeProblem(riffText,"image/webp"),"its first chunk is not a VP8, VP8L or VP8X image chunk");
   // Every other reason reads as before: a real chunk cut off still names it, and bytes after the pixel data are judged by the pixels.
