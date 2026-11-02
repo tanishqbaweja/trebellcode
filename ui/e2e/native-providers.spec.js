@@ -1,8 +1,12 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { ProviderManager } from "../../src/provider-manager.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // Trebell Native on each model provider, as the live provider sweep met them: a provider without a key, a key the provider
@@ -67,7 +71,9 @@ async function startNativeRelay({listThreads=false,waitNotice=null,waitMs=0}={})
 // long, as the GUI server lists the models live from the provider with the key it has, for up to 12 s. reasoningEfforts are the saved
 // Thinking levels, and a level picked in the composer is saved into them.
 const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
-async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={},listThreads=false,project=null,envKey=null,relayOptions={}}){
+// checkKey, when given, is a provider manager's own check of a typed key (ProviderManager.checkKey), whose refusal is said as the
+// GUI server says it.
+async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={},listThreads=false,project=null,envKey=null,relayOptions={},checkKey=null}){
   const server={provider,hasKey,keyCheck:null,posts:[],checks:[],refuseKey,modelsMs:0,reasoningEfforts:{...reasoningEfforts},envKey};
   const relay=await startNativeRelay({listThreads,...relayOptions});
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",modelReasoningEfforts:server.reasoningEfforts,...(project?{activeProjectId:project.id}:{})});
@@ -95,7 +101,9 @@ async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models
     if(!key&&server.envKey)return json(route,{error:`The ${PROVIDER_NAMES[server.provider]} key comes from the ${server.envKey} environment variable, so Trebell Code cannot remove it. Unset ${server.envKey} and restart Trebell Code to stop using it.`},400);
     const check={key,sentAt:Date.now(),answeredAt:null};server.checks.push(check);
     if(keyCheckMs)await new Promise(resolve=>setTimeout(resolve,keyCheckMs));
+    const refusal=key&&checkKey?await checkKey(key).then(()=>null,error=>error):null;
     check.answeredAt=Date.now();
+    if(refusal){server.keyCheck=refusal.keyCheck;return json(route,{error:PROVIDER_NAMES[server.provider]+" API key check failed: "+refusal.message},400)}
     if(typeof server.refuseKey==="function"?server.refuseKey(key):server.refuseKey){server.keyCheck={status:402,message:REFUSAL,at:new Date().toISOString()};return json(route,{error:PROVIDER_NAMES[server.provider]+" API key check failed: "+REFUSAL},400)}
     server.hasKey=Boolean(String(body.apiKey||"").trim());server.keyCheck=null;
     return json(route,{...providers(),agentRuntime:"native",...catalog()});
@@ -681,6 +689,36 @@ for(const mode of MODES)test(`a key checked after an earlier refusal says the ke
     await expect(providerStatus).toHaveText("Meta Model API · ready · API key saved.",{timeout:10_000});
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`l10-provider-key-saved-after-refusal-${mode}-1280x800.png`});
   }finally{await close()}
+});
+
+// L10-1: JustWorker.icu and HCNSec.cn list one fixed model, so a key typed for them was kept unchecked: a made-up key read "ready ·
+// API key saved. Harness ready." The provider manager now asks the relay's model list about the key before it is kept.
+for(const mode of MODES)test(`a key HCNSec.cn refuses is not kept and says the relay's reason, and the right key typed after it is saved (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-relay-key-e2e-")),asked=[];
+  const answer=(value,status)=>new Response(JSON.stringify(value),{status,headers:{"content-type":"application/json"}});
+  const manager=new ProviderManager({env:{TREBELL_HOME:home,HCNSEC_API_KEY:"",HNSEC_API_KEY:""},fetchFn:async(input,init={})=>{
+    asked.push(String(input));
+    return String(init.headers?.Authorization||"")==="Bearer hc-right-key-fixture"?answer({object:"list",data:[{id:"glm-5.3",object:"model"}]},200):answer({error:{message:"Invalid token (request id: 2026110217)",type:"new_api_error"}},401);
+  }});
+  const {relay,close}=await startNativeHarness(page,{provider:"hcnsec",mode,models:["glm-5.3"],checkKey:key=>manager.checkKey("hcnsec",key)});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    await composerWrap(page).getByRole("button",{name:"Configure HCNSec.cn",exact:true}).click();
+    const keyField=page.getByTestId("provider-api-key"),providerStatus=page.getByTestId("provider-status");
+    await expect(keyField).toBeFocused();
+    await keyField.fill("l10-wrong-key-fixture");await keyField.press("Enter");
+    await expect(providerStatus).toHaveText("HCNSec.cn · key check failed · HTTP 401: Invalid token (request id: 2026110217). The key was not saved.",{timeout:10_000});
+    await expect(providerStatus).toHaveClass(/provider-status-error/);
+    expect(manager.hasKey("hcnsec"),"the key the relay refused is not kept").toBe(false);
+    await providerStatus.scrollIntoViewIfNeeded();await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`l10-relay-key-refused-${mode}-1280x800.png`});
+    await keyField.fill("hc-right-key-fixture");await keyField.press("Enter");
+    await expect(providerStatus).toHaveText("HCNSec.cn · ready · API key saved.",{timeout:10_000});
+    expect(manager.hasKey("hcnsec")).toBe(true);
+    expect(asked,"each key typed went to the relay's model list").toEqual(["https://api.hcnsec.cn/v1/models","https://api.hcnsec.cn/v1/models"]);
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`l10-relay-key-saved-${mode}-1280x800.png`});
+  }finally{await close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 // L10-18: a key read from META_API_KEY read "Saved key ••••••••", and its Remove key said "API key removed." with the key still in

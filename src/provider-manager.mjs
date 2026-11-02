@@ -888,10 +888,12 @@ export class ProviderManager {
   // A typed key is kept only once the provider's model list answers to it, and the catalog is returned. A refused key leaves
   // the stored key as it was, and the refusal is kept (status().keyCheck) so Settings can still say why after it is left.
   // A provider with a fixed model list (a relay) is asked for its list too, only to check the key: Trebell offers its fixed models.
+  // A relay that serves no list there (HTTP 404 or 405) cannot check a key that way, so its key is kept as before, and the first
+  // turn says whether the relay takes it.
   async checkKey(providerId,value){
     const provider=this.get(providerId),hadStoredKey=Object.hasOwn(this.secrets,provider.id),storedKey=this.secrets[provider.id];
     this.setKey(provider.id,value);
-    try{if(provider.staticModels)await this.#modelList(provider);return await this.models(provider.id)}
+    try{if(provider.staticModels)await this.#modelList(provider).catch(error=>{if(error?.status!==404&&error?.status!==405)throw error});return await this.models(provider.id)}
     catch(error){
       this.setKey(provider.id,hadStoredKey?storedKey:"");
       const status=Number(error?.status)||null;

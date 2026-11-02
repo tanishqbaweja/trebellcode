@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
-import { ProviderManager } from "../src/provider-manager.mjs";
+import { MODEL_PROVIDERS, ProviderManager } from "../src/provider-manager.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
@@ -54,6 +54,47 @@ test("a relay with a fixed model list asks the provider about a typed key before
     const asked=requests.length;
     assert.deepEqual((await manager.models("hcnsec")).models,["glm-5.3"]);assert.deepEqual((await manager.models("justworker")).models,["claude-opus-4-8"]);
     assert.equal(requests.length,asked);
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("a relay that serves no model list keeps a typed key for its first turn to check, and a relay that cannot be reached keeps none (L10-1)",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-relay-no-list-")),requests=[];let answer=404;
+  try{
+    const cloudflare={type:"https://developers.cloudflare.com/",title:"Error 522: Connection timed out",detail:"Cloudflare could not establish a TCP connection to the origin server."};
+    const manager=new ProviderManager({env:{TREBELL_HOME:home,...NO_KEYS},fetchFn:async input=>{requests.push(String(input));return answer===404?new Response("Not Found",{status:404}):answer===405?new Response("",{status:405}):jsonResponse(cloudflare,522)}});
+    assert.deepEqual((await manager.checkKey("hcnsec","hc-any-key")).models,["glm-5.3"]);
+    assert.equal(manager.hasKey("hcnsec"),true);assert.equal(manager.status("hcnsec").keyCheck,null);assert.deepEqual(requests,["https://api.hcnsec.cn/v1/models"]);
+    answer=405;assert.deepEqual((await manager.checkKey("justworker","jw-any-key")).models,["claude-opus-4-8"]);assert.equal(manager.hasKey("justworker"),true);
+    answer=522;manager.setKey("justworker","");
+    await assert.rejects(manager.checkKey("justworker","jw-any-key"),error=>error.message==="HTTP 522: Cloudflare could not establish a TCP connection to the origin server. The key was not saved."&&error.keyCheck?.status===522);
+    assert.equal(manager.hasKey("justworker"),false);
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// Trebell Native's benchmark runner bundles the provider manager (scripts/build-harbor-native-agent.mjs) and reads only its
+// status().hasKey besides its turns, whose code this lane leaves as it was. The key reads and the model list requests of every
+// provider are the ones 40f024d6 makes, header for header (this test passes there unchanged): only a relay's key check asks more.
+test("the provider manager reads keys and asks each provider's model list as before, so Trebell Native's runner sends the same requests",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-provider-requests-")),requests=[];
+  try{
+    const blank=Object.fromEntries(Object.values(MODEL_PROVIDERS).flatMap(provider=>provider.envKeys||[provider.envKey]).map(name=>[name,""]));
+    const manager=new ProviderManager({env:{TREBELL_HOME:home,...blank,META_API_KEY:"meta-env-fixture"},fetchFn:async(input,init={})=>{requests.push([String(input),init.method||"GET",init.headers||{}]);return jsonResponse({data:[{id:"model-a",object:"model"}]})}});
+    const ids=Object.keys(MODEL_PROVIDERS);
+    assert.deepEqual(ids.map(id=>manager.status(id).hasKey),ids.map(id=>id==="meta"));
+    for(const id of ids)if(id!=="meta")manager.setKey(id,id+"-saved-fixture");
+    assert.deepEqual(ids.map(id=>manager.status(id).hasKey),ids.map(()=>true));
+    const listed={};for(const id of ids){const catalog=await manager.models(id);listed[id]=[catalog.source,...catalog.models]}
+    assert.deepEqual(listed,{openai:["live","model-a"],anthropic:["live","model-a"],gemini:["live","model-a"],xai:["live","model-a"],meta:["live","model-a"],agentrouter:["live","model-a"],justworker:["static","claude-opus-4-8"],hcnsec:["static","glm-5.3"],vyceai:["live","model-a"]});
+    const bearer=key=>({Authorization:"Bearer "+key,Accept:"application/json"});
+    assert.deepEqual(requests,[
+      ["https://api.openai.com/v1/models","GET",bearer("openai-saved-fixture")],
+      ["https://api.anthropic.com/v1/models","GET",{"x-api-key":"anthropic-saved-fixture","anthropic-version":"2023-06-01",Accept:"application/json"}],
+      ["https://generativelanguage.googleapis.com/v1beta/openai/models","GET",bearer("gemini-saved-fixture")],
+      ["https://api.x.ai/v1/language-models","GET",bearer("xai-saved-fixture")],
+      ["https://api.meta.ai/v1/models","GET",bearer("meta-env-fixture")],
+      ["https://co.agentrouter.org/v1/models","GET",{Authorization:"Bearer agentrouter-saved-fixture","Content-Type":"application/json",Accept:"application/json","User-Agent":"codex_cli_rs/0.155.1",originator:"codex_cli_rs",version:"0.155.1"}],
+      ["https://vyceai.com/v1/models","GET",bearer("vyceai-saved-fixture")],
+    ]);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
