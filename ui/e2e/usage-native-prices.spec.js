@@ -42,9 +42,10 @@ for(const mode of ["dark","light"])test(`a price saved in Settings for Native's 
     await page.goto("/");
     await page.getByRole("button",{name:"Settings",exact:true}).click();
     await page.getByRole("button",{name:/Agents & models/}).click();
-    // The harness card names Grok Build by its name.
-    const harnesses=page.locator(".settings-card").filter({hasText:"Choose the coding-agent runtime."});
-    await expect(harnesses).toContainText("Cursor, Grok Build, Antigravity and Muse Code run as their real harnesses.");
+    // The harness card names Grok Build by its name, on its row; its intro names no harness (tour L10-F-10: plain words).
+    const harnesses=page.locator(".settings-card").filter({hasText:"Choose the agent that does the work."});
+    await expect(harnesses).toContainText("the others run as their own programs.");
+    await expect(harnesses.locator(".agent-runtime-option strong").filter({hasText:/^Grok Build$/})).toHaveCount(1);
     await harnesses.locator("p").first().scrollIntoViewIfNeeded();await settle(page);
     await page.screenshot({animations:"disabled",path:auditDir+`native-model-prices-harness-intro-${mode}-1280.png`});
     const card=page.locator('[data-setting-target="agents-models"]');

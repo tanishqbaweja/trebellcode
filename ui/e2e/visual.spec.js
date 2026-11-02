@@ -3459,8 +3459,7 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await expect(profiles).toHaveCount(0);
   const providerCard=page.getByTestId("provider-settings-card");
   await expect(providerCard).toBeVisible();
-  await expect(providerCard).toContainText("API that Trebell Native calls directly");
-  await expect(providerCard).toContainText("Trebell Native still owns the thread, tools and agent loop");
+  await expect(providerCard).toContainText("Choose whose models Trebell Native uses. Your chats, tools and files stay the same.");
   const providerSelect=page.getByTestId("provider-selector");
   await expect(providerSelect).toHaveValue("openai");
   await expect(providerSelect.locator('option[value="openai"]')).toHaveText("OpenAI API · official");

@@ -142,9 +142,10 @@ test("Settings lists Muse Code with its version, and Sign in opens a Trebell ter
     await page.getByRole("button",{name:/Agents & models/}).click();
     const row=page.locator(".agent-runtime-option").filter({hasText:"Muse Code"});
     await expect(row).toHaveCount(1);
-    await expect(row.locator("small")).toHaveText("1.4.13-R6996.1");
+    // On Sign in its row says what Trebell can and cannot know of the sign-in (tour L10-19: Muse lists a saved catalog signed out).
+    await expect(row.locator("small")).toHaveText("1.4.13-R6996.1 · Trebell Code cannot tell whether Muse Code is signed in until a turn runs. If you have not run muse login, press Sign in.");
     await expect(row.getByText("Active",{exact:true})).toBeVisible();
-    await expect(page.locator(".agent-runtime-settings")).toContainText("Antigravity and Muse Code run as their real harnesses");
+    await expect(page.locator(".agent-runtime-settings")).toContainText("Trebell Native is built in and talks to the model provider directly; the others run as their own programs.");
     // Muse Code does not say whether it is signed in (its turns do), so it offers Sign in; Trebell does not install it.
     await expect(row.getByRole("button",{name:"Sign in",exact:true})).toBeVisible();
     await expect(row.getByRole("button",{name:/^(Install|Update)$/})).toHaveCount(0);
