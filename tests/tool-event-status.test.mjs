@@ -24,9 +24,12 @@ test("a completed item without a failed outcome is completed",()=>{
   assert.equal(completedItemStatus(null),"completed");
 });
 
-test("failed and declined tools share the error styling of error rows",()=>{
+test("failed tools share the error styling of error rows; a step that was not allowed did not fail (L10-F-4)",()=>{
   assert.equal(toolEventFailed({kind:"commandExecution",status:"failed"}),true);
-  assert.equal(toolEventFailed({kind:"fileChange",status:"declined"}),true);
+  // Declined (the person's Deny, Codex's declined) and not allowed by the access level read as themselves, not as failures.
+  assert.equal(toolEventFailed({kind:"fileChange",status:"declined"}),false);
+  assert.equal(toolEventFailed({kind:"commandExecution",status:"declined"}),false);
+  assert.equal(toolEventFailed({kind:"dynamicToolCall",status:"notAllowed"}),false);
   assert.equal(toolEventFailed({kind:"error",status:"done"}),true);
   assert.equal(toolEventFailed({kind:"autoReview",status:"error"}),true);
   assert.equal(toolEventFailed({kind:"commandExecution",status:"done"}),false);

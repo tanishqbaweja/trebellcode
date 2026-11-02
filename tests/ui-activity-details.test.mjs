@@ -99,6 +99,10 @@ test("a command that exited non-zero failed, whichever harness ran it",()=>{
   assert.equal(activityItemStatus({type:"commandExecution",status:"completed",exitCode:null}),"done");
   assert.equal(activityItemStatus({type:"commandExecution",status:"failed",exitCode:1}),"failed");
   assert.equal(activityItemStatus({type:"commandExecution",status:"declined"}),"declined");
+  // A failed item the relay says was not allowed reads as what happened (agent-relay.mjs agentToolRefusal).
+  assert.equal(activityItemStatus({type:"dynamicToolCall",status:"failed",refusal:{status:"declined"}}),"declined");
+  assert.equal(activityItemStatus({type:"dynamicToolCall",status:"failed",refusal:{status:"notAllowed"}}),"notAllowed");
+  assert.equal(activityItemStatus({type:"dynamicToolCall",status:"completed",refusal:{status:"declined"}}),"done");
   // Only a command's exit code counts; a running item runs.
   assert.equal(activityItemStatus({type:"mcpToolCall",status:"completed",exitCode:2}),"done");
   assert.equal(activityItemStatus({type:"commandExecution",status:"inProgress",exitCode:null}),"running");
@@ -107,9 +111,9 @@ test("a command that exited non-zero failed, whichever harness ran it",()=>{
 });
 
 test("finished steps count every step with an outcome, notice rows included, and not a plan still waiting for its checks",()=>{
-  const events=[{status:"error"},{status:"done"},{status:"failed"},{status:"warning"},{status:"done"},{status:"declined"}];
-  assert.equal(finishedActivitySteps(events),6);
-  assert.equal(finishedActivitySteps([...events,{status:"running"},{status:"pending"},{status:"inProgress"}]),6);
+  const events=[{status:"error"},{status:"done"},{status:"failed"},{status:"warning"},{status:"done"},{status:"declined"},{status:"notAllowed"}];
+  assert.equal(finishedActivitySteps(events),7);
+  assert.equal(finishedActivitySteps([...events,{status:"running"},{status:"pending"},{status:"inProgress"}]),7);
   // A planned verification (verificationPlanEvent's "incomplete") has checks still to run.
   assert.equal(finishedActivitySteps([{status:"done"},{kind:"verification",status:"incomplete"}]),1);
   // A status the timeline does not know is not claimed complete.

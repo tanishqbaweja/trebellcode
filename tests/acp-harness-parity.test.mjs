@@ -824,6 +824,24 @@ test("a call an earlier build stored pending in a turn that was stopped, failed 
   assert.deepEqual(byTurn(threadStore.get(thread.id).turns),{[ids[0]]:{edit:"pending",agent:"pending",ran:"completed"},[ids[1]]:{echo:"pending"},[ids[2]]:{deploy:"pending"},[ids[3]]:{lint:"pending"}},"the stored thread is left as it was");
 });
 
+test("an ACP harness's call the person declined, which then failed, reads as declined, not failed (L10-F-4)",async t=>{
+  const fx=await scenario(t,{...GROK,prompts:[{steps:[
+    {update:{sessionUpdate:"tool_call",toolCallId:"t1",title:"rm -rf build",kind:"execute",status:"pending",rawInput:{command:"rm -rf build"}}},
+    {request:{method:"session/request_permission",params:{sessionId:"$sessionId",toolCall:{toolCallId:"t1",title:"rm -rf build",kind:"execute",rawInput:{command:"rm -rf build"}},options:[{optionId:"once",kind:"allow_once"},{optionId:"no",kind:"reject_once"}]}}},
+    {update:{sessionUpdate:"tool_call_update",toolCallId:"t1",status:"failed",rawOutput:"Permission denied by user"}},
+    {update:{sessionUpdate:"tool_call",toolCallId:"t2",title:"npm test",kind:"execute",status:"pending",rawInput:{command:"npm test"}}},
+    {update:{sessionUpdate:"tool_call_update",toolCallId:"t2",status:"failed",rawOutput:{exitCode:1,stdout:"",stderr:"1 failing"}}},
+  ]}]});
+  const {ws,rpc,next,threadStore}=await relayHarness(t,"grok",fx);
+  const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"}),threadId=started.thread.id;
+  const approval=next(message=>message.method==="item/tool/requestApproval"),completed=next(message=>message.method==="turn/completed");
+  await rpc("turn/start",{threadId,input:[{type:"text",text:"clean the build"}]});
+  const request=await approval;ws.send(JSON.stringify({id:request.id,result:{decision:"decline"}}));
+  assert.equal((await completed).params.turn.status,"completed");
+  const items=threadStore.get(threadId).turns.at(-1).items.filter(item=>item.type==="commandExecution");
+  assert.deepEqual(items.map(item=>[item.command,item.status,item.refusal?.status??null]),[["rm -rf build","failed","declined"],["npm test","failed",null]],"the declined call says so; a call that ran and failed still failed");
+});
+
 test("in Grok Auto the requests Grok asks about reach the user even when Trebell's policy would allow them",async t=>{
   const fx=await scenario(t,{...GROK,prompts:[{steps:[{request:{method:"session/request_permission",params:{sessionId:"$sessionId",toolCall:{toolCallId:"t1",title:"Read src/a.js",kind:"read"},options:[{optionId:"once",kind:"allow_once"},{optionId:"no",kind:"reject_once"}]}}}]}]});
   const {ws,rpc,next}=await relayHarness(t,"grok",fx);

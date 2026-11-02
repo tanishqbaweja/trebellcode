@@ -44,11 +44,13 @@ export function activityRow(item={},{turnId=null}={}){
   // A command's output, or the text a Trebell tool answered with (Native's repository searches answer with their hits
   // grouped by file) or a harness's tool whose item says its output is text (textOutput: an OpenCode read's lines, a question's
   // answers), which the expanded row shows as written instead of inside the item's JSON.
-  const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??"")
-    :type==="dynamicToolCall"&&(item.textOutput||String(item.namespace||"").startsWith("trebell_"))&&typeof item.rawOutput==="string"?item.rawOutput:"";
   // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do. A command
   // that exited non-zero reads as failed whichever harness ran it.
   const status=activityItemStatus(item);
+  // A step that was not allowed and has nothing else to show says why it did not run (the relay's refusal, else Codex's declined).
+  const output=(type==="commandExecution"?String(item.aggregatedOutput??item.output??"")
+    :type==="dynamicToolCall"&&(item.textOutput||String(item.namespace||"").startsWith("trebell_"))&&typeof item.rawOutput==="string"?item.rawOutput:"")
+    ||(status==="declined"||status==="notAllowed"?item.refusal?.text||"Not run: it was not approved.":"");
   return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status,raw:item,output,turnId:turnId==null?null:String(turnId),fromItem:true};
 }
 

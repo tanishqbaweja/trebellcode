@@ -286,6 +286,9 @@ export class MuseAgentSession{
     this.observed=new Map();this.workHeardAt=0;this.now=now;this.endedTurns=new Set();this.context=null;this.lastTurn=null;this.ready=false;
     // The calls of the commands Muse sent to the background whose end it told (backgroundTerminalCompletion).
     this.endedCalls=new Set();
+    // The calls whose approval Trebell declined (the person, or its policy for them), by Muse's call id and item id: one that then
+    // did not complete did not run, and its row says so (museItemRow's declined).
+    this.declinedCalls=new Set();
     // The rows a report left open when a message took it over (a command it still runs), followed in the report's turn until they end.
     this.openRows=new Set();
     // The /compact under way (compact), until its compaction item ends.
@@ -783,7 +786,12 @@ export class MuseAgentSession{
   // update that moves it; a stage that cannot be declined stops the turn rather than leave it waiting.
   async #answerApproval(entry,decision,shown=null){
     const wanted=museDecisionToSend(decision,museDecisionChoices(shown?shown.availableChoices:entry.params.availableChoices));
+    // A refusal goes on the call's record before it leaves, since Muse can settle the call before its reply to the answer comes;
+    // one Muse does not take comes off again.
+    const refused=/^(?:decline|cancel)/.test(wanted)?[entry.params.toolCallId,entry.params.itemId].map(text).filter(id=>id&&!this.declinedCalls.has(id)):[];
+    for(const id of refused){this.declinedCalls.add(id);if(this.declinedCalls.size>MUSE_SETTLED_LIMIT)this.declinedCalls.delete(this.declinedCalls.values().next().value)}
     const outcome=await this.#sendAnswer(entry,wanted,shown);
+    if(outcome!==ANSWER_TAKEN)for(const id of refused)this.declinedCalls.delete(id);
     if(outcome===ANSWER_TAKEN)return this.#approve(entry);
     if(outcome===ANSWER_SETTLED||this.requests.get(entry.key)!==entry)return;
     if(outcome===ANSWER_MOVED_ON)return requirementKey(entry.params.currentRequirementId)===requirementKey(shown?.requirementId)?undefined:this.#approve(entry);
@@ -1024,7 +1032,8 @@ export class MuseAgentSession{
     // (runsPastTurn): its turn's end leaves the row as it is in the window, for the work's own later rows to settle.
     if(this.observed.get(item.itemId)===turn)turn.followed.add(item.itemId);
     const past=turn.followed.has(item.itemId);
-    this.#row(turn,museItemRow(item,{running:runningWork(item,this.endedCalls)}),{work:WORK_KINDS.has(item.kind),past});
+    const declined=[item.callId,item.itemId].some(id=>text(id)&&this.declinedCalls.has(text(id)));
+    this.#row(turn,museItemRow(item,{running:runningWork(item,this.endedCalls),declined}),{work:WORK_KINDS.has(item.kind),past});
     // A workflow's agents follow its own row.
     if(item.kind==="workflow")for(const update of museWorkflowAgentRows(item,turn.labels))this.#row(turn,update,{work:true,past});
   }

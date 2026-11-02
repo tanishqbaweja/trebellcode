@@ -131,6 +131,12 @@ test("the card head counts steps and failures, and says when steps are not all l
   assert.deepEqual(activitySummary([]),{text:"0 steps",failed:0});
   // A retry is a step, not a failure, while it retries and after it.
   assert.deepEqual(activitySummary([...rows.slice(0,1),{id:"retry-t1",kind:"retry",status:"running"},{id:"retry-t2",kind:"retry",status:"done"}]),{text:"3 steps",failed:0});
+  // A step the person declined, or its access level did not allow, is a step and not a failure (L10-F-4: "6 steps · 2 failed").
+  const refused=cardRowsFromTurns([{id:"t2",items:[command("c1","a"),{id:"d",type:"commandExecution",command:"rm -rf build",status:"declined"},
+    {id:"n",type:"dynamicToolCall",namespace:"trebell_terminal",tool:"run",arguments:{command:"ls"},status:"failed",refusal:{status:"declined",text:"Not run: it was not approved."}},
+    {id:"b",type:"dynamicToolCall",namespace:"trebell_workspace",tool:"read_file",arguments:{path:"../x"},status:"failed",refusal:{status:"notAllowed",text:"Not run: it is outside the project folder, which this access level does not allow."}}]}]).t2;
+  assert.deepEqual(refused.map(row=>row.status),["done","declined","declined","notAllowed"]);
+  assert.deepEqual(activitySummary(refused),{text:"4 steps",failed:0});
   const many=Array.from({length:1200},(_,index)=>({id:"s"+index,status:"done"}));
   assert.equal(activitySummary(many).text,"1,200 steps");
 });

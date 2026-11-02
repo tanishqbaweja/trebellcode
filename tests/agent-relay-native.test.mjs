@@ -904,7 +904,8 @@ test("Trebell Native runs a Supervised command after Allow session and runs it a
     thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"supervised",dynamicTools:[]})).thread;
     const first=await runTurn("Run A");
     const asked=await rpc.waitFor(message=>message.method==="item/tool/requestApproval",15000);
-    assert.match(asked.params.reason,/^trebell_terminal\/run: .+ -e process\.stdout\.write\('A'\) \(Supervised profile requires confirmation\.\)$/,"the card says what it approves");
+    assert.deepEqual([asked.params.trebellTitle,asked.params.reason],["Command needs approval","Supervised asks before each change, command or web request."],"the card says what it asks and why, in plain words");
+    assert.match(asked.params.command,/ -e process\.stdout\.write\('A'\)$/,"the card shows the command it approves");
     answer(asked,"acceptForSession");await finished(first);
     assert.equal(runItem(0).success,true,"Allow session runs the command");
     const second=await runTurn("Run A again");await finished(second);
@@ -912,9 +913,11 @@ test("Trebell Native runs a Supervised command after Allow session and runs it a
     assert.equal(runItem(1).success,true);
     const third=await runTurn("Run B");
     const askedAgain=await rpc.waitFor(message=>message.method==="item/tool/requestApproval"&&message.id!==asked.id,15000);
-    assert.match(askedAgain.params.reason,/-e process\.stdout\.write\('B'\)/,"another command asks");
+    assert.match(askedAgain.params.command,/-e process\.stdout\.write\('B'\)/,"another command asks");
     answer(askedAgain,"decline");await finished(third);
     assert.equal(runItem(2).success,false,"a declined command does not run");
+    // Its row says it was declined, not that it failed (L10-F-4), live and in the thread's history.
+    assert.deepEqual([runItem(2).status,runItem(2).refusal],["failed",{status:"declined",text:"Not run: it was not approved."}]);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 

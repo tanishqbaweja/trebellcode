@@ -10,7 +10,7 @@ import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
 import { openCodeMessageId, openCodeSessionRules } from "../src/opencode-agent-session.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { acpPlanEvent,agentApprovalReason,agentTextAfterToolCall,agentThreadTitleSeed,agentTurnOwnerError,nativeApprovalGrantKey,nativeApprovalReason,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,claudeRewindProviderMeta,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { acpPlanEvent,agentApprovalReason,agentTextAfterToolCall,agentThreadTitleSeed,agentTurnOwnerError,nativeApprovalCard,nativeApprovalGrantKey,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,claudeRewindProviderMeta,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("permission trace metadata excludes raw tool arguments",()=>{
   const trace=agentPermissionTraceData({toolCall:{toolCallId:"tool-1",title:"Run deployment",kind:"execute",rawInput:{command:"do-not-persist"}},options:[{kind:"allow_once"},{kind:"allow_once"},{kind:"reject_once"}]});
@@ -66,17 +66,27 @@ test("a turn for another harness's thread is refused with the harness that owns 
   assert.equal(agentTurnOwnerError({id:"t",runtime:"cursor"},null),null);
 });
 
-test("a Trebell Native approval names the command or path it approves, then why the profile asks",()=>{
-  const reason="Supervised profile requires confirmation.";
-  assert.equal(nativeApprovalReason({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["-e","console.log('trebell-tour')"],cwd:"."}},{reason}),
-    "trebell_terminal/run: node -e console.log('trebell-tour') (Supervised profile requires confirmation.)");
+test("a Trebell Native approval card says in plain words what it asks and why the access level asks, with no tool or policy names",()=>{
+  const supervised={reason:"Supervised profile requires confirmation.",profile:"supervised"},why="Supervised asks before each change, command or web request.";
+  // The live tour's cards (L10-F-5): a write named by its file, a command shown as it runs, each under a title for what it asks.
+  assert.deepEqual(nativeApprovalCard({namespace:"trebell_workspace",name:"write_file",arguments:{path:"data.txt",content:"alpha\n"}},supervised),
+    {title:"File write needs approval",reason:"Write data.txt. "+why,notice:"Write data.txt"});
+  assert.deepEqual(nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["count-lines.js"],cwd:"."}},supervised),
+    {title:"Command needs approval",reason:why,command:"node count-lines.js",notice:"Run this command: node count-lines.js"});
   const exe="C:\\Program Files\\nodejs\\node.exe";
-  assert.equal(nativeApprovalReason({namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:exe,args:["-e","1 + 1"]})},{}),
-    `trebell_terminal/run: ${JSON.stringify(exe)} -e "1 + 1"`,"spaced parts are quoted, and string arguments are read");
-  assert.equal(nativeApprovalReason({namespace:"trebell_repo",name:"read_source",arguments:{path:"src/app.js"}},{reason,arguments:{path:"src/app.js",start_line:1}}),
-    "trebell_repo/read_source: src/app.js (Supervised profile requires confirmation.)");
-  assert.equal(nativeApprovalReason({namespace:"trebell_web",name:"fetch",arguments:{url:"https://example.com"}},{}),'trebell_web/fetch: {"url":"https://example.com"}');
-  assert.equal(nativeApprovalReason({namespace:"trebell_git",name:"status",arguments:{}},{reason}),"trebell_git/status (Supervised profile requires confirmation.)");
+  assert.equal(nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:exe,args:["-e","1 + 1"]})},{profile:"workspace-write",reason:"Workspace Write requires confirmation for execution, network, external, or high-risk actions."}).command,
+    `${JSON.stringify(exe)} -e "1 + 1"`,"spaced parts are quoted, and string arguments are read");
+  assert.equal(nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"]}},{profile:"workspace-write"}).reason,"Auto-accept edits asks before each command, web request or risky change.");
+  assert.deepEqual(nativeApprovalCard({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"a",new_text:"b"}},{profile:"auto",reason:"Auto/Guarded requires confirmation for high-risk, irreversible, external, or escalating actions."}),
+    {title:"File edit needs approval",reason:"Edit src/app.js. Auto asks before a risky action, one that cannot be undone, or one that reaches outside this computer.",notice:"Edit src/app.js"});
+  // A rule of the person's asks in its own words; one with none, and an ask for more access, say so plainly.
+  assert.equal(nativeApprovalCard({namespace:"trebell_source_control",name:"push",arguments:{}},{profile:"supervised",reason:"Ask before a push.",rule:{reason:"Ask before a push."}}).reason,"Push the current branch. Ask before a push.");
+  assert.equal(nativeApprovalCard({namespace:"trebell_source_control",name:"push",arguments:{}},{profile:"supervised",reason:"Matched an explicit user policy rule.",rule:{}}).reason,"Push the current branch. A rule in your settings asks before this.");
+  // An app's or another server's tool: by its name and its server's, with what it is sent shown as sent.
+  assert.deepEqual(nativeApprovalCard({namespace:"github",name:"create_issue",arguments:{title:"Bug"}},supervised),
+    {title:"Tool needs approval",reason:"Use create issue from github. "+why,command:'{\n  "title": "Bug"\n}',notice:"Use create issue from github"});
+  for(const card of [nativeApprovalCard({namespace:"trebell_workspace",name:"write_file",arguments:{path:"data.txt"}},supervised),nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:{command:"node"}},supervised)])
+    assert.doesNotMatch(JSON.stringify(card),/trebell_|profile|requires confirmation/,"no tool namespace or policy words");
 });
 
 test("a Trebell Native session grant covers the same action, whatever its output and time bounds",()=>{
@@ -352,6 +362,27 @@ test("agent tool lifecycle settles one-shot commands and streams only appended o
   assert.equal(oneShot.terminal,true);assert.equal(oneShot.outputDelta,"finished\n");
   const replaced=agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"cmd-3",title:"Rewrite",kind:"execute",status:"in_progress",rawOutput:"replacement"},"old output");
   assert.equal(replaced.outputDelta,"","non-prefix replacement must not duplicate prior output in the UI");
+});
+
+test("a call that did not run because it was not allowed says so on its item: declined, or not allowed by the access level",()=>{
+  const native=(name,rawOutput)=>agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"call-"+name,namespace:"trebell_terminal",tool:name,title:"trebell_terminal / "+name,kind:"execute",status:"failed",rawInput:{command:"ls"},rawOutput}).item;
+  // The live tour's Deny (L10-F-4): Native's result says the card was not approved.
+  const denied=native("run",{success:false,decision:"CONFIRM",confirmationRequired:true,error:"Tool execution was not approved.",uncertain:false,retrySafe:false});
+  assert.equal(denied.status,"failed","the call's own end is kept");
+  assert.deepEqual(denied.refusal,{status:"declined",text:"Not run: it was not approved."});
+  // Its access level refused it unasked: Read only, the project folder's edge, a rule of the person's.
+  assert.deepEqual(native("run",{success:false,decision:"REJECT",error:"Read Only profile rejects mutating or executable actions."}).refusal,{status:"notAllowed",text:"Not run: Read only does not allow changes or commands."});
+  assert.deepEqual(native("read_file",{success:false,decision:"REJECT",error:"Requested path is outside the active workspace boundary.",confirmationRequired:false}).refusal,{status:"notAllowed",text:"Not run: it is outside the project folder, which this access level does not allow."});
+  assert.deepEqual(native("run",{success:false,decision:"REJECT",error:"Matched an explicit user policy rule."}).refusal,{status:"notAllowed",text:"Not run: a rule in your settings does not allow it."});
+  // A call that failed for another reason keeps failing: input the tool does not take, a command that ran and failed.
+  assert.equal(native("run",{success:false,decision:"REJECT",error:"Invalid arguments for trebell_terminal/run: command is required."}).refusal,undefined);
+  assert.equal(native("run",{success:false,exitCode:1,stdout:"",stderr:"boom"}).refusal,undefined);
+  // Muse Code's call whose approval Trebell declined (its row says declined), and only once it ended without running.
+  const muse=status=>agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"muse-1",title:"Get-Content notes.txt",kind:"execute",status,rawOutput:"Not run: it was not approved.",declined:true}).item;
+  assert.deepEqual([muse("failed").type,muse("failed").refusal],["commandExecution",{status:"declined",text:"Not run: it was not approved."}]);
+  assert.equal(muse("completed").refusal,undefined);
+  // Another harness's tool that failed, with no such word, is a failure.
+  assert.equal(agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"x",title:"Edit",kind:"other",status:"failed",rawOutput:{success:false,confirmationRequired:true}}).item.refusal,undefined);
 });
 
 test("one turn's items page in order both ways and hold no other turn's, so a past activity card can read its own turn",()=>{
@@ -1238,11 +1269,13 @@ test("Stop withdraws an OpenCode thread's waiting approval card and answers Open
   });
   try{
     const started=await rpc("thread/start",{cwd:root,model,permissionProfile:"supervised"}),threadId=started.thread.id;
-    const approval=next(message=>message.method==="item/tool/requestApproval");
+    const approval=next(message=>message.method==="item/tool/requestApproval"),titled=next(message=>message.method==="thread/preview/updated");
     await rpc("turn/start",{threadId,model,input:[{type:"text",text:"run the tests"}],permissionProfile:"supervised"});
     const asked=await approval;
     assert.equal(asked.params.threadId,threadId);
     assert.equal(threadStore.get(threadId).preview,"run the tests","the thread is listed by its first message");
+    // The window is told the title as the message goes (L10-F-8): its header and sidebar row read it while the turn still waits.
+    assert.deepEqual((await titled).params,{threadId,preview:"run the tests"},"the window gets the title before the first turn ends");
     const resolved=next(message=>message.method==="serverRequest/resolved"),completed=turnCompleted(ws);
     await rpc("turn/interrupt",{threadId});
     // The card is withdrawn without an answer from the app.

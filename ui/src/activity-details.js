@@ -36,11 +36,12 @@ export function exitCodeOf(raw){
 // The timeline status of a harness item: running while Codex or the relay marks it "inProgress", done once "completed". A
 // command that exited non-zero failed, whatever its harness called it: Codex already reports it failed, while a relay harness
 // reports every finished tool call completed, which would put "done" over a red exit code.
+// A call that did not run because it was not allowed (the relay's refusal: declined, or notAllowed by its access level) reads so.
 export function activityItemStatus(item){
   const status=item?.status;
   if(status==="completed")return item.type==="commandExecution"&&(exitCodeOf(item)??0)!==0?"failed":"done";
   if(status==="inProgress")return "running";
-  return status||"running";
+  return status==="failed"&&item.refusal?.status||status||"running";
 }
 
 // The facts a command adds under its command line: the exit code (a non-zero one reads as a failure), the folder it ran in and
@@ -127,7 +128,7 @@ export function nativeEditChanges(item){
 // turn ended before it started (notRun, activity-item.js settledRow) or was stopped or failed with it cut off (stopped), or it is a
 // notice (a warning or an error row, or a verification whose checks could not run). A step that runs or waits to run is not, and
 // neither is a planned verification (incomplete) whose checks have not run yet, nor a status this list does not know.
-const FINISHED_STEP_STATUSES=new Set(["done","completed","failed","declined","error","warning","cancelled","canceled","interrupted","notRun","stopped"]);
+const FINISHED_STEP_STATUSES=new Set(["done","completed","failed","declined","notAllowed","error","warning","cancelled","canceled","interrupted","notRun","stopped"]);
 export function finishedActivitySteps(events){
   return (events||[]).filter(event=>FINISHED_STEP_STATUSES.has(event?.status)).length;
 }

@@ -76,6 +76,23 @@ test("a command that exited non-zero reads failed whichever harness ran it",()=>
   assert.equal(activityRow({id:"c",type:"commandExecution",command:"npm test",status:"declined"}).status,"declined");
 });
 
+test("a step that did not run because it was not allowed reads declined or not allowed, with why, not failed (L10-F-4)",()=>{
+  // The live tour's Deny on Native's card: the relay's refusal on the failed item.
+  const denied=activityRow({id:"n",type:"dynamicToolCall",namespace:"trebell_terminal",tool:"run",arguments:{command:"bash",args:["-lc","ls ~/attachments/"]},status:"failed",
+    rawOutput:{success:false,decision:"CONFIRM",confirmationRequired:true,error:"Tool execution was not approved."},refusal:{status:"declined",text:"Not run: it was not approved."}});
+  assert.deepEqual([denied.title,denied.status,denied.output],["bash -lc ls ~/attachments/","declined","Not run: it was not approved."]);
+  const blocked=activityRow({id:"r",type:"dynamicToolCall",namespace:"trebell_workspace",tool:"write_file",arguments:{path:"notes.md"},status:"failed",
+    rawOutput:{success:false,decision:"REJECT",error:"Read Only profile rejects mutating or executable actions."},refusal:{status:"notAllowed",text:"Not run: Read only does not allow changes or commands."}});
+  assert.deepEqual([blocked.title,blocked.status,blocked.output],["Write notes.md","notAllowed","Not run: Read only does not allow changes or commands."]);
+  // Muse Code's rejected command keeps its own words of the row (the not-approved sentence), and Codex's declined command, which has
+  // none, says it was not approved.
+  const muse=activityRow({id:"m",type:"commandExecution",command:"Get-Content notes.txt",status:"failed",aggregatedOutput:"Not run: it was not approved.",refusal:{status:"declined",text:"Not run: it was not approved."}});
+  assert.deepEqual([muse.status,muse.output],["declined","Not run: it was not approved."]);
+  assert.equal(activityRow({id:"c",type:"commandExecution",command:"npm test",status:"declined",aggregatedOutput:""}).output,"Not run: it was not approved.");
+  // A failure with no refusal keeps failing, its output as it was.
+  assert.deepEqual([activityRow({id:"f",type:"dynamicToolCall",namespace:"trebell_terminal",tool:"run",arguments:{command:"npm"},status:"failed",rawOutput:{success:false,exitCode:1}}).status],["failed"]);
+});
+
 test("only steps make a card: messages and thoughts are the conversation's own rows",()=>{
   for(const type of ["userMessage","agentMessage","reasoning","sessionHandoff"])assert.equal(isCardItem({id:"m",type}),false,type);
   for(const type of ["commandExecution","fileChange","mcpToolCall","dynamicToolCall","webSearch","imageView","contextCompaction"])assert.equal(isCardItem({id:"s",type}),true,type);

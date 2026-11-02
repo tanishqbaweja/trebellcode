@@ -3304,9 +3304,11 @@ export default function App(){
       if(isCurrent)setActiveThread(prev=>prev?.id===threadId?{...prev,status:p.status,updatedAt:Date.now()/1000}:prev);
       updateThreadTelemetry(threadId,{status:p.status,lastActivityAt:Date.now()});
     }
-    else if(message.method==="thread/name/updated"){
-      setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,name:p.name}:t));
-      if(isCurrent)setActiveThread(prev=>prev?.id===p.threadId?{...prev,name:p.name}:prev);
+    // A new thread's title from its first message (thread/preview/updated) shows as the message goes, not when its turn ends.
+    else if(message.method==="thread/name/updated"||message.method==="thread/preview/updated"){
+      const named=message.method==="thread/name/updated"?{name:p.name}:{preview:p.preview};
+      setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,...named}:t));
+      if(isCurrent)setActiveThread(prev=>prev?.id===p.threadId?{...prev,...named}:prev);
     }
     else if(message.method==="thread/tools/updated"&&p.thread){
       setThreads(prev=>prev.map(t=>t.id===p.thread.id?p.thread:t));

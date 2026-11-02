@@ -509,6 +509,34 @@ test("tools map to rows: an edit keeps its exact old and new text, a write its c
   assert.equal(museItemRow(item({kind:"subagent",tool:undefined,objective:"Check the release notes"})).title,"Subagent · Check the release notes");
 });
 
+test("a read's row names the file it read and, for a long file read in parts, the line its part starts from (L10-F-6)",()=>{
+  const read=args=>museItemRow({itemId:"read-1",kind:"toolCall",tool:"read_file",status:"completed",revision:2,args:JSON.stringify(args),visibleOutput:"Read text file `x`.\n1|alpha"});
+  assert.deepEqual([read({path:"docs/notes.md"}).kind,read({path:"docs/notes.md"}).title],["read","Read docs/notes.md"]);
+  assert.equal(read({path:"logs/long.log",offset:1367,limit:2000}).title,"Read logs/long.log from line 1,367");
+  assert.equal(read({path:"logs/long.log",offset:1,limit:2000}).title,"Read logs/long.log","a read from the first line names no part");
+  // A file Trebell keeps in its attachments folder is named as it was attached, a document's extracted text as that document's.
+  const home="H:\\home\\trebell\\attachments\\";
+  assert.equal(read({path:home+"1793618868946-f28073b7-long-log.docx.txt",offset:500,limit:2000}).title,"Read the text of long-log.docx from line 500");
+  assert.equal(read({path:home+"1793618267521-6fbe65d0-notes.txt"}).title,"Read notes.txt");
+  assert.equal(read({path:"/home/me/.trebell/attachments/0123456789abcdef0123456789abcdef-report.pdf.txt"}).title,"Read the text of report.pdf");
+  assert.equal(read({path:"C:\\work\\attachments\\plain-name.md"}).title,"Read C:\\work\\attachments\\plain-name.md","a file of the person's own keeps its path");
+  // A read that failed says what went wrong after the file.
+  assert.equal(museItemRow({itemId:"read-2",kind:"toolCall",tool:"read_file",status:"failed",revision:2,args:JSON.stringify({path:"gone.md"}),failureReason:"file not found"}).title,"Read gone.md: file not found");
+});
+
+test("a call whose approval Trebell declined says it did not run, in place of Muse's words to the model (L10-F-4)",()=>{
+  const words="approval aborted",said="tool denied: approval aborted\nThe user rejected this action. Don't retry it unless they ask.";
+  const shell=museItemRow({itemId:"sh-9",kind:"toolCall",tool:"bash",status:"cancelled",revision:3,args:JSON.stringify({command:"Get-Content notes.txt -Tail 5"}),failureReason:words,visibleOutput:said},{declined:true});
+  assert.deepEqual([shell.kind,shell.title,shell.status,shell.rawOutput,shell.declined],["execute","Get-Content notes.txt -Tail 5","failed","Not run: it was not approved.",true]);
+  assert.equal(acpToolFrame(shell).exitCode,undefined);
+  const write=museItemRow({itemId:"w-9",kind:"toolCall",tool:"write_file",status:"rejected",revision:2,args:JSON.stringify({path:"a.txt",content:"x"}),failureReason:"denied"},{declined:true});
+  assert.deepEqual([write.title,write.rawOutput,write.declined],["write_file","Not run: it was not approved.",true]);
+  // A declined call that ran after all (a later stage allowed) keeps its own end, and an undeclined failure keeps Muse's words.
+  const ran=museItemRow({itemId:"sh-10",kind:"toolCall",tool:"bash",status:"completed",revision:2,args:JSON.stringify({command:"ls"}),visibleOutput:JSON.stringify({command:"ls",exit_code:0,output:"a\n"})},{declined:true});
+  assert.equal(ran.declined,undefined);assert.equal(ran.status,"completed");
+  assert.equal(museItemRow({itemId:"sh-11",kind:"toolCall",tool:"bash",status:"failed",revision:2,args:JSON.stringify({command:"ls"}),failureReason:"boom"}).declined,undefined);
+});
+
 test("Stop interrupts the running turn and waits for Muse's turn/completed: a recorded interrupted turn ends as a stop the person asked for",async()=>{
   assert.equal(MUSE_INTERRUPT_TIMEOUT_MS,30_000);
   const {session,muse}=await startSession({muse:child=>new ReplayMuse(child,"turn_interrupt")});
@@ -572,6 +600,9 @@ test("a recorded approval asks the person once with Muse's own choices, its requ
   assert.deepEqual(receipt.result,{},"the server request gets the presentation receipt");
   assert.equal(muse.frames.filter(frame=>frame.method==="approval/decide").length,1,"the request and its notification are decided once");
   assert.equal(updates.some(update=>String(update.toolCallId||"").startsWith("muse-approval:")),false,"no row of Trebell's own: the person was asked");
+  // The rejected command's row says it did not run because it was not approved (L10-F-4), not Muse's words to the model.
+  const row=updates.filter(update=>update.title==="touch trebell-declined.txt").at(-1);
+  assert.deepEqual([row?.status,row?.declined,row?.rawOutput],["failed",true,"Not run: it was not approved."]);
   assert.deepEqual(muse.unexpected,[]);
   await session.close();
 });

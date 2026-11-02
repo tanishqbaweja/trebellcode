@@ -18,6 +18,7 @@ import { extractedDocumentText } from "./document-text.mjs";
 import { NativeAttachedFiles } from "./native-attached-files.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MUSE_COMPACTION_STOPPED, MuseAgentSession } from "./muse-agent-session.mjs";
+import { NOT_APPROVED_TEXT } from "./muse-rows.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins, safeWorkspacePath } from "./native-builtins.mjs";
 import { nativeProjectReadNeedsNoApproval, nativeReadTool } from "./native-read-approval.mjs";
@@ -46,7 +47,7 @@ import { normalizeBrowserVerificationReceipt } from "./browser-verification-evid
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
-import { evaluatePolicy, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
+import { evaluatePolicy, normalizePolicyProfile, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { providerFeatureEnabled } from "./provider-capabilities.mjs";
 import { normalizeProviderId } from "./provider-manager.mjs";
@@ -154,16 +155,60 @@ export function nativeApprovalGrantKey(call={},authorization={}){
   const args=Object.fromEntries(Object.entries(nativeToolArguments(call,authorization)).filter(([key])=>!NATIVE_GRANT_BOUNDS.has(key)));
   return `${call?.namespace||""}/${call?.name||""} ${stableJson(args)}`;
 }
-// The approval card names what a Trebell Native tool would do (its command or path, else its input), then why the profile asks.
-export function nativeApprovalReason(call={},authorization={}){
-  const args=nativeToolArguments(call,authorization),tool=`${call?.namespace||"trebell"}/${call?.name||"tool"}`;
+// Why a Trebell Native call's access level asks before it runs, in the person's words: a rule of theirs by its own reason, else the
+// access level by its name (the composer's) and what it asks about.
+const NATIVE_ASKS={
+  supervised:"Supervised asks before each change, command or web request.",
+  "workspace-write":"Auto-accept edits asks before each command, web request or risky change.",
+  auto:"Auto asks before a risky action, one that cannot be undone, or one that reaches outside this computer.",
+};
+function nativeApprovalWhy(authorization={}){
+  if(authorization?.rule)return String(authorization.rule.reason||"").trim()&&authorization.reason!=="Matched an explicit user policy rule."?String(authorization.rule.reason).trim():"A rule in your settings asks before this.";
+  if(authorization?.reason==="Permission escalation requires explicit confirmation.")return "It asks for more access than this task has.";
+  return NATIVE_ASKS[normalizePolicyProfile(authorization?.profile)]||"This access level asks before this.";
+}
+const cut=(value,limit=400)=>{const line=String(value??"").trim();return line.length>limit?line.slice(0,limit-3)+"...":line};
+// Each Trebell Native tool a card can ask about: its card's title and the action it names, from the call's arguments. A command
+// is shown under the line as it runs. A tool not listed here (an app's or another server's) is named by its own name.
+const NATIVE_CARD_TOOLS={
+  "trebell_workspace/write_file":["File write needs approval",args=>`Write ${cut(args.path)}`],
+  "trebell_workspace/replace_text":["File edit needs approval",args=>`Edit ${cut(args.path)}`],
+  "trebell_workspace/read_file":["File read needs approval",args=>`Read ${cut(args.path)}`],
+  "trebell_workspace/list":["File read needs approval",args=>`List ${cut(args.path)||"the project folder"}`],
+  "trebell_repo/read_source":["File read needs approval",args=>`Read ${cut(args.path)}`],
+  "trebell_terminal/run":["Command needs approval",()=>"Run this command"],
+  "trebell_process/start":["Command needs approval",()=>"Start this command in the background"],
+  "trebell_process/stop":["Command needs approval",()=>"Stop a command running in the background"],
+  "trebell_browser/open":["Browser action needs approval",args=>`Open ${cut(args.url)} in the browser`],
+  "trebell_browser/click":["Browser action needs approval",()=>"Click on the page in the browser"],
+  "trebell_browser/type":["Browser action needs approval",()=>"Type into the page in the browser"],
+  "trebell_browser/reload":["Browser action needs approval",()=>"Reload the page in the browser"],
+  "trebell_source_control/init":["Git change needs approval",()=>"Set up Git in this project"],
+  "trebell_source_control/branch_create":["Git change needs approval",args=>`Create the branch ${cut(args.name)}`],
+  "trebell_source_control/branch_switch":["Git change needs approval",args=>`Switch to the branch ${cut(args.name)}`],
+  "trebell_source_control/commit_all":["Git change needs approval",args=>`Commit all changes: ${cut(String(args.message||"").split(/\r?\n/)[0],160)}`],
+  "trebell_source_control/fetch":["Git change needs approval",()=>"Fetch from the remote"],
+  "trebell_source_control/pull_ff":["Git change needs approval",()=>"Bring in the new commits of this branch's upstream"],
+  "trebell_source_control/push":["Git change needs approval",()=>"Push the current branch"],
+  "trebell_source_control/link_pull_request":["Git change needs approval",args=>`Link the pull request ${cut(args.url)}`],
+  "trebell_delegate/delegate":["Delegated task needs approval",args=>`Start a delegated task: ${cut(String(args.task||"").split(/\r?\n/)[0],160)}`],
+};
+// The approval card of a Trebell Native call: its title, the line under it (the action and what it acts on, then why it asks), the
+// command it would run, and what the desktop notification says is asked. A tool's or a policy's own names are never shown.
+export function nativeApprovalCard(call={},authorization={}){
+  const args=nativeToolArguments(call,authorization),why=nativeApprovalWhy(authorization);
   const quote=part=>/[\s"]/.test(part)||!part?JSON.stringify(part):part;
-  const command=typeof args.command==="string"&&args.command.trim()?[args.command.trim(),...(Array.isArray(args.args)?args.args.map(String):[])].map(quote).join(" "):null;
-  const path=["path","file_path","filePath"].map(key=>args[key]).find(value=>typeof value==="string"&&value.trim());
-  let target=command||(path?path.trim():null);
-  if(!target){let serialized="";try{serialized=JSON.stringify(args)??""}catch{}if(serialized&&serialized!=="{}")target=serialized}
-  const what=target?`${tool}: ${target.length>400?target.slice(0,397)+"...":target}`:tool,why=String(authorization?.reason||"").trim();
-  return why?`${what} (${why})`:what;
+  const commandLine=typeof args.command==="string"&&args.command.trim()?[args.command.trim(),...(Array.isArray(args.args)?args.args.map(String):[])].map(quote).join(" "):"";
+  const known=NATIVE_CARD_TOOLS[`${call?.namespace||""}/${call?.name||""}`];
+  let command=cut(commandLine,4000),action;
+  if(known)action=known[1](args);
+  else{
+    // An app's or another server's tool: by its name, and its server's, with what it is sent shown as sent.
+    const name=String(call?.name||"tool").replace(/_/g," "),server=String(call?.namespace||"").startsWith("trebell_")?"":String(call?.namespace||"");
+    action=`Use ${name}${server?` from ${server}`:""}`;
+    if(!command){let sent="";try{sent=JSON.stringify(args,null,2)??""}catch{}if(sent&&sent!=="{}")command=cut(sent,4000)}
+  }
+  return {title:known?.[0]||"Tool needs approval",reason:command&&known?why:`${action}. ${why}`,...(command?{command}:{}),notice:command&&known?`${action}: ${commandLine?cut(commandLine,160):""}`.replace(/: $/,""):action};
 }
 // A turn the person sends continues a thread only on the harness that owns it. A client that still shows another harness's thread
 // after a switch sends this harness's model with it, which the owning harness cannot run and must not save as the thread's model
@@ -251,8 +296,36 @@ function acpToolItem(update){
   return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
 }
 
+// Why a Trebell Native call did not run, in the person's words, by the reason its access level gave the model for refusing it
+// unasked (policy-engine.mjs, shared-tool-gateway.mjs). A refusal for any other reason (input the tool does not take, a tool this
+// thread does not have) is a failure of the call, and keeps failing.
+const NATIVE_NOT_ALLOWED=[
+  ["Read Only profile rejects mutating or executable actions.","Read only does not allow changes or commands."],
+  ["Read Only profile rejects external side effects.","Read only does not allow actions that reach outside this computer."],
+  ["Read Only profile rejects permission escalation.","Read only does not allow more access than it gives."],
+  ["Requested path is outside the active workspace boundary.","it is outside the project folder, which this access level does not allow."],
+  ["This Trebell tool requires Full Access mode.","only Full access allows it."],
+  ["Untrusted work cannot silently escalate permissions.","work from an untrusted source cannot take more access."],
+  ["Matched an explicit user policy rule.","a rule in your settings does not allow it."],
+];
+// A harness's call that did not run because it was not allowed (refusal: declined or notAllowed, with what its row says), or null.
+// Declined: Muse Code's call whose approval Trebell declined (its row says declined), and a Native call whose card was declined or
+// left unanswered (its result says confirmationRequired). Not allowed: a Native call its access level refused unasked. Either reads
+// so on its row, not as a failed step, and its turn's card does not count it as failed.
+export function agentToolRefusal(update={},item={}){
+  if(item.status!=="failed")return null;
+  const output=update.rawOutput&&typeof update.rawOutput==="object"?update.rawOutput:null;
+  if(update.declined===true)return {status:"declined",text:NOT_APPROVED_TEXT};
+  if(!String(update.namespace||"").startsWith("trebell_")||output?.success!==false)return null;
+  if(output.confirmationRequired===true)return {status:"declined",text:NOT_APPROVED_TEXT};
+  const reason=String(output.error||"").trim(),plain=output.decision==="REJECT"?(NATIVE_NOT_ALLOWED.find(([said])=>said===reason)?.[1]||(reason.startsWith("Auto/Guarded rejects ")?"Auto does not allow a risky action that cannot be undone.":null)):null;
+  return plain?{status:"notAllowed",text:"Not run: "+plain}:null;
+}
+
 export function agentToolLifecycle(update,previousOutput=""){
   const item=acpToolItem(update);
+  // A call that was not allowed says so (agentToolRefusal), from its item on, live and in the thread's history.
+  const refusal=agentToolRefusal(update,item);if(refusal)item.refusal=refusal;
   // Work its harness follows past the end of the turn that started it (a Muse Code workflow, subagent or command in the background)
   // says so on its item: the window keeps its row as it is when that turn ends, for the work's own later updates to settle.
   if(update.runsPastTurn===true)item.runsPastTurn=true;
@@ -777,6 +850,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
+  // The tool calls whose approval was declined (the person's Deny or Reject, an unanswered card, or the policy's refusal), per thread
+  // and call: a harness's call among them that then failed did not run, and its row says it was declined (agentToolRefusal). The
+  // oldest go past 500.
+  const declinedToolCalls=new Set();
+  const declineToolCall=(threadId,toolCallId)=>{if(!toolCallId)return;declinedToolCalls.add(threadId+":"+String(toolCallId));if(declinedToolCalls.size>500)declinedToolCalls.delete(declinedToolCalls.values().next().value)};
   // A running tool's latest item waiting to be stored, per thread and tool call: {turnId,at,item,timer}.
   const toolWrites=new Map();
   // The reasoning segment each thread's harness is thinking in: {id,turnId,messageId,text}.
@@ -1273,10 +1351,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           // An attached file is the person's own, so its read runs without asking too.
           const inside=path=>attachedFile?.(path)?Promise.resolve(true):safeWorkspacePath(runtimeCwd,path,{environments,environmentId,mustExist:false}).then(()=>true);
           if(await nativeProjectReadNeedsNoApproval(call,authorization,{inside,storedRead:handle=>storedReads.has(handle)}))return "accept";
+          // The card says what the call does and why its access level asks, in the person's words (nativeApprovalCard).
+          const card=nativeApprovalCard(call,authorization);
           // The call's row says its card waits until the card is answered, so a restart after Trebell was killed with it waiting,
           // when no close answered it, still shows it did not run (the thread store's reconcileRestart).
           const waiting=call.id?String(call.id):"";markAwaitingApproval(thread.id,waiting,true);
-          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:nativeApprovalReason(call,authorization),toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}}).finally(()=>markAwaitingApproval(thread.id,waiting,false));
+          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:card.reason,trebellTitle:card.title,...(card.command?{command:card.command}:{}),trebellNotice:card.notice,toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}}).finally(()=>markAwaitingApproval(thread.id,waiting,false));
           const decision=result?.decision||"decline";
           if(decision==="acceptForSession"){nativeSessionGrants.add(grant);return "accept"}
           return decision;
@@ -1671,7 +1751,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }else if(type==="tool_call"){
       const toolSession=sessions.get(threadId);if(toolSession)toolSession.__assistantBreak=true;
       const key=threadId+":"+String(update.toolCallId||"");
-      const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
+      const lifecycle=agentToolLifecycle(declinedToolCalls.has(key)?{...update,declined:true}:update,liveToolOutput.get(key)||"");const {item}=lifecycle;
       if(turnId)writeToolItem(threadId,String(update.toolCallId||""),turnId,item,{done:lifecycle.terminal});
       emit("item/started",{threadId,turnId,item,startedAtMs:Date.now()});
       if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId,itemId:item.id,delta:lifecycle.outputDelta});
@@ -1679,7 +1759,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       else if(lifecycle.output)liveToolOutput.set(key,lifecycle.output);
     }else if(type==="tool_call_update"){
       const key=threadId+":"+String(update.toolCallId||"");
-      const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
+      const lifecycle=agentToolLifecycle(declinedToolCalls.has(key)?{...update,declined:true}:update,liveToolOutput.get(key)||"");const {item}=lifecycle;
       // A Native call that failed only because the close cut off its approval did not run: its row reads not run and says why.
       if(item.type==="dynamicToolCall"&&item.status==="failed"&&item.rawOutput?.error===APPROVAL_CUT_OFF){item.status="notRun";item.rawOutput=APPROVAL_CUT_OFF}
       const callTurnId=turnId&&toolUpdateTurn(threadId,String(update.toolCallId||""),turnId);if(turnId&&!callTurnId)return;
@@ -2305,7 +2385,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress",model:typeof params.model==="string"?params.model:null,modelLabel:typeof params.modelLabel==="string"?params.modelLabel.slice(0,120):null,permissionProfile:permissionPatch.permissionProfile||null});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
-      if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
+      // The window takes it at once (thread/preview/updated), so the thread's header and its sidebar row read it while its first turn
+      // runs, rather than "Untitled task" until that turn ends and the thread list is read again.
+      if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview){threadStore.update(thread.id,{preview});emit("thread/preview/updated",{threadId:thread.id,preview})}}
       session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});
       // A follow-up the queue starts tells its message as Codex does, under the client id it was queued with, so the window shows it
@@ -2510,13 +2592,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const askedRead=outsideReadsAsk&&policy.decision===POLICY_REJECT&&policy.action.kind==="read"&&policy.action.pathInsideWorkspace===false;
           if(policy.decision===POLICY_REJECT&&!askedRead){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"decline",data:{...traceData,decision:"decline",policyDecision:policy.decision}});
-            return "decline";
+            declineToolCall(thread.id,params.toolCall?.toolCallId);return "decline";
           }
           try{
             // An ACP harness's own choices (approvalOptions) are shown as the card's buttons; each answers with its decision.
             const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:card?.reason||agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{}),
               ...(card?.title?{trebellTitle:card.title}:{}),...(card?.command?{command:card.command}:{}),...(card?.notice?{trebellNotice:card.notice}:{})},thread.id,signal,{runless}),decision=result?.decision||"decline";
-            journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});return decision;
+            journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});
+            if(/^(?:decline|cancel|reject)/i.test(String(decision)))declineToolCall(thread.id,params.toolCall?.toolCallId);return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
           }

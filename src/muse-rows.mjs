@@ -66,15 +66,20 @@ function parsedObject(value){
   return parsed!==null&&typeof parsed==="object"&&!Array.isArray(parsed)?parsed:null;
 }
 
+// What a row says of a call that did not run because its approval was declined (by the person, or by Trebell's policy for them),
+// in place of Muse's own words to the model ("tool denied: ... Don't retry it unless they ask.").
+export const NOT_APPROVED_TEXT="Not run: it was not approved.";
+
 // What every kind of call's row reads from the item. running: a command Muse sent to the background still runs, though Muse may
-// have settled its call as it went there, so its row runs on until Muse tells its end.
-function readCall(item,running){
-  const args=parsedObject(item.args),progress=museItemProgress(item);
-  const status=running&&progress==="completed"?"in_progress":progress,failure=failureWords(item,status);
+// have settled its call as it went there, so its row runs on until Muse tells its end. declined: Trebell declined the call's
+// approval, so a call that did not complete did not run, and its row says so (declined) rather than that it failed.
+function readCall(item,running,declined=false){
+  const args=parsedObject(item.args),progress=museItemProgress(item),refused=declined&&progress==="failed";
+  const status=running&&progress==="completed"?"in_progress":progress,failure=refused?"":failureWords(item,status);
   const sources=[item.visibleOutput,item.result?.summary,item.text,Array.isArray(item.summary)?item.summary.join("\n"):undefined,item.finalSummary,item.fallbackText,item.objective];
-  const body=sources.find(value=>value!=null)??"";
+  const body=refused?NOT_APPROVED_TEXT:sources.find(value=>value!=null)??"";
   return {
-    item,args,status,failure,body,
+    item,args,status,failure,body,refused,
     id:asText(item.itemId),
     tool:asText(item.tool||item.kind)||"tool",
     output:lines(failure,asText(body)),
@@ -100,6 +105,7 @@ function commandParts(call){
   const {item}=call;
   const command=asText(item.commandText??call.named("command","cmd")??item.args??"");
   const parts={title:command||call.tool,input:call.args||{command},output:call.output};
+  if(call.refused)return parts;
   const record=parsedObject(item.visibleOutput),ran=Boolean(record)||Number.isInteger(item.exitCode);
   if(call.status==="failed"&&!ran&&[item.failureReason,call.body].some(value=>SANDBOX_REFUSAL.test(asText(value).trim())))return {...parts,output:MUSE_SANDBOX_REFUSED_COMMAND};
   if(record&&typeof record.output==="string")parts.output={...record,output:lines(call.failure,record.output)};
@@ -162,22 +168,43 @@ function webParts(call){
   };
 }
 
+// A file as a read's row names it: as Muse gave it, or for a file Trebell keeps in its attachments folder, the name it was attached
+// by (Trebell saves an upload as <time>-<id>-<name>, and a document's extracted text as that name or a <hash>-<name> with .txt
+// after it), so the row does not show Trebell's own folder and ids.
+const UPLOAD_NAME=/^(?:\d{10,}-[0-9a-f]{8}|[0-9a-f]{32})-(.+)$/;
+function shownFile(path){
+  const parts=path.split(/[\\/]+/),name=parts.at(-1),attached=parts.length>2&&parts.at(-2).toLowerCase()==="attachments"?UPLOAD_NAME.exec(name):null;
+  if(!attached)return path;
+  const text=/^(.+\.[A-Za-z0-9]{1,8})\.txt$/.exec(attached[1]);
+  return text?`the text of ${text[1]}`:attached[1];
+}
+// A read of a named file: "Read <file>", and for a long file read in parts, the line its part starts from (Muse's offset, the
+// first line read). A call that names no file is a plain tool row.
+function readParts(call){
+  const path=call.named("path","file_path","filePath")?.trim();
+  if(!path)return null;
+  const from=Number(call.args?.offset),part=Number.isInteger(from)&&from>1?` from line ${from.toLocaleString("en-US")}`:"";
+  return {title:titled(`Read ${shownFile(path)}${part}`,call.failure),input:call.args,output:call.output};
+}
+
 // The kinds of call rows, by the tool's name, in the order they are tried; a call none of them takes is a plain tool row.
 const CALL_KINDS=[
   {kind:"execute",takes:call=>call.item.kind==="userShell"||mentions(asText(call.item.tool),["shell","bash","exec_command"]),parts:commandParts},
   {kind:"edit",takes:call=>call.item.kind==="toolCall"&&mentions(call.tool,["write","edit","patch"]),parts:editParts},
   {kind:"fetch",takes:call=>call.item.kind==="toolCall"&&mentions(call.tool,["web","browse","fetch"]),parts:webParts},
+  {kind:"read",takes:call=>call.item.kind==="toolCall"&&mentions(call.tool,["read"]),parts:readParts},
 ];
 function plainParts(call){
   const {item}=call;
   return {title:titled(call.tool,call.failure),input:call.args||(item.args?{args:asText(item.args)}:{}),output:call.output};
 }
 
-// One Muse item as its row (an ACP tool call): work (a subagent or a workflow), a command, a file edit, a web call, or any other
-// tool with its arguments and output.
-export function museItemRow(item={},{running=false}={}){
+// One Muse item as its row (an ACP tool call): work (a subagent or a workflow), a command, a file edit, a web call, a read, or any
+// other tool with its arguments and output. declined: Trebell declined the call's approval; a call that then did not complete says
+// it did not run (declined, which the relay reads as a declined step, not a failed one).
+export function museItemRow(item={},{running=false,declined=false}={}){
   if(item.kind==="subagent"||item.kind==="workflow")return workRow(item);
-  const call=readCall(item,running);
+  const call=readCall(item,running,declined);
   let kind="other",parts=null;
   for(const candidate of CALL_KINDS){
     if(!candidate.takes(call))continue;
@@ -185,7 +212,7 @@ export function museItemRow(item={},{running=false}={}){
     if(parts){kind=candidate.kind;break}
   }
   const {title,input,output,...more}=parts||plainParts(call);
-  return {toolCallId:call.id,status:call.status,kind,title,rawInput:input,rawOutput:output,...more};
+  return {toolCallId:call.id,status:call.status,kind,title,rawInput:input,rawOutput:output,...more,...(call.refused?{declined:true}:{})};
 }
 
 // The rows of a workflow's agents, after the workflow's own, one per child id in the order Muse first lists it, as Muse sends every

@@ -74,14 +74,14 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-// A row's pill: an error says error, a retry what became of it, a call that never started that it did not run, any other step its
-// status.
+// A row's pill: an error says error, a retry what became of it, a call that never started that it did not run, one its access level
+// refused that it was not allowed, any other step its status.
 function eventPill(event){
   if(event.kind==="error")return "error";
   // A wait for the provider to answer (raw.waiting, agent-relay providerWaits) is no retry: it waits, then the provider answered.
   const waited=event.raw?.waiting===true;
   if(event.kind==="retry")return event.status==="running"?(waited?"waiting":"retrying"):event.status==="done"?(waited?"answered":"recovered"):event.status;
-  return event.status==="notRun"?"not run":event.status;
+  return event.status==="notRun"?"not run":event.status==="notAllowed"?"not allowed":event.status;
 }
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   const [expanded,setExpanded]=useState(false);
