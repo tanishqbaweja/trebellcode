@@ -208,7 +208,7 @@ function providerErrorExcerpt(value,{environment={},secret="",maxChars=1200}={})
 // body a relay passes on as its message), else the body's text; never raw JSON or an HTML page. Secrets are redacted, and so
 // is a masked key the provider echoes back (sk-proj-****abcd, sk-abc***xyz, sk-abc...wxyz).
 const MASKED_KEY=/\S*(?:\*{3,}|[\w-](?:\.{3}|…)\w)\S*/g;
-function providerErrorMessage(raw,{environment={},secret="",maxChars=300}={}){
+export function providerErrorMessage(raw,{environment={},secret="",maxChars=300}={}){
   const text=String(raw??"").trim();let parsed;
   try{parsed=JSON.parse(text)}catch{parsed=undefined}
   const find=(value,depth=0)=>{
@@ -796,9 +796,17 @@ export class ProviderManager {
       requiresKey: provider.requiresKey,
       official: Boolean(provider.official),
       hasKey: this.hasKey(provider.id),
+      ...this.#keyOrigin(provider),
       keyCheck: this.keyChecks.get(provider.id)||null,
       capabilities:providerCapabilities(provider.id),
     }));
+  }
+
+  // Where Settings says the key in use comes from (never the key): keySource "settings" or "environment", and keyVariable, the
+  // environment variable it is read from.
+  #keyOrigin(provider){
+    const {source,variable}=this.#keySource(provider);
+    return {keySource:source,keyVariable:variable};
   }
 
   get(providerId) {
@@ -871,6 +879,7 @@ export class ProviderManager {
       official: Boolean(provider.official),
       hasKey: this.hasKey(provider.id),
       ready: this.hasKey(provider.id),
+      ...this.#keyOrigin(provider),
       keyCheck: this.keyChecks.get(provider.id)||null,
       capabilities:providerCapabilities(provider.id),
     };
@@ -878,10 +887,11 @@ export class ProviderManager {
 
   // A typed key is kept only once the provider's model list answers to it, and the catalog is returned. A refused key leaves
   // the stored key as it was, and the refusal is kept (status().keyCheck) so Settings can still say why after it is left.
+  // A provider with a fixed model list (a relay) is asked for its list too, only to check the key: Trebell offers its fixed models.
   async checkKey(providerId,value){
     const provider=this.get(providerId),hadStoredKey=Object.hasOwn(this.secrets,provider.id),storedKey=this.secrets[provider.id];
     this.setKey(provider.id,value);
-    try{return await this.models(provider.id)}
+    try{if(provider.staticModels)await this.#modelList(provider);return await this.models(provider.id)}
     catch(error){
       this.setKey(provider.id,hadStoredKey?storedKey:"");
       const status=Number(error?.status)||null;
@@ -894,6 +904,40 @@ export class ProviderManager {
 
   // Without a key the catalog asks for one, or says why the last key typed for the provider was refused (checkKey).
   #missingKeyError(providerId){const check=this.keyChecks.get(providerId);return check?"API key check failed: "+check.message:"API key required"}
+
+  // The body of the provider's model list for the key in use, or the provider's refusal ({status, providerMessage} on the error).
+  // A relay whose turns go as Anthropic Messages with a Bearer key (JustWorker.icu) is asked with both of its headers.
+  async #modelList(provider){
+    const key = this.key(provider.id),anthropicRelay=!provider.authStyle&&provider.protocolCompatibility?.includes("anthropic-messages");
+    let response, raw;
+    try {
+      response = await this.fetchFn(provider.baseUrl + (provider.modelsPath || "/models"), {
+        headers: provider.id === "agentrouter"
+          ? agentRouterHeaders(key,{environment:this.env})
+          : provider.authStyle === "anthropic"
+            ? {
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                Accept: "application/json",
+              }
+            : {
+                Authorization: `Bearer ${key}`,
+                ...(anthropicRelay?{"x-api-key":key,"anthropic-version":"2023-06-01"}:{}),
+                Accept: "application/json",
+              },
+        signal: AbortSignal.timeout(12_000),
+      });
+      // The time limit covers the list too: a provider that sends its headers and then stalls the body has not answered.
+      raw = await response.text();
+    } catch (error) {
+      throw providerUnreachable(provider, error, 12_000);
+    }
+    if (!response.ok) {
+      const message=providerErrorMessage(raw,{environment:this.env,secret:key});
+      throw Object.assign(new Error(`${provider.name} model list failed with HTTP ${response.status}${message?": "+message:""}`),{status:response.status,providerMessage:message});
+    }
+    return raw;
+  }
 
   async models(providerId) {
     const provider = this.get(providerId);
@@ -910,33 +954,7 @@ export class ProviderManager {
       return { models: [], defaultModel: null, source: "none", error: this.#missingKeyError(provider.id) };
     }
 
-    const key = this.key(provider.id);
-    let response, raw;
-    try {
-      response = await this.fetchFn(provider.baseUrl + (provider.modelsPath || "/models"), {
-        headers: provider.id === "agentrouter"
-          ? agentRouterHeaders(key,{environment:this.env})
-          : provider.authStyle === "anthropic"
-            ? {
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-                Accept: "application/json",
-              }
-            : {
-                Authorization: `Bearer ${key}`,
-                Accept: "application/json",
-              },
-        signal: AbortSignal.timeout(12_000),
-      });
-      // The time limit covers the list too: a provider that sends its headers and then stalls the body has not answered.
-      raw = await response.text();
-    } catch (error) {
-      throw providerUnreachable(provider, error, 12_000);
-    }
-    if (!response.ok) {
-      const message=providerErrorMessage(raw,{environment:this.env,secret:key});
-      throw Object.assign(new Error(`${provider.name} model list failed with HTTP ${response.status}${message?": "+message:""}`),{status:response.status,providerMessage:message});
-    }
+    const raw = await this.#modelList(provider);
     let parsed;
     try {
       parsed = JSON.parse(raw);

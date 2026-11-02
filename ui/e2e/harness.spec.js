@@ -461,7 +461,7 @@ test("Trebell Code renders the harness and scopes Trebell Native models to the s
   await selectProvider(page,"openai");
   await page.getByRole("button",{name:"Threads"}).click();
   await expectModelCatalog(page,["test/coding-fast","test/coding-large"]);
-  await expect(page.locator(".sidebar-provider")).toContainText("OpenAI API inference");
+  await expect(page.locator(".sidebar-provider")).toContainText("OpenAI API");
 
   await shootBothModes(page,"trebell-code-ui");
 });

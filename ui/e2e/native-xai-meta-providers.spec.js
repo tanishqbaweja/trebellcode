@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 // names no Thinking levels, so the composer offers the ones Meta documents for Muse Spark 1.3.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const PROVIDERS=[
-  {id:"xai",name:"xAI API",models:["grok-4.7","grok-4.6"],note:"Grok models from xAI. Models are loaded live from the official xAI /v1/language-models API for this key.",thinking:[]},
-  {id:"meta",name:"Meta Model API",models:["muse-spark-1.3","muse-wonder-1.0"],note:"Muse models from Meta. Models are loaded live from the official Meta Model API /v1/models for this key.",thinking:["Default","Minimal","Low","Medium","High","Extra high","Max"].map(level=>"Thinking · "+level)},
+  {id:"xai",name:"xAI API",models:["grok-4.7","grok-4.6"],note:"Grok models from xAI. The models listed are the ones the provider offers this key.",thinking:[]},
+  {id:"meta",name:"Meta Model API",models:["muse-spark-1.3","muse-wonder-1.0"],note:"Muse models from Meta. The models listed are the ones the provider offers this key.",thinking:["Default","Minimal","Low","Medium","High","Extra high","Max"].map(level=>"Thinking · "+level)},
 ];
 
 // Waits for smooth scrolling (Settings reveals its target that way) to come to rest before a screenshot.
@@ -46,7 +46,7 @@ for(const mode of ["dark","light"])test(`xAI and the Meta Model API are picked i
     await expect(card.locator("p.provider-note")).toHaveText(provider.note);
     await page.getByTestId("provider-api-key").fill(provider.id+"-fixture-key");
     await page.getByTestId("save-provider-key").click();
-    await expect(status).toHaveText(`${provider.name} · ready · API key saved. Harness ready.`,{timeout:15_000});
+    await expect(status).toHaveText(`${provider.name} · ready · API key saved.`,{timeout:15_000});
     await expect(page.getByTestId("provider-api-key")).toHaveValue("");
     await expect(page.getByTestId("provider-api-key")).toHaveAttribute("placeholder","Saved key ••••••••");
     await expect(card.getByRole("button",{name:"Remove key",exact:true})).toBeVisible();

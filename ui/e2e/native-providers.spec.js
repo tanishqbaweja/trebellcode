@@ -19,7 +19,7 @@ async function freePort(){const server=createServer();await new Promise((resolve
 // The Native relay answers what a new chat asks for. A turn completes at once with a fixed reply, and turnStarts keeps what
 // each turn/start asked the provider for. listThreads: the relay keeps the threads it starts, with their model, lists them and
 // opens them again, as the Native relay does after a reload.
-async function startNativeRelay({listThreads=false}={}){
+async function startNativeRelay({listThreads=false,waitNotice=null,waitMs=0}={}){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),open=new Set(),requests=[],turnStarts=[],threads=new Map();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -34,8 +34,10 @@ async function startNativeRelay({listThreads=false}={}){
         const threadId=params.threadId,turnId="native-turn-"+turnStarts.length;
         send({id:message.id,result:{turn:{id:turnId,status:"inProgress",items:[]}}});
         send({method:"turn/started",params:{threadId,turn:{id:turnId,status:"inProgress",startedAt:Date.now()/1000}}});
-        send({method:"item/completed",params:{threadId,turnId,item:{id:"reply-"+turnId,type:"agentMessage",text:"Fixture reply"}}});
-        send({method:"turn/completed",params:{threadId,turn:{id:turnId,status:"completed",completedAt:Date.now()/1000}}});
+        // waitNotice: the relay says the turn is still waiting for its provider (agent-relay providerWaits), which answers waitMs later.
+        if(waitNotice)send({method:"error",params:{threadId,turnId,willRetry:true,waiting:true,error:{message:waitNotice}}});
+        const answer=()=>{send({method:"item/completed",params:{threadId,turnId,item:{id:"reply-"+turnId,type:"agentMessage",text:"Fixture reply"}}});send({method:"turn/completed",params:{threadId,turn:{id:turnId,status:"completed",completedAt:Date.now()/1000}}})};
+        if(waitMs)setTimeout(answer,waitMs);else answer();
         return;
       }
       let result={};
@@ -65,16 +67,16 @@ async function startNativeRelay({listThreads=false}={}){
 // long, as the GUI server lists the models live from the provider with the key it has, for up to 12 s. reasoningEfforts are the saved
 // Thinking levels, and a level picked in the composer is saved into them.
 const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
-async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={},listThreads=false,project=null}){
-  const server={provider,hasKey,keyCheck:null,posts:[],checks:[],refuseKey,modelsMs:0,reasoningEfforts:{...reasoningEfforts}};
-  const relay=await startNativeRelay({listThreads});
+async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={},listThreads=false,project=null,envKey=null,relayOptions={}}){
+  const server={provider,hasKey,keyCheck:null,posts:[],checks:[],refuseKey,modelsMs:0,reasoningEfforts:{...reasoningEfforts},envKey};
+  const relay=await startNativeRelay({listThreads,...relayOptions});
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",modelReasoningEfforts:server.reasoningEfforts,...(project?{activeProjectId:project.id}:{})});
   const bootstrap=()=>({mock:false,provider:server.provider,providerReady:server.hasKey,agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"native-providers-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const keyless=()=>STATIC_MODELS[server.provider]||[];
   const catalog=()=>server.hasKey
     ?{provider:server.provider,agentRuntime:"native",ready:true,models,defaultModel,metadata:{provider:server.provider,source:"live",models:models.map(id=>({id,provider:server.provider}))},error:null}
     :{provider:server.provider,agentRuntime:"native",ready:false,models:keyless(),defaultModel:keyless()[0]||null,metadata:{provider:server.provider,source:keyless().length?"static":"none",models:keyless().map(id=>({id,provider:server.provider}))},error:server.keyCheck?"API key check failed: "+server.keyCheck.message:"API key required"};
-  const row=id=>({id,name:PROVIDER_NAMES[id],official:["openai","anthropic","gemini","meta"].includes(id),requiresKey:true,hasKey:id===server.provider&&server.hasKey,keyCheck:id===server.provider?server.keyCheck:null});
+  const row=id=>({id,name:PROVIDER_NAMES[id],official:["openai","anthropic","gemini","meta"].includes(id),requiresKey:true,hasKey:id===server.provider&&server.hasKey,keyCheck:id===server.provider?server.keyCheck:null,...(id===server.provider&&server.hasKey?{keySource:server.envKey?"environment":"settings",keyVariable:server.envKey}:{keySource:null,keyVariable:null})});
   const providers=()=>({selected:server.provider,providers:Object.keys(PROVIDER_NAMES).map(row),status:{...row(server.provider),ready:server.hasKey},ready:server.hasKey});
   const runtimes=()=>({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"Built into Trebell Code"}]});
   await keepThreadMeta(page);
@@ -90,6 +92,7 @@ async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models
   await page.route(/\/api\/providers$/,async route=>{
     if(route.request().method()==="GET")return json(route,providers());
     const body=route.request().postDataJSON()||{},key=String(body.apiKey||"").trim();server.posts.push({provider:body.provider,apiKey:Boolean(key)});
+    if(!key&&server.envKey)return json(route,{error:`The ${PROVIDER_NAMES[server.provider]} key comes from the ${server.envKey} environment variable, so Trebell Code cannot remove it. Unset ${server.envKey} and restart Trebell Code to stop using it.`},400);
     const check={key,sentAt:Date.now(),answeredAt:null};server.checks.push(check);
     if(keyCheckMs)await new Promise(resolve=>setTimeout(resolve,keyCheckMs));
     check.answeredAt=Date.now();
@@ -232,20 +235,20 @@ for(const mode of MODES)test(`Enter held in the API key field or on Save API key
     await expect(keyField).toBeFocused();
     // Enter goes down and repeats while the key is checked, and goes on repeating after the answer until it is let go.
     const holdEnter=async()=>{
-      await page.keyboard.down("Enter");await expect(providerStatus).toContainText("Saving…");
+      await page.keyboard.down("Enter");await expect(providerStatus).toContainText("checking the key…");
       for(let index=0;index<4;index++)await page.keyboard.down("Enter");
-      await expect(providerStatus).not.toContainText("Saving…",{timeout:10_000});
+      await expect(providerStatus).not.toContainText("checking the key…",{timeout:10_000});
       for(let index=0;index<4;index++)await page.keyboard.down("Enter");
       await page.keyboard.up("Enter");
     };
-    const answered=async()=>{await expect(providerStatus).toContainText("Saving…");await expect(providerStatus).not.toContainText("Saving…",{timeout:10_000})};
+    const answered=async()=>{await expect(providerStatus).toContainText("checking the key…");await expect(providerStatus).not.toContainText("checking the key…",{timeout:10_000})};
     // The keys one way of saving sent, counted once its answer is on screen.
     let counted=0;const sentSince=()=>{const count=server.posts.length-counted;counted=server.posts.length;return count};
     await page.keyboard.type("sk-fixture-held-enter",{delay:15});await holdEnter();
-    await expect(providerStatus).toContainText("API key saved. Harness ready.");await expect(keyField).toHaveValue("");
+    await expect(providerStatus).toContainText("API key saved.");await expect(keyField).toHaveValue("");
     expect.soft(sentSince(),"keys sent for Enter held in the field").toBe(1);
     await keyField.fill("sk-fixture-double-click");await save.dblclick();await answered();
-    await expect(providerStatus).toContainText("API key saved. Harness ready.");await expect(keyField).toHaveValue("");
+    await expect(providerStatus).toContainText("API key saved.");await expect(keyField).toHaveValue("");
     expect.soft(sentSince(),"keys sent for a double click on Save API key").toBe(1);
     await providerStatus.scrollIntoViewIfNeeded();await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-key-saved-once-${mode}.png`});
 
@@ -265,7 +268,7 @@ for(const mode of MODES)test(`Enter held in the API key field or on Save API key
     // A press of its own sends the key again. Its answer comes after that of anything the second click sent.
     server.refuseKey=false;
     await keyField.fill("sk-fixture-accepted");await keyField.press("Enter");await answered();
-    await expect(providerStatus).toContainText("API key saved. Harness ready.");await expect(keyField).toHaveValue("");
+    await expect(providerStatus).toContainText("API key saved.");await expect(keyField).toHaveValue("");
     expect.soft(sentSince(),"keys sent for a click, the second click of a double click after its refusal, and Enter").toBe(2);
     expect(server.posts,"one key sent for each press of its own").toHaveLength(6);
   }finally{await close()}
@@ -285,19 +288,19 @@ for(const mode of MODES)test(`a press while a key is checked sends that key no s
     const refused="OpenAI API · key check failed · "+REFUSAL;
     let counted=0;const sentSince=()=>{const count=server.posts.length-counted;counted=server.posts.length;return count};
     await page.keyboard.type("sk-fixture-pressed-twice",{delay:15});
-    await keyField.press("Enter");await expect(providerStatus).toContainText("Saving…");
+    await keyField.press("Enter");await expect(providerStatus).toContainText("checking the key…");
     await keyField.press("Enter");
     await expect(providerStatus).toHaveText(refused,{timeout:10_000});await expect(keyField).toHaveValue("sk-fixture-pressed-twice");
     expect.soft(sentSince(),"keys sent for Enter, let go and pressed again while the key is checked").toBe(1);
-    await keyField.press("Enter");await expect(providerStatus).toContainText("Saving…");
+    await keyField.press("Enter");await expect(providerStatus).toContainText("checking the key…");
     await save.click();
     await expect(providerStatus).toHaveText(refused,{timeout:10_000});
     expect.soft(sentSince(),"keys sent for Enter and then a click on Save API key while the key is checked").toBe(1);
     // A mistyped key, then the corrected one while the first is checked.
-    await keyField.fill("sk-fixture-mistyped");await keyField.press("Enter");await expect(providerStatus).toContainText("Saving…");
+    await keyField.fill("sk-fixture-mistyped");await keyField.press("Enter");await expect(providerStatus).toContainText("checking the key…");
     await keyField.fill("sk-fixture-corrected");await keyField.press("Enter");
     expect.soft(server.posts.length-counted,"the corrected key waits for the mistyped one's answer").toBe(1);
-    await expect.soft(providerStatus,"the corrected key is checked and saved").toContainText("API key saved. Harness ready.",{timeout:10_000});
+    await expect.soft(providerStatus,"the corrected key is checked and saved").toContainText("API key saved.",{timeout:10_000});
     await expect.soft(keyField).toHaveValue("");
     expect.soft(sentSince(),"keys sent for a key and another one pressed while it is checked").toBe(2);
     const [mistyped,corrected]=server.checks.slice(-2);
@@ -325,20 +328,20 @@ for(const mode of MODES)test(`a press right after a refused key sends it at once
     server.refuseKey=true;server.modelsMs=8000;
     const refused="OpenAI API · key check failed · "+REFUSAL;
     await keyField.fill("sk-fixture-refused");await keyField.press("Enter");
-    await expect(providerStatus).toContainText("Saving…");await expect(providerStatus).toHaveText(refused,{timeout:10_000});
+    await expect(providerStatus).toContainText("checking the key…");await expect(providerStatus).toHaveText(refused,{timeout:10_000});
     expect(server.posts).toHaveLength(1);
     await keyField.press("Enter");
-    await expect(providerStatus,"Enter right after the refusal sends the key again").toContainText("Saving…",{timeout:2_000});
+    await expect(providerStatus,"Enter right after the refusal sends the key again").toContainText("checking the key…",{timeout:2_000});
     await expect.poll(()=>server.posts.length).toBe(2);
     await expect(providerStatus).toHaveText(refused,{timeout:10_000});
     await save.click();
-    await expect(providerStatus,"a click on Save API key right after the refusal sends the key again").toContainText("Saving…",{timeout:2_000});
+    await expect(providerStatus,"a click on Save API key right after the refusal sends the key again").toContainText("checking the key…",{timeout:2_000});
     await expect.poll(()=>server.posts.length).toBe(3);
     await expect(providerStatus).toHaveText(refused,{timeout:10_000});
     server.refuseKey=false;
     await keyField.fill("sk-fixture-corrected");await keyField.press("Enter");
-    await expect(providerStatus,"a corrected key right after the refusal is sent").toContainText("Saving…",{timeout:2_000});
-    await expect(providerStatus).toHaveText("OpenAI API · ready · API key saved. Harness ready.",{timeout:10_000});
+    await expect(providerStatus,"a corrected key right after the refusal is sent").toContainText("checking the key…",{timeout:2_000});
+    await expect(providerStatus).toHaveText("OpenAI API · ready · API key saved.",{timeout:10_000});
     await expect(keyField).toHaveValue("");
     expect(server.posts).toHaveLength(4);
     await providerStatus.scrollIntoViewIfNeeded();await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-key-sent-again-after-refusal-${mode}.png`});
@@ -654,5 +657,70 @@ for(const {provider,models,defaultModel,defaultLabel,currentLabel,listed} of [
     await expect(defaults.locator("option"),"the empty choice, then every model listed").toHaveText([defaultLabel,...listed]);
     await expect(gitModel.locator("option:checked")).toHaveText(currentLabel);
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-choice-settings-${provider}-${mode}.png`});
+  }finally{await close()}
+});
+
+// Tour lane L10 (2026-11-02, live on main d33f4f13). L10-4: a right key saved after a refused one read "key check failed · HTTP
+// 401: Unauthorized. The key was not saved. · Saving…" while it was checked: the earlier refusal and the new save at once.
+for(const mode of MODES)test(`a key checked after an earlier refusal says the key is being checked, never the old refusal beside it (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const {server,relay,close}=await startNativeHarness(page,{provider:"meta",mode,models:META_MODELS,keyCheckMs:1500,refuseKey:true});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    await composerWrap(page).getByRole("button",{name:"Configure Meta Model API",exact:true}).click();
+    const keyField=page.getByTestId("provider-api-key"),providerStatus=page.getByTestId("provider-status");
+    await expect(keyField).toBeFocused();
+    await keyField.fill("meta-wrong-key-fixture");await keyField.press("Enter");
+    await expect(providerStatus).toHaveText("Meta Model API · key check failed · "+REFUSAL,{timeout:10_000});
+    server.refuseKey=false;
+    await keyField.fill("meta-right-key-fixture");await keyField.press("Enter");
+    await expect(providerStatus).toHaveText("Meta Model API · checking the key…");
+    await expect(providerStatus).not.toHaveClass(/provider-status-error/);
+    await providerStatus.scrollIntoViewIfNeeded();await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`l10-provider-key-checking-after-refusal-${mode}-1280x800.png`});
+    await expect(providerStatus).toHaveText("Meta Model API · ready · API key saved.",{timeout:10_000});
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`l10-provider-key-saved-after-refusal-${mode}-1280x800.png`});
+  }finally{await close()}
+});
+
+// L10-18: a key read from META_API_KEY read "Saved key ••••••••", and its Remove key said "API key removed." with the key still in
+// use. L10-F-10: the card's words ("model inference", "owns the thread, tools and agent loop") and the sidebar's "inference".
+for(const mode of MODES)test(`a key from an environment variable names its variable and offers no Remove key, in plain words (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const {relay,close}=await startNativeHarness(page,{provider:"meta",mode,hasKey:true,envKey:"META_API_KEY",models:META_MODELS});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    await expect(page.locator(".sidebar-provider div span")).toHaveText("Meta Model API");
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const card=page.getByTestId("provider-settings-card"),keyField=page.getByTestId("provider-api-key"),providerStatus=page.getByTestId("provider-status");
+    await expect(card).toBeVisible();
+    await expect(keyField).toHaveAttribute("placeholder","Using META_API_KEY from the environment");
+    await expect(card.getByRole("button",{name:"Remove key"})).toHaveCount(0);
+    await expect(providerStatus).toHaveText("Meta Model API · ready");
+    await expect(card).toContainText("Choose whose models Trebell Native uses. Your chats, tools and files stay the same.");
+    await expect(card).not.toContainText(/inference|agent loop|owns/);
+    await expect(page.locator(".agent-runtime-settings")).not.toContainText(/owns its model\/tool loop|coding-agent runtime/);
+    await card.scrollIntoViewIfNeeded();await settle(page);
+    const overflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);expect(overflow).toBeLessThanOrEqual(1);
+    await page.screenshot({animations:"disabled",path:auditDir+`l10-provider-env-key-${mode}-1280x800.png`});
+  }finally{await close()}
+});
+
+// L10-6: Meta answered muse-spark-1.3-contributor at effort max (live, 2026-11-02: HTTP 200, reasoning {effort: "max"}) and Muse Code
+// offers Max for it, where Trebell Native offered Low to Extra high only.
+for(const mode of MODES)test(`Native offers Thinking Max for Muse Spark 1.3 Contributor, as Meta takes it (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const {relay,close}=await startNativeHarness(page,{provider:"meta",mode,hasKey:true,models:META_MODELS,defaultModel:null,listThreads:true});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    const picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu"),thinking=page.getByTestId("reasoning-effort-picker");
+    await picker.click();await menu.getByRole("button",{name:"muse-spark-1.3-contributor",exact:true}).click();
+    await expect(picker).toHaveText("muse-spark-1.3-contributor");
+    await expect(thinking.locator("option")).toHaveText(["Default","Minimal","Low","Medium","High","Extra high","Max"].map(level=>"Thinking · "+level));
+    await thinking.selectOption("max");await expect(thinking).toHaveValue("max");
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`l10-native-contributor-max-${mode}-1280x800.png`});
   }finally{await close()}
 });

@@ -18,17 +18,8 @@ import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 import { askConfirm } from "../ask-dialog.js";
 
-const PROVIDER_NOTES={
-  openai:"Models are loaded live from the official OpenAI /v1/models API for this key.",
-  anthropic:"Models are loaded live from the official Anthropic /v1/models API for this key.",
-  gemini:"Models are loaded live from Google's Gemini OpenAI-compatible /models API for this key.",
-  xai:"Grok models from xAI. Models are loaded live from the official xAI /v1/language-models API for this key.",
-  meta:"Muse models from Meta. Models are loaded live from the official Meta Model API /v1/models for this key.",
-  agentrouter:"Models are loaded live from AgentRouter /v1/models for this key.",
-  vyceai:"Models are loaded live from Vyce AI /v1/models for this key.",
-  justworker:"Available model: claude-opus-4-8.",
-  hcnsec:"Available model: glm-5.3.",
-};
+// Where a provider's models come from, in plain words: the relays' one fixed model, else the list the provider gives for the key.
+const FIXED_MODELS={justworker:"claude-opus-4-8",hcnsec:"glm-5.3"},MODEL_FAMILIES={xai:"Grok models from xAI. ",meta:"Muse models from Meta. "};
 let appliedSettingsEntryNonce=null;
 // The last harness snapshot this window saw: Agents & models renders it at once on later visits while a fresh probe runs.
 let lastAgentRuntimeInfo=null;
@@ -270,6 +261,8 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
   }
   const [environmentThemeRefreshing,setEnvironmentThemeRefreshing]=useState(false);
   const [providerSwitching,setProviderSwitching]=useState(false);
+  // The provider whose typed key the server is checking: its status says so, not an earlier refusal the check may answer.
+  const [checkingKey,setCheckingKey]=useState(null);
   const [agentInfo,setAgentInfoState]=useState(()=>lastAgentRuntimeInfo);
   const [agentInfoRefreshing,setAgentInfoRefreshing]=useState(false);
   const [agentInfoError,setAgentInfoError]=useState("");
@@ -848,7 +841,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
   }
   async function sendProviderKey({provider,key}){
     const send=providerKeySendRef.current,seq=++send.seq;send.sending={provider,key};
-    showProviderMessage("Saving…");
+    setCheckingKey(provider);showProviderMessage("");
     let result=null,failure=null;
     try{result=await api("/api/providers",{method:"POST",body:{provider,apiKey:key}})}catch(error){failure=error}
     const next=send.next;send.sending=send.next=null;
@@ -858,7 +851,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
       if(failure)throw failure;
       // A key typed into the field while this one was on its way stays there.
       setApiKey(current=>current===key?"":current);
-      showProviderMessage(result.ready?"API key saved. Harness ready.":"API key saved.");
+      setCheckingKey(null);showProviderMessage("API key saved.");
       await onProviderUpdated?.({provider:result.selected||provider,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
     }catch(error){
       // A refused key check comes back with the provider's status, which says why; other failures show their own message.
@@ -866,6 +859,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
       // how it went instead.
       const refused=(await loadProviders())?.providers?.find(item=>item.id===provider)?.keyCheck;
       if(seq!==send.seq)return;
+      setCheckingKey(null);
       showProviderMessage(refused?"":error.message,!refused);
       if(refused)await onProviderUpdated?.({provider,agentRuntime:selectedAgent,refreshBootstrap:false});
     }
@@ -1060,9 +1054,9 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
   // A provider without a key shows that next step in the neutral status; it turns red once a key check or the provider itself
   // fails. The server keeps a refused key check (keyCheck), so its reason is still here after leaving Settings; the catalog
   // error that repeats it is not shown twice.
-  const keyCheck=providerSwitching?null:selectedStatus?.keyCheck||null;
-  const providerStatusText=providerSwitching?"switching provider…":keyCheck?"key check failed":selectedStatus?.hasKey?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):MISSING_PROVIDER_KEY;
-  const providerModelError=modelError&&modelError!==MISSING_PROVIDER_KEY&&modelError!==providerStatusText&&!(keyCheck&&modelError.endsWith(keyCheck.message))?modelError:"";
+  const checking=checkingKey===selected,keyCheck=providerSwitching||checking?null:selectedStatus?.keyCheck||null,envKey=selectedStatus?.keySource==="environment"?selectedStatus.keyVariable:"";
+  const providerStatusText=providerSwitching?"switching provider…":checking?"checking the key…":keyCheck?"key check failed":selectedStatus?.hasKey?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):MISSING_PROVIDER_KEY;
+  const providerModelError=!checking&&modelError&&modelError!==MISSING_PROVIDER_KEY&&modelError!==providerStatusText&&!(keyCheck&&modelError.endsWith(keyCheck.message))?modelError:"";
   const selectedAgentStatus=runtimeStatusForKind(agentInfo,selectedAgent,{preferSelected:true});
   // Diagnostics chips stay neutral until their answer arrives (the runtime poll, then the diagnostics read): an unknown
   // state is not a warning. They used to show amber "not ready" for a provider that was ready but not yet read. A failed
@@ -1191,7 +1185,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
       </div>}
       {settingsSection==="agents"&&<div className="settings-card agent-runtime-settings" {...targetProps("agents-harness")}>
         <h3><Bot size={14} aria-hidden="true"/> Agent harness{agentInfo&&agentInfoRefreshing&&<small data-testid="agent-runtime-refreshing" role="status" style={{marginLeft:8,fontSize:"0.7em",fontWeight:400,opacity:.7,display:"inline-flex",alignItems:"center",gap:4,verticalAlign:"middle"}}><RefreshCw size={10} style={reducedMotion?undefined:{animation:"trebell-spin .9s linear infinite"}}/>Refreshing…</small>}</h3>
-        <p>Choose the coding-agent runtime. Trebell Native owns its model/tool loop and calls APIs directly; Codex, Claude Code, OpenCode, Cursor, Grok Build, Antigravity and Muse Code run as their real harnesses. Saved chats stay owned by the harness that created them, and opening one switches back to that harness automatically.</p>
+        <p>Choose the agent that does the work. Trebell Native is built in and talks to the model provider directly; the others run as their own programs. A saved chat opens again on the harness that started it.</p>
         <div className="agent-runtime-list" aria-busy={agentInfo===null||agentInfoRefreshing?"true":"false"}>{agentInfo===null?AGENT_RUNTIME_SKELETON_ROWS.map((name,index)=><div className="agent-runtime-option agent-runtime-skeleton" key={"skeleton-"+index} data-testid="agent-runtime-skeleton" aria-hidden="true"><button type="button" disabled tabIndex={-1}><Bot size={14}/><span><strong>{name}</strong></span><em className="agent-runtime-checking">Checking…</em></button></div>):(agentInfo?.definitions||[]).map(def=>{
           const status=runtimeStatusForKind(agentInfo,def.id,{preferSelected:selectedAgent===def.id});
           const active=selectedAgent===def.id;
@@ -1244,20 +1238,20 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
       </div>}
       {settingsSection==="agents"&&settingDrawn["agents-provider"]&&<div className="settings-card provider-settings-card" {...targetProps("agents-provider")} data-testid="provider-settings-card" aria-busy={providerSwitching?"true":"false"}>
         <h3><Cloud size={14} aria-hidden="true"/> Model provider</h3>
-        <p>Choose the API that Trebell Native calls directly. This changes model inference, not the harness: Trebell Native still owns the thread, tools and agent loop.</p>
+        <p>Choose whose models Trebell Native uses. Your chats, tools and files stay the same.</p>
         <label>Provider
           <select data-testid="provider-selector" value={selected} disabled={providerSwitching} onChange={e=>saveSetting({modelProvider:e.target.value})}>
             {providerOptions.map(item=><option key={item.id} value={item.id}>{item.name}{item.official?" · official":""}</option>)}
           </select>
         </label>
         <label>API key
-          <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&apiKey.trim()){e.preventDefault();if(!e.repeat)saveProviderKey()}}} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
+          <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&apiKey.trim()){e.preventDefault();if(!e.repeat)saveProviderKey()}}} placeholder={envKey?"Using "+envKey+" from the environment":selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
         </label>
         <div className="provider-key-actions">
           <button data-testid="save-provider-key" className="setting-action" onClick={e=>{if(e.detail<2)saveProviderKey()}} onKeyDown={e=>{if(e.repeat&&e.key==="Enter")e.preventDefault()}} disabled={!apiKey.trim()}>Save API key</button>
-          {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
+          {selectedStatus?.hasKey&&!envKey&&<button onClick={clearProviderKey}>Remove key</button>}
         </div>
-        <p className="provider-note">{PROVIDER_NOTES[selected]||"Models are loaded from the selected provider when its API supports discovery."}</p>
+        <p className="provider-note">{FIXED_MODELS[selected]?"Available model: "+FIXED_MODELS[selected]+".":(MODEL_FAMILIES[selected]||"")+"The models listed are the ones the provider offers this key."}</p>
         <p data-testid="provider-status" className={keyCheck||providerModelError||providerMessageError?"provider-status-error":""}><strong>{MODEL_PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerStatusText}{keyCheck?" · "+keyCheck.message:""}{providerMessage?" · "+providerMessage:""}{providerModelError?" · "+providerModelError:""}</p>
       </div>}
       {settingsSection==="agents"&&settingDrawn["agents-models"]&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")}>

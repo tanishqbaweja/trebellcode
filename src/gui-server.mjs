@@ -2241,9 +2241,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           let validatedCatalog=null;
           if("apiKey" in body&&!knownModelProvider(body.provider||selectedProvider))throw new Error("Unknown model provider. Choose a listed provider before saving an API key.");
           if("apiKey" in body){
-            // A key for a provider with a live model list is saved only once that list answers to it (checkKey). Mock mode lists its
-            // own models and contacts no provider, so it saves the key as typed.
-            if(String(body.apiKey||"").trim() && !mock && !providers.get(provider).staticModels){
+            // A key is saved only once the provider's model list answers to it (checkKey), a relay's with a fixed list too. Mock mode
+            // lists its own models and contacts no provider, so it saves the key as typed. A key read from an environment variable
+            // cannot be removed here, and saying it was would leave it in use.
+            const origin=providers.status(provider);
+            if(!String(body.apiKey||"").trim()&&origin.keySource==="environment")throw new Error(`The ${providers.get(provider).name} key comes from the ${origin.keyVariable} environment variable, so Trebell Code cannot remove it. Unset ${origin.keyVariable} and restart Trebell Code to stop using it.`);
+            if(String(body.apiKey||"").trim() && !mock){
               try{
                 validatedCatalog=await providers.checkKey(provider,body.apiKey);
               }catch(error){
