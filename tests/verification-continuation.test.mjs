@@ -73,6 +73,9 @@ test("a check turn's reading keeps its behavioral check, and reads nothing of it
   // Denied after a look that ran: the look is not the check, and the chain stops.
   const denied=verificationCheckTurnReading({plan:behaviorPlan,evidence:[],turnItems:[ran("look","cat check.js",{success:true,exitCode:0}),ran("check","node check.js",{success:false,error:"Tool execution was not approved.",decision:"CONFIRM"})]});
   assert.equal(denied.stopped,"not-approved");assert.deepEqual(denied.observed,[]);
+  // Allowed but could not start (no exit code) after a look that ran: no result for the step, and the look is not the check.
+  const unstarted=verificationCheckTurnReading({plan:behaviorPlan,evidence:[],turnItems:[ran("look","cat check.js",{success:true,exitCode:0}),ran("check","node check.js",{success:false,error:"spawn node ENOENT"})]});
+  assert.equal(unstarted.stopped,null);assert.deepEqual(unstarted.observed,[]);
   // A step with its own command is read by its command, as before.
   const tests=verificationCheckTurnReading({plan,evidence:[{stepId:"diagnostics",status:"passed",errorCount:0}],traces:[{name:"item/completed",data:{item:{id:"t",command:"npm test",exitCode:1}}}]});
   assert.deepEqual(tests,{stopped:null,observed:[{stepId:"tests",status:"failed",exitCode:1,source:"runtime-trace",toolCallId:"t"}]});

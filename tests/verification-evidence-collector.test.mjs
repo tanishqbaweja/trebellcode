@@ -115,3 +115,23 @@ test("a command with no exit code (declined, or never started) neither passes no
   assert.deepEqual(collectVerificationEvidence({plan,traces,checkedStepId:"focused_behavior"}),[]);
   assert.deepEqual(collectVerificationEvidence({plan,traces:[{name:"item/completed",data:{item:{id:"ran",command:"npm test",exitCode:0}}}]}),[{stepId:"tests",status:"passed",exitCode:0,source:"runtime-trace",toolCallId:"ran"}]);
 });
+
+test("a check turn whose last command has no exit code keeps no result for its behavioral step, never an earlier command's",()=>{
+  const plan={steps:[{id:"focused_behavior",kind:"behavioral",required:true,evidence:["stated-acceptance-behavior"]}]},checked={plan,checkedStepId:"focused_behavior"};
+  // A harness's command items (the relays'): a look that exited 0, then the check, which failed with no exit code (as a command Muse
+  // Code's sandbox refused), was stopped with its turn, never ended or never started.
+  const look={type:"commandExecution",id:"look",command:"git status --short",status:"completed",exitCode:0};
+  const check=(status,exitCode=null)=>({type:"commandExecution",id:"check",command:"node check-behavior.js",status,exitCode});
+  for(const status of ["failed","stopped","inProgress","pending"])assert.deepEqual(collectVerificationEvidence({...checked,turnItems:[look,check(status)]}),[],status);
+  // Native's run that could not start, or that its policy refused: success false and no exit code.
+  const native=(id,command,status,rawOutput)=>({type:"dynamicToolCall",id,namespace:"trebell_terminal",tool:"run",status,arguments:{command,args:["check.js"]},rawOutput});
+  const nativeLook=native("look","cat","completed",{success:true,exitCode:0});
+  assert.deepEqual(collectVerificationEvidence({...checked,turnItems:[nativeLook,native("check","node","failed",{success:false,error:"spawn node ENOENT"})]}),[]);
+  assert.deepEqual(collectVerificationEvidence({...checked,turnItems:[nativeLook,native("check","node","failed",{success:false,decision:"REJECT",error:"Blocked by policy."})]}),[]);
+  // Codex's journal, newest first: its newest command has no exit code.
+  const traces=[{name:"item/completed",data:{item:{id:"check",command:"node check.js",status:"failed",exitCode:null}}},{name:"item/completed",data:{item:{id:"look",command:"git status",exitCode:0}}}];
+  assert.deepEqual(collectVerificationEvidence({...checked,traces}),[]);
+  // The same last command with an exit code is the check.
+  assert.deepEqual(collectVerificationEvidence({...checked,turnItems:[look,check("failed",1)]}).map(item=>[item.toolCallId,item.status]),[["check","failed"]]);
+  assert.deepEqual(collectVerificationEvidence({...checked,turnItems:[nativeLook,native("check","node","completed",{success:true,exitCode:0})]}).map(item=>[item.toolCallId,item.status]),[["check","passed"]]);
+});

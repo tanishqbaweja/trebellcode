@@ -21,14 +21,16 @@ function commandMatches(actual,expected){
 function finiteExitCode(value){if(value==null||value==="")return null;const number=Number(value);return Number.isFinite(number)?Math.trunc(number):null}
 function terminalItem(item={}){return ["completed","failed"].includes(String(item.status||"").toLowerCase())}
 
-function commandCandidates(turnItems=[],traces=[]){
+// The commands a turn ran: its own items, then the journal's traces. Only those that ended with an exit code, unless all: then also
+// one that never ran or never ended (exitCode null), which is still the last command a turn ran when it came last.
+function commandCandidates(turnItems=[],traces=[],{all=false}={}){
   const rows=[];
   for(const item of array(turnItems)){
-    if(!terminalItem(item))continue;const command=actualItemCommand(item),exitCode=finiteExitCode(item?.rawOutput?.exitCode??item.exitCode);if(!command||exitCode==null)continue;
+    const command=actualItemCommand(item),exitCode=terminalItem(item)?finiteExitCode(item?.rawOutput?.exitCode??item.exitCode):null;if(!command||(exitCode==null&&!all))continue;
     rows.push({id:item.id==null?null:String(item.id),command,exitCode,source:"turn-tool"});
   }
   for(const trace of array(traces)){
-    if(trace?.name!=="item/completed")continue;const item=trace?.data?.item||{},command=actualTraceCommand(trace),exitCode=finiteExitCode(item.exitCode);if(!command||exitCode==null)continue;
+    if(trace?.name!=="item/completed")continue;const item=trace?.data?.item||{},command=actualTraceCommand(trace),exitCode=finiteExitCode(item.exitCode);if(!command||(exitCode==null&&!all))continue;
     rows.push({id:item.id==null?null:String(item.id),command,exitCode,source:"runtime-trace"});
   }
   return rows;
@@ -87,11 +89,12 @@ function browserEvidence(plan,traces=[]){
   return evidence;
 }
 
-// The last command a turn ran: its own items are in order, the journal's traces newest first.
+// The last command a turn ran, exit code or not: its own items are in order, the journal's traces newest first.
 function lastCommand(rows){return rows.filter(row=>row.source==="turn-tool").at(-1)||rows.find(row=>row.source==="runtime-trace")||null}
 
 // checkedStepId: the step a check turn ran, named by the server's reading of that turn once its check was allowed. A behavioral step
 // has no command of its own, so the last command the check turn ran is its check: passed on exit 0, failed otherwise (which goes to repair).
+// A last command with no exit code (it could not start, was refused or stopped, or never ended) is no result: an earlier command is not the check.
 export function collectVerificationEvidence({plan,turnItems=[],traces=[],checkedStepId=null}={}){
   const evidence=[],diagnostics=diagnosticsEvidence(plan,turnItems);if(diagnostics)evidence.push(diagnostics);
   const commands=commandCandidates(turnItems,traces);
@@ -100,8 +103,8 @@ export function collectVerificationEvidence({plan,turnItems=[],traces=[],checked
     const match=[...commands].reverse().find(item=>commandMatches(item.command,step.command));if(!match)continue;
     evidence.push({stepId:step.id,status:match.exitCode===0?"passed":"failed",exitCode:match.exitCode,source:match.source,toolCallId:match.id});
   }
-  const checked=checkedStepId?array(plan?.steps).find(step=>step?.kind==="behavioral"&&step.id===String(checkedStepId)):null,ran=checked&&lastCommand(commands);
-  if(ran)evidence.push({stepId:checked.id,status:ran.exitCode===0?"passed":"failed",exitCode:ran.exitCode,evidence:["stated-acceptance-behavior"],source:ran.source,toolCallId:ran.id});
+  const checked=checkedStepId?array(plan?.steps).find(step=>step?.kind==="behavioral"&&step.id===String(checkedStepId)):null,ran=checked&&lastCommand(commandCandidates(turnItems,traces,{all:true}));
+  if(ran&&ran.exitCode!=null)evidence.push({stepId:checked.id,status:ran.exitCode===0?"passed":"failed",exitCode:ran.exitCode,evidence:["stated-acceptance-behavior"],source:ran.source,toolCallId:ran.id});
   evidence.push(...browserEvidence(plan,traces));
   return evidence;
 }

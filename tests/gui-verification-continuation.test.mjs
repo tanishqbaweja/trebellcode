@@ -36,7 +36,7 @@ test("Codex verification continuation starts the same thread with only sanitized
 // command the check turn ran, and a check the person declined stops the chain, which then refuses an automatic check.
 test("plan-turn keeps a behavioral check's result and stops the chain after a declined check",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-verification-check-turn-")),[port,appPort]=await Promise.all([freePort(),freePort()]),items=new Map();
-  const upstream=await fakeCodexAppServer(appPort,{afterTurnStart:params=>[{method:"item/completed",params:{threadId:params.threadId,turnId:"verification-turn",item:items.get(params.threadId)}}]});
+  const upstream=await fakeCodexAppServer(appPort,{afterTurnStart:params=>[items.get(params.threadId)].flat().map(item=>({method:"item/completed",params:{threadId:params.threadId,turnId:"verification-turn",item}}))});
   const gui=await createGuiServer({port,appPort,mock:true,env:{...process.env,TREBELL_HOME:home}});let ws;
   const post=(path,body)=>fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(response=>response.json());
   const plan={risk:"low",steps:[{id:"focused_behavior",kind:"behavioral",scope:"changed-behavior",cost:"medium",required:true,evidence:["stated-acceptance-behavior"],reason:"Run a focused executable check."}]};
@@ -46,7 +46,7 @@ test("plan-turn keeps a behavioral check's result and stops the chain after a de
       items.set(threadId,item);await post("/api/thread-meta",{threadId,patch:{runtime:"codex",runtimeInstanceId:"codex-default",cwd:home,active:false}});
       await post("/api/verification-records",{id:threadId+"-record",threadId,turnId:"user-turn",projectPath:home,plan,evidence:[]});
       const continued=await rpc("thread/verification/continue",{threadId,recordId:threadId+"-record",auto:true});assert.equal(continued.turn.id,"verification-turn");
-      for(let tries=0;tries<50;tries++){const traces=await fetch(gui.url+"/api/traces?"+new URLSearchParams({threadId,limit:"50"})).then(response=>response.json());if(traces.items.some(trace=>trace.name==="item/completed"))break;await new Promise(resolve=>setTimeout(resolve,40))}
+      for(let tries=0;tries<50;tries++){const traces=await fetch(gui.url+"/api/traces?"+new URLSearchParams({threadId,limit:"50"})).then(response=>response.json());if(traces.items.filter(trace=>trace.name==="item/completed").length>=[item].flat().length)break;await new Promise(resolve=>setTimeout(resolve,40))}
       return post("/api/verification/plan-turn",{threadId,turnId:"verification-turn"});
     };
     const passed=await checkTurn("check-passed",{type:"commandExecution",id:"check-run",command:["node","check.js"],status:"completed",exitCode:0});
@@ -54,6 +54,9 @@ test("plan-turn keeps a behavioral check's result and stops the chain after a de
     assert.deepEqual(passed.record.evidence.map(item=>[item.stepId,item.status,item.toolCallId]),[["focused_behavior","passed","check-run"]]);
     const failed=await checkTurn("check-failed",{type:"commandExecution",id:"check-run",command:["node","check.js"],status:"failed",exitCode:3});
     assert.equal(failed.record.assessment.status,"failed");assert.equal(failed.nextAction.action,"repair");
+    // A check that could not start (no exit code) after a look that exited 0 is no result: the record is not verified, nor the chain stopped.
+    const unstarted=await checkTurn("check-unstarted",[{type:"commandExecution",id:"look",command:["git","status"],status:"completed",exitCode:0},{type:"commandExecution",id:"check-run",command:["node","check.js"],status:"failed",exitCode:null}]);
+    assert.equal(unstarted.stopped,undefined);assert.equal(unstarted.record.assessment.status,"incomplete");assert.deepEqual(unstarted.record.evidence,[]);
     const declined=await checkTurn("check-declined",{type:"commandExecution",id:"check-run",command:["node","check.js"],status:"declined",exitCode:null});
     assert.equal(declined.stopped,"not-approved");assert.equal(declined.record.assessment.status,"incomplete");assert.deepEqual(declined.record.evidence,[]);
     await assert.rejects(rpc("thread/verification/continue",{threadId:"check-declined",auto:true}),/The last check was not allowed to run./);
