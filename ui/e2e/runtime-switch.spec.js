@@ -1,5 +1,5 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync,writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -346,6 +346,86 @@ test("a new-task draft stays through a harness switch and New task back from Set
     await expect(composer).toHaveValue(draft);
     await expect(picker).toContainText("OpenCode Fixture Fast",{timeout:15_000});
     await expect(composer).toHaveValue(draft);
+  }finally{await close()}
+});
+
+// Each thread keeps its own draft and shelf, and so does the new task, also where opening a thread of another harness, or picking a
+// harness in Settings, switches the harness and closes the open thread on the way (tour L10-17). Such a switch filed the thread's
+// draft as the new task's, and opening the thread again dropped it, file and all.
+const draftRow=(page,id)=>page.locator(`.thread-row[data-thread-id="${id}"]`);
+const draftChips=page=>page.locator(".attachment-shelf > span");
+async function sendFromNewTask(page,relay,text,reply){
+  await page.getByTestId("composer").click();await page.keyboard.type(text,{delay:5});await page.keyboard.press("Enter");
+  await expect(page.getByText(reply,{exact:true})).toBeVisible({timeout:15_000});
+  return relay.calls("turn/start").at(-1).params.threadId;
+}
+async function newTaskDraft(page,text){
+  await page.getByRole("button",{name:"New task",exact:true}).first().click();await expect(page.locator(".welcome h1")).toBeVisible();
+  await page.getByTestId("composer").click();await page.keyboard.type(text,{delay:5});
+}
+// Opens a thread from its sidebar row, through the harness switch it asks for when it is another harness's.
+async function openDraftThread(page,id,model,{switches=true}={}){
+  const switched=switches?agentRuntimePost(page):null;await draftRow(page,id).locator(".thread-main").click();await switched;
+  await expect(page.getByTestId("model-picker")).toContainText(model,{timeout:15_000});await expect(draftRow(page,id)).toHaveClass(/active/);
+  await expect(page.getByTestId("composer")).toBeEnabled();
+}
+test("a thread's draft and file stay with it when a thread of another harness is opened, and come back when it is opened again",async({page},testInfo)=>{
+  test.setTimeout(150_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",harnesses:WITH_CODEX});
+  await keepAppearance(page,server);
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),chips=draftChips(page);
+    const notes=testInfo.outputPath("codex-notes.txt");writeFileSync(notes,"Compare the sizes of the two builds.\n");
+    await expect(picker).toContainText("Claude Fixture Sonnet");
+    const claudeThread=await sendFromNewTask(page,relay,"A Claude Code task","Fixture reply from claude");
+    const switched=agentRuntimePost(page);await selectHarness(page,"Codex");await switched;
+    await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(picker).toContainText("Codex Fixture",{timeout:15_000});
+    const codexThread=await sendFromNewTask(page,relay,"A Codex task","Fixture reply from codex");
+    // The new task's own draft, then the Codex thread's: its text and a file on its shelf.
+    await newTaskDraft(page,"Draft for a new task");
+    await openDraftThread(page,codexThread,"Codex Fixture",{switches:false});
+    await expect(composer).toHaveValue("");await expect(chips).toHaveCount(0);
+    await composer.click();await page.keyboard.type("Draft for the Codex thread",{delay:5});
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files"}).click()]);await chooser.setFiles([notes]);
+    await expect(chips.filter({hasText:"codex-notes.txt"})).toHaveCount(1);await expect(chips.first()).not.toHaveAttribute("aria-busy","true");
+    // The Claude Code thread, a switch away, opens on its own empty composer.
+    await openDraftThread(page,claudeThread,"Claude Fixture Sonnet");
+    await expect(composer).toHaveValue("");await expect(chips).toHaveCount(0);
+    await shootModes(page,"harness-switch-other-thread-own-draft",{widths:[1280],check:()=>expect(composer).toHaveValue("")});
+    // The Codex thread opened again has its draft and file back, and the new task its own.
+    await openDraftThread(page,codexThread,"Codex Fixture");
+    await expect(composer).toHaveValue("Draft for the Codex thread");await expect(chips).toHaveCount(1);await expect(chips.first()).toContainText("codex-notes.txt");
+    await shootModes(page,"harness-switch-thread-draft-back",{widths:[1280],check:()=>expect(chips.first()).toBeInViewport()});
+    await page.getByRole("button",{name:"New task",exact:true}).first().click();await expect(page.locator(".welcome h1")).toBeVisible();
+    await expect(composer).toHaveValue("Draft for a new task");await expect(chips).toHaveCount(0);
+  }finally{await close()}
+});
+test("a harness picked in Settings from a thread with a draft leaves the draft with the thread and shows the new task's own",async({page})=>{
+  test.setTimeout(150_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",harnesses:WITH_CODEX});
+  await keepAppearance(page,server);
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker");
+    await expect(picker).toContainText("Claude Fixture Sonnet");
+    const claudeThread=await sendFromNewTask(page,relay,"A Claude Code task","Fixture reply from claude");
+    await newTaskDraft(page,"Draft for a new task");
+    await openDraftThread(page,claudeThread,"Claude Fixture Sonnet",{switches:false});
+    await composer.click();await page.keyboard.type("Draft for the Claude Code thread",{delay:5});
+    // Codex picked in Settings closes the thread: back from Settings, the new task shows its own draft.
+    const switched=agentRuntimePost(page);await selectHarness(page,"Codex");await switched;
+    await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(picker).toContainText("Codex Fixture",{timeout:15_000});
+    await expect(page.locator(".welcome h1")).toBeVisible();await expect(composer).toHaveValue("Draft for a new task");
+    await shootModes(page,"harness-picked-in-settings-new-task-draft",{widths:[1280],check:()=>expect(composer).toHaveValue("Draft for a new task")});
+    // The thread opened again, a switch back to Claude Code, has its draft back.
+    await openDraftThread(page,claudeThread,"Claude Fixture Sonnet");
+    await expect(composer).toHaveValue("Draft for the Claude Code thread");
+    await shootModes(page,"harness-picked-in-settings-thread-draft-back",{widths:[1280],check:()=>expect(composer).toHaveValue("Draft for the Claude Code thread")});
+    await page.getByRole("button",{name:"New task",exact:true}).first().click();await expect(page.locator(".welcome h1")).toBeVisible();
+    await expect(composer).toHaveValue("Draft for a new task");
   }finally{await close()}
 });
 

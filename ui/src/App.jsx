@@ -2233,7 +2233,11 @@ export default function App(){
       return d;
     }finally{if(seq===modelRefreshSeqRef.current){modelsLoadingRef.current=false;setModelsLoading(false)}}
   }
+  // A harness switch closes the open thread here, not through openThreadInternal or showNewTask, so the thread sets its draft and
+  // shelf aside here too, and the new task's come back (swapThreadDraft). Without it the thread opened after the switch took the
+  // thread's draft as the new task's, and opening the thread again dropped it, files and all.
   function resetThreadView(runtime,capabilities){
+    if(activeThreadRef.current)swapThreadDraft(activeThreadRef.current.id,"");
     activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setEvents([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;liveSendRef.current=null;setTokenUsage(null);resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime:runtime,nativeQueue:capabilities?.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);
   }
   // The open thread when the person opened it while the switch ran and it belongs to the harness the switch lands on, else null. A
