@@ -3,7 +3,7 @@ import { CalendarDays, CircleAlert, Cpu, History, RefreshCw, RotateCcw, Sparkles
 import { api } from "../api.js";
 import { agentName, failureText } from "../display-labels.js";
 import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
-import { estimateUsageCost } from "../usage-pricing.js";
+import { estimateUsageCost, usageTokens } from "../usage-pricing.js";
 import { askConfirm } from "../ask-dialog.js";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 
@@ -147,10 +147,12 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     document.addEventListener("pointerdown",onPointer);document.addEventListener("keydown",onKey);
     return()=>{document.removeEventListener("pointerdown",onPointer);document.removeEventListener("keydown",onKey)};
   },[]);
+  // Models are counted by model and harness, so a model two harnesses ran is a row for each. Input counts every input token, the
+  // cached ones with it, whatever each harness's records hold (usageTokens).
   const computed=useMemo(()=>{
-    let cost=0,known=0,estimated=0;const modelMap={};
-    for(const record of data.records||[]){const item=estimateUsageCost(record,settings);if(item){cost+=item.amount;item.estimated?estimated++:known++}const key=record.model||"Unknown model";const bucket=modelMap[key]||(modelMap[key]={tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
-    return {cost,known,estimated,models:Object.entries(modelMap).sort((a,b)=>b[1].tokens-a[1].tokens)};
+    let cost=0,known=0,estimated=0;const modelMap={},input={input:0,cacheRead:0,cacheWrite:0};
+    for(const record of data.records||[]){const item=estimateUsageCost(record,settings),tokens=usageTokens(record.usage,record.runtime);for(const key in input)input[key]+=tokens[key];if(item){cost+=item.amount;item.estimated?estimated++:known++}const name=record.model||"Unknown model",key=name+"\n"+record.runtime;const bucket=modelMap[key]||(modelMap[key]={name,tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
+    return {cost,known,estimated,input,models:Object.entries(modelMap).sort((a,b)=>b[1].tokens-a[1].tokens)};
   },[data,settings]);
   // Daily bars count the viewer's own calendar days, the clock the Recent turns times use. The server's daily map is keyed
   // by UTC date, which put a turn made just after local midnight (east of UTC) on the day before.
@@ -243,13 +245,13 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     </section>}
     <div className="usage-summary">
       <div><span>Total tokens</span><strong className={usageKnown?undefined:"usage-stat-muted"}>{usageKnown?formatTokens(data.total?.totalTokens):"—"}</strong><small>{usageKnown?`${records.length} recorded turn${records.length===1?"":"s"}`:usagePending}</small></div>
-      <div><span>Input</span><strong className={usageKnown?undefined:"usage-stat-muted"}>{usageKnown?formatTokens(data.total?.inputTokens):"—"}</strong><small>{usageKnown?`${formatTokens(data.total?.cachedInputTokens)} cache read · ${formatTokens(data.total?.cacheWriteInputTokens)} cache write`:usagePending}</small></div>
+      <div><span>Input</span><strong className={usageKnown?undefined:"usage-stat-muted"}>{usageKnown?formatTokens(computed.input.input):"—"}</strong><small>{usageKnown?`${formatTokens(computed.input.cacheRead)} cache read · ${formatTokens(computed.input.cacheWrite)} cache write`:usagePending}</small></div>
       <div><span>Output</span><strong className={usageKnown?undefined:"usage-stat-muted"}>{usageKnown?formatTokens(data.total?.outputTokens):"—"}</strong><small>{usageKnown?`${formatTokens(data.total?.reasoningOutputTokens)} reasoning`:usagePending}</small></div>
       <div><span>Cost</span><strong className={usageKnown&&(computed.known||computed.estimated||!records.length)?undefined:"usage-stat-muted"} title={!usageKnown||computed.known||computed.estimated||!records.length?undefined:"No recorded turn reported or estimated a cost"}>{!usageKnown?"—":computed.known||computed.estimated?`$${computed.cost.toFixed(computed.cost<1?4:2)}`:records.length?"—":"$0.00"}</strong><small>{usageKnown?`${computed.known} provider · ${computed.estimated} estimated`:usagePending}</small></div>
     </div>
     <div className="usage-grid">
       <section className="capability-card"><div className="capability-card-head"><span><CalendarDays size={15} aria-hidden="true"/><strong>Daily tokens</strong></span><em>{days}d</em></div><div className="usage-bars">{daily.length?daily.map(([day,value])=><div key={day}><span>{new Date(day+"T00:00:00").toLocaleDateString(undefined,{month:"short",day:"numeric"})}</span><i><b style={{width:`${Math.max(2,Number(value.tokens||0)/maxDaily*100)}%`}}/></i><strong>{formatTokens(value.tokens)}</strong></div>):usageCurrent?<p>No recorded usage in this period.</p>:loading&&<p aria-busy="true">Loading daily usage…</p>}</div></section>
-      <section className="capability-card"><div className="capability-card-head"><span><Cpu size={15} aria-hidden="true"/><strong>Models</strong></span>{usageKnown&&<em>{computed.models.length}</em>}</div><div className="usage-models">{computed.models.length?computed.models.map(([name,value])=><div key={name}><span><strong>{name}</strong><small>{runtimeLabel(value.runtime)} · {value.turns} turn{value.turns===1?"":"s"}</small></span><b>{formatTokens(value.tokens)}</b><em>{value.costEntries?`$${value.cost.toFixed(value.cost<1?4:2)}`:"—"}</em></div>):usageCurrent?<p>No model usage in this period.</p>:loading&&<p aria-busy="true">Loading model usage…</p>}</div></section>
+      <section className="capability-card"><div className="capability-card-head"><span><Cpu size={15} aria-hidden="true"/><strong>Models</strong></span>{usageKnown&&<em>{computed.models.length}</em>}</div><div className="usage-models">{computed.models.length?computed.models.map(([key,value])=><div key={key}><span><strong>{value.name}</strong><small>{runtimeLabel(value.runtime)} · {value.turns} turn{value.turns===1?"":"s"}</small></span><b>{formatTokens(value.tokens)}</b><em>{value.costEntries?`$${value.cost.toFixed(value.cost<1?4:2)}`:"—"}</em></div>):usageCurrent?<p>No model usage in this period.</p>:loading&&<p aria-busy="true">Loading model usage…</p>}</div></section>
     </div>
     <section className="capability-card usage-recent"><div className="capability-card-head"><span><History size={15} aria-hidden="true"/><strong>Recent turns</strong></span>{usageKnown&&<em>{Math.min(100,records.length)}</em>}</div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{records.slice(0,100).map(record=>{const cost=estimateUsageCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span title={new Date(record.at).toLocaleString()}>{new Date(record.at).toLocaleString(undefined,{dateStyle:"short",timeStyle:"short"})}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}{!records.length&&(loading||usageCurrent)&&<p className="usage-table-empty" aria-busy={loading||undefined}>{loading?"Loading recorded turns…":"No turns recorded in this period."}</p>}</div></section>
   </div>;

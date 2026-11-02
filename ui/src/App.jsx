@@ -31,6 +31,7 @@ import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, re
 import { isListedThread, prependThread } from "./thread-list-state.js";
 import { nextModelSelection } from "./fanout-utils.js";
 import { landingModel, newestModelsFirst } from "./model-choice.js";
+import { priceUsage, savedPrice } from "./usage-pricing.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { captureConversationPosition, captureThreadScrollPosition, conversationWelcome, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
@@ -511,18 +512,13 @@ function pullRequestIdentity(pr){
     return JSON.stringify([String(pr?.provider||"").toLowerCase(),url.hostname.toLowerCase(),path,Number(pr?.number)||0]);
   }catch{return JSON.stringify([String(pr?.provider||"").toLowerCase(),String(pr?.url||""),Number(pr?.number)||0])}
 }
-function tokenLabel(tokenUsage,price=null){
+// runtime: the harness whose usage it is, which says what its input tokens hold (usage-pricing.js prices it as the Usage page does).
+function tokenLabel(tokenUsage,price=null,runtime=""){
   const total=tokenUsage?.total?.totalTokens;
   const contextTokens=tokenUsage?.last?.inputTokens;
   const windowSize=tokenUsage?.modelContextWindow;
   const actual=Number(tokenUsage?.cost?.amount);
-  let cost=Number.isFinite(actual)?actual:null;
-  if(cost==null&&price){
-    const usage=tokenUsage?.total||{};
-    const input=Number(usage.inputTokens||0),output=Number(usage.outputTokens||0),cacheRead=Number(usage.cachedInputTokens||0),cacheWrite=Number(usage.cacheWriteInputTokens||0);
-    const inputRate=price.inputPrice==null?null:Number(price.inputPrice),outputRate=price.outputPrice==null?null:Number(price.outputPrice);
-    if(Number.isFinite(inputRate)||Number.isFinite(outputRate))cost=(input*(Number.isFinite(inputRate)?inputRate:0)+output*(Number.isFinite(outputRate)?outputRate:0)+cacheRead*(Number.isFinite(Number(price.cacheReadPrice))?Number(price.cacheReadPrice):(Number.isFinite(inputRate)?inputRate:0))+cacheWrite*(Number.isFinite(Number(price.cacheWritePrice))?Number(price.cacheWritePrice):(Number.isFinite(inputRate)?inputRate:0)))/1_000_000;
-  }
+  const cost=Number.isFinite(actual)?actual:priceUsage(tokenUsage?.total,runtime,price);
   const suffix=cost!=null?` · $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`:"";
   if(!(Number(total)>0))return "Context —";
   if(windowSize&&contextTokens>0)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
@@ -531,8 +527,8 @@ function tokenLabel(tokenUsage,price=null){
 // The context value without the "Context" label, for places that already print the label next to a meter or in a stat cell:
 // "—" before the harness reports usage, "50% · 1,444/120,000" with a known window, else the thread's token total. A cost
 // joins when the harness reports one (or a custom model's prices give one).
-function contextValueLabel(tokenUsage,price=null){
-  const label=tokenLabel(tokenUsage,price);
+function contextValueLabel(tokenUsage,price=null,runtime=""){
+  const label=tokenLabel(tokenUsage,price,runtime);
   const total=tokenUsage?.total?.totalTokens,contextTokens=tokenUsage?.last?.inputTokens,windowSize=Number(tokenUsage?.modelContextWindow);
   const cost=/ · (\$[\d.]+)$/.exec(label)?.[1]||"";
   // A turn always sends some context, so a zero total means the provider reported no usage, not an empty window.
@@ -956,7 +952,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     return()=>{disposed=true;clearTimeout(timer)};
   },[activeMention?.query,onFileMentionSearch]);
   const contextPercent=contextUsagePercent(tokenUsage);
-  const priceConfig=(settings.customModels||[]).find(item=>item.id===model&&item.runtime===agentRuntime&&(!runtimeCapabilities.managedInference||item.provider===provider))||null;
+  const priceConfig=savedPrice(settings,agentRuntime,model,provider);
   function dictate(){
     if(!speechSupported)return;
     if(recognitionRef.current){recognitionRef.current.stop();return}
@@ -1264,7 +1260,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} aria-label="Voice dictation" aria-pressed={listening} title={speechSupported?(listening?"Listening… click to stop":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" aria-label={sendLabel} onClick={()=>sendDraft(onSend)} disabled={sendOff} title={tooLongNote||runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||(submitting?sendingText:uploadingFiles.length?"Waiting for attachments to upload":mentionWaits?`Waiting for ${mentionBusy.label} to attach`:sendLabel))}><Send size={16}/></button>
     </div></div>
-    <div className={"composer-status"+(promptTooLong||shownAlert||transportError||(modelBlocker?!modelsLoading&&!providerKeyStep:modelError)?" error":"")} onClick={footerPressOnce}><span>{promptTooLong?tooLongNote:shownAlert?<span data-testid="composer-alert" className="composer-alert" role={shownAlert.kind==="open"?"status":"alert"}>{shownAlert.text}</span>:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:draftWaits?<span data-testid="composer-sending" className="composer-transport">{sendingText} · your draft stays here until the last message has gone.</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<span className="composer-context" title={tokenLabel(tokenUsage,priceConfig)}>Context{" "}<span className={"context-meter"+(contextPercent==null?" unknown":contextPercent>=90?" full":contextPercent>=75?" high":"")} {...(contextPercent!=null?{role:"meter","aria-label":"Context window used","aria-valuemin":0,"aria-valuemax":100,"aria-valuenow":contextPercent}:{"aria-hidden":"true"})}><i style={{width:(contextPercent||0)+"%"}}/></span>{contextValueLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</span>}</span><span className="composer-hints">{prompt.length>=MAX_COMPOSER_CHARS*0.8&&!promptTooLong&&<span className="composer-draft-count">{prompt.length.toLocaleString()} / {MAX_COMPOSER_CHARS.toLocaleString()} chars · </span>}{onCancelEdit?<>Save edit<kbd className="tb-kbd" aria-hidden="true">Enter</kbd> · Cancel<kbd className="tb-kbd" aria-hidden="true">Esc</kbd></>:<>{canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups<kbd className="tb-kbd" aria-hidden="true">Enter</kbd></>}</span></div>
+    <div className={"composer-status"+(promptTooLong||shownAlert||transportError||(modelBlocker?!modelsLoading&&!providerKeyStep:modelError)?" error":"")} onClick={footerPressOnce}><span>{promptTooLong?tooLongNote:shownAlert?<span data-testid="composer-alert" className="composer-alert" role={shownAlert.kind==="open"?"status":"alert"}>{shownAlert.text}</span>:runtimeSwitchLabel?<span data-testid="composer-runtime-switch" className="composer-transport">{runtimeSwitchLabel} · your draft stays here until it is ready.</span>:!transportReady?<span data-testid="composer-transport" className="composer-transport">{transportMessage}{transportError?". Your draft is kept.":" · your draft stays here until it connects."}{transportError&&<button className="context-compact-btn" type="button" onClick={onRetryTransport} title={"Reconnect to "+agentRuntimeLabel}>Retry</button>}</span>:draftWaits?<span data-testid="composer-sending" className="composer-transport">{sendingText} · your draft stays here until the last message has gone.</span>:modelBlocker?<span data-testid="composer-model-status" className="composer-transport">{modelBlocker}{!modelsLoading&&!setupRequired&&onConfigureProvider&&<button className="context-compact-btn" type="button" onClick={onConfigureProvider} title={configureLabel+" in Settings"}>{configureLabel}</button>}</span>:modelError||<span className="composer-context" title={tokenLabel(tokenUsage,priceConfig,agentRuntime)}>Context{" "}<span className={"context-meter"+(contextPercent==null?" unknown":contextPercent>=90?" full":contextPercent>=75?" high":"")} {...(contextPercent!=null?{role:"meter","aria-label":"Context window used","aria-valuemin":0,"aria-valuemax":100,"aria-valuenow":contextPercent}:{"aria-hidden":"true"})}><i style={{width:(contextPercent||0)+"%"}}/></span>{contextValueLabel(tokenUsage,priceConfig,agentRuntime)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</span>}</span><span className="composer-hints">{prompt.length>=MAX_COMPOSER_CHARS*0.8&&!promptTooLong&&<span className="composer-draft-count">{prompt.length.toLocaleString()} / {MAX_COMPOSER_CHARS.toLocaleString()} chars · </span>}{onCancelEdit?<>Save edit<kbd className="tb-kbd" aria-hidden="true">Enter</kbd> · Cancel<kbd className="tb-kbd" aria-hidden="true">Esc</kbd></>:<>{canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups<kbd className="tb-kbd" aria-hidden="true">Enter</kbd></>}</span></div>
   </div>;
 });
 
