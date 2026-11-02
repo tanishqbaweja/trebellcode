@@ -58,8 +58,9 @@ export function supportedReasoningEfforts(runtime,provider,model,metadata={}){
     if(provider==="gemini")return id?["low","medium","high"]:[];
     if(provider==="anthropic"&&/(?:claude-(?:opus|sonnet)-(?:4-[6-9]|5)|claude-(?:fable|mythos)-5)/.test(id))return ["low","medium","high"];
     // Meta's catalog lists no levels. Its Responses API takes Minimal to Extra High (Muse Spark refuses None), and Muse Wonder and
-    // Muse Spark 1.3 also Max, which Spark 1.3's Contributor mode does not offer (dev.meta.ai/docs/models). xAI lists its own.
-    if(provider==="meta"&&/^muse-(?:spark|wonder)-/.test(id))return ["minimal","low","medium","high","xhigh",...(/^muse-wonder-|^muse-spark-1\.3(?!.*contributor)/.test(id)?["max"]:[])];
+    // Muse Spark 1.3 also Max (dev.meta.ai/docs/models), its Contributor mode too: on 2026-11-02 Meta answered muse-spark-1.3-contributor
+    // at effort max with HTTP 200, reasoning {effort: "max"} and 150 reasoning tokens for a one-word reply. xAI lists its own.
+    if(provider==="meta"&&/^muse-(?:spark|wonder)-/.test(id))return ["minimal","low","medium","high","xhigh",...(/^muse-wonder-|^muse-spark-1\.3/.test(id)?["max"]:[])];
     return [];
   }
   return runtime==="codex"?advertised:[];

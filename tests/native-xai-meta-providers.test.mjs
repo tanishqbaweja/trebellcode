@@ -130,10 +130,12 @@ test("a Meta key is checked against /v1/models, and only Meta's chat models are 
     // Meta's list names no levels: the Thinking picker offers what Meta documents for each model.
     assert.deepEqual(supportedReasoningEfforts("native","meta","muse-spark-1.3"),["minimal","low","medium","high","xhigh","max"]);
     assert.deepEqual(supportedReasoningEfforts("native","meta","muse-wonder-1.0"),["minimal","low","medium","high","xhigh","max"]);
-    assert.deepEqual(supportedReasoningEfforts("native","meta","muse-spark-1.3-contributor"),["minimal","low","medium","high","xhigh"]);
+    // Meta takes Max for 1.3's Contributor mode too (live 2026-11-02: HTTP 200, reasoning {effort: "max"}), as Muse Code offers it.
+    assert.deepEqual(supportedReasoningEfforts("native","meta","muse-spark-1.3-contributor"),["minimal","low","medium","high","xhigh","max"]);
     assert.deepEqual(supportedReasoningEfforts("native","meta","muse-spark-1.2"),["minimal","low","medium","high","xhigh"]);
     assert.deepEqual(supportedReasoningEfforts("native","meta","muse-image-1.0"),[]);
-    assert.equal(configuredReasoningEffort({modelReasoningEfforts:{"native:meta:muse-spark-1.3-contributor":"max"}},"native","meta","muse-spark-1.3-contributor"),null);
+    assert.equal(configuredReasoningEffort({modelReasoningEfforts:{"native:meta:muse-spark-1.3-contributor":"max"}},"native","meta","muse-spark-1.3-contributor"),"max");
+    assert.equal(configuredReasoningEffort({modelReasoningEfforts:{"native:meta:muse-spark-1.2-contributor":"max"}},"native","meta","muse-spark-1.2-contributor"),null);
     assert.deepEqual(server.requests.map(request=>[request.method,request.path,request.headers.authorization]),[["GET","/meta/v1/models","Bearer meta-bad-key"],["GET","/meta/v1/models","Bearer meta-good-key"]]);
   }finally{await server.close();rmSync(root,{recursive:true,force:true})}
 });
