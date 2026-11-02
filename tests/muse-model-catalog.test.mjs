@@ -269,3 +269,35 @@ test("a model Muse refuses fails with Muse's reason and leaves the session on it
     assert.match(muse.sent("turn/start")[0].params.input[0].text,/using model muse-wonder-1\.0/);
   }finally{await session.close()}
 });
+
+// A thread's session lists its own commands (skill/list on its session): the skills of the thread's folder among them, which the
+// window's list (a session of the read-only host in the server's own folder) lacks, as it may list one the session does not have,
+// which Muse refuses as a skill part. The thread's / menu offers the session's (available_commands_update), and a message is told a
+// command by them (review of tour L10-13). Where the window's list shows no skills, the session asks for none.
+test("a session lists its own commands for the thread's / menu, and a message runs one of those, not one only the window's list has",async()=>{
+  const own={skills:[{selector:"release-notes",description:"Draft the release notes from the merged work. Then check them."},{selector:"grill",description:"Grill the plan.",argumentHint:"[topic]"}]};
+  const updates=[],child=fakeChild(),muse=new FakeMuse(child,{"skill/list":()=>own});
+  const catalog={...museModelCatalog(LIST),commands:museSkillCommands(SKILLS)};
+  const session=new MuseAgentSession({command:"muse",cwd:process.cwd(),env:{PATH:""},version:"1.6.0",modelCatalog:()=>catalog,spawnFn:()=>child,stopTree:fakeStop,onUpdate:update=>updates.push(update)});
+  try{
+    await session.start({model:"muse-wonder-1.0"});
+    for(const end=Date.now()+5000;!updates.some(update=>update.update?.sessionUpdate==="available_commands_update");){if(Date.now()>end)throw new Error("the session listed no commands");await new Promise(done=>setTimeout(done,10))}
+    const [listed]=muse.sent("skill/list"),[started]=muse.sent("session/start");
+    assert.equal(listed.params.sessionId,started.params.sessionId,"listed on the thread's own session");
+    assert.deepEqual(updates.find(update=>update.update?.sessionUpdate==="available_commands_update"),{sessionId:started.params.sessionId,update:{sessionUpdate:"available_commands_update",commands:[{name:"release-notes",description:"Draft the release notes from the merged work."},{name:"grill",description:"Grill the plan.",input:{hint:"[topic]"}}]}});
+    await session.prompt([{type:"text",text:"/release-notes for 2.1.4"}]);
+    assert.deepEqual(muse.sent("turn/start")[0].params.input,[{type:"skill",selector:"release-notes",arguments:"for 2.1.4"}],"the folder's own command runs");
+    await session.prompt([{type:"text",text:"/doctor"}]);
+    const plain=muse.sent("turn/start")[1].params.input;
+    assert.equal(plain.some(part=>part.type==="skill"),false,"a command only the window's list has goes as words, not as a skill Muse would refuse");
+    assert.equal(plain.at(-1).text,"/doctor");
+    assert.equal(session.commandSteerRefusal([{type:"text",text:"/doctor"}]),null);
+    assert.match(session.commandSteerRefusal([{type:"text",text:"/release-notes"}]),/^Muse Code runs \/release-notes only as a message of its own/);
+  }finally{await session.close()}
+  const bare=fakeChild(),quiet=new FakeMuse(bare,{"skill/list":()=>own});
+  const plainSession=new MuseAgentSession({command:"muse",cwd:process.cwd(),env:{PATH:""},version:"1.6.0",modelCatalog:()=>museModelCatalog(LIST),spawnFn:()=>bare,stopTree:fakeStop,onUpdate:()=>{}});
+  try{
+    await plainSession.start({model:"muse-wonder-1.0"});await plainSession.prompt([{type:"text",text:"Hello"}]);
+    assert.equal(quiet.sent("skill/list").length,0,"no skills listed for the window: none asked of the session");
+  }finally{await plainSession.close()}
+});

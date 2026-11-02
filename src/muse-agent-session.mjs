@@ -5,7 +5,7 @@ import { retryNotice, retryReason } from "./retry-notice.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { museAnswerPayload, museCardButtons, museDecisionChoices, museDecisionToSend, museDialogQuestions } from "./muse-asking.mjs";
 import { MuseHost, MUSE_HOST_BOUNDS, loadMuseSdk, museHostCannotSandbox, museLaunchPlan, museServeArgs, museSessionSettings, museWorkspaceRoot } from "./muse-host.mjs";
-import { resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
+import { museSkillCommands, resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
 import { MUSE_LAST_DATE_MS, museLimitLiftsAt, museQuotaStop } from "./muse-quota.mjs";
 import { museItemRow, museLabel, museShowsNoRow, museTodoPlan, museWorkProgress, museWorkflowAgentRows } from "./muse-rows.mjs";
 import { MUSE_REASONING_EFFORTS } from "./model-reasoning-effort.mjs";
@@ -271,7 +271,7 @@ export class MuseAgentSession{
     this.args=museServeArgs(this.permissionMode);this.launched=null;this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
     // Whether the running host cannot use its sandbox for the commands it runs (museHostCannotSandbox), told on their cards.
     this.sandboxUnavailable=false;
-    this.sessionId=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;
+    this.sessionId=null;this.sessionCommands=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;
     this.dead=false;this.deadError=null;this.closed=false;this.activePrompt=null;
     // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled; the names
     // of the agents Muse runs, by the ids a child's approval names them by (#nameAgents).
@@ -316,11 +316,26 @@ export class MuseAgentSession{
   // its host cannot take, so the person keeps the draft, and a follow-up of Trebell's queue sent now stays queued (queued: the words
   // for it) and goes as a message of its own once the turn ends. null: any other message, which steers.
   commandSteerRefusal(parts,{queued=false}={}){
-    const skill=museSkillInput(parts,new Set((this.#catalog()?.commands||[]).map(command=>command?.name)));
+    const skill=museSkillInput(parts,this.#commandNames());
     if(!skill)return null;
     const command="/"+skill[0].selector;
     return queued?`Muse Code runs ${command} only as a message of its own, so it stays queued and goes once this turn ends.`:`Muse Code runs ${command} only as a message of its own, not inside a running turn. Send it again once this turn ends.`;
   }
+  // The commands of this session (skill/list): the skills of the thread's own folder among them, which the window's list (a session
+  // of the read-only host in the server's folder, readMuseModelCatalog) lacks, as it may list one this session does not have, which
+  // Muse refused as a skill part (skillNotFound). The thread's / menu offers them (available_commands_update, as an ACP harness lists
+  // its commands), and a message is told a command by them (#commandNames). Asked once the session is open, and only where the
+  // window's list shows that Muse lists skills; until it answers, or where it cannot, the window's list stands (review of L10-13).
+  #listCommands(sessionId){
+    this.sessionCommands=null;
+    if(!this.#catalog()?.commands?.length)return;
+    Promise.resolve().then(()=>this.connection.request("skill/list",{sessionId})).then(result=>{
+      if(this.sessionId!==sessionId||this.dead)return;
+      const commands=museSkillCommands(result);this.sessionCommands=new Set(commands.map(command=>command.name));
+      this.onUpdate?.({sessionId,update:{sessionUpdate:"available_commands_update",commands}});
+    },()=>{});
+  }
+  #commandNames(){return this.sessionCommands||new Set((this.#catalog()?.commands||[]).map(command=>command?.name))}
   modeRefusal(mode=this.permissionMode,{queued=false}={}){
     if(!this.launched||this.dead||!this.needsRelaunch(mode))return null;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
@@ -378,6 +393,7 @@ export class MuseAgentSession{
       this.sessionSetup={sessionId,models:{currentModelId:this.model,availableModels:this.model?[{modelId:this.model,name:this.model}]:[]},configOptions:[],modes:{currentModeId:"default",availableModes:[]}};
       // A turn Muse starts itself is one of the session's from here (#turnStarted).
       this.ready=true;
+      this.#listCommands(sessionId);
       return {initialize:this.initializeResult,session:this.sessionSetup};
     }catch(error){
       // The host has no session of Trebell's then; a resume that found none closes nothing on Muse's side.
@@ -450,7 +466,7 @@ export class MuseAgentSession{
     // this host was not launched for is refused rather than run with the old mode's sandbox, profile and approvals.
     if(this.launched&&this.needsRelaunch(this.permissionMode))throw refuse(new SessionRefusalError(this.modeRefusal()||"Muse Code's host was started for another mode, so the message was not sent. Send it again to start Muse Code in this mode."));
     let input,displayText,skill;
-    try{skill=museSkillInput(parts,new Set((this.#catalog()?.commands||[]).map(command=>command?.name)));input=skill||museInputParts(parts);displayText=museDisplayText(parts)}catch(error){throw refuse(error)}
+    try{skill=museSkillInput(parts,this.#commandNames());input=skill||museInputParts(parts);displayText=museDisplayText(parts)}catch(error){throw refuse(error)}
     if(running?.wake&&!this.takeOverWake())throw new Error("Muse Code already has a running turn.");
     let turn=prepared||(running?.wake?this.activePrompt:null);
     if(!turn){turn=this.#newTurn(this.connection.mintCommandId());this.activePrompt=turn;this.lastTurn=turn}
