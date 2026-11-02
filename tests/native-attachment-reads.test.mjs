@@ -59,7 +59,8 @@ async function attachmentFixture(t){
     if(request.toolChoice==="none")return reply('{"status":"complete","unresolved":[],"reason":"Every planned call was made."}');
     const last=request.messages.at(-1);if(last?.role==="tool")toolMessages.push(JSON.stringify(last.content));
     const user=request.messages.findLast(message=>message?.role==="user");userMessages.push(typeof user?.content==="string"?user.content:(Array.isArray(user?.content)?user.content:[]).map(part=>part?.text||"").join("\n"));
-    const next=plan.shift();
+    // A step may be made from what the tools gave so far (a stored output's handle, for its inspect).
+    const step=plan.shift(),next=typeof step==="function"?step(toolMessages):step;
     return next?reply("",[{id:"call-"+calls,namespace:next.namespace,name:next.name,arguments:JSON.stringify(next.arguments||{})}]):reply("Done.");
   };
   const asked=[];let relay=null,server=null,ws=null,rpc=null;
@@ -186,6 +187,30 @@ test("Supervised and Read only: a long document's text is read to its end with r
     assert.match(result.toolMessages[2],/^"Line 1\. The tide[^]*Line 3\. The tide[^]*nets\."$/,"and the first three");
     assert.match(result.toolMessages[3],/binary/);
     assertOnlyAttachedRead(result);
+  }
+});
+
+// The read of a long attached document's text is stored, too long for the model's context, and the model inspects that stored output
+// (tour L10's fix check, 2026-11-02 g4: in Supervised that inspect asked, with a card titled 'trebell_output / inspect', and was
+// refused when denied, while Read only's ran). It opens without asking now, as the read did; an output the session did not store from
+// such a read still asks.
+test("Supervised and Auto-accept edits: the stored output of an attached document's read is inspected without asking, and no other",{timeout:180_000},async t=>{
+  const fixture=await attachmentFixture(t);
+  const lines=Array.from({length:3_000},(_,index)=>`Line ${index+1}. The tide came in and went out again along the old stone quay while the gulls argued over the nets.`);
+  await writeFile(fixture.document+".txt",[...lines,"The last line holds END-OCHRE-9001.",""].join("\n"));
+  const handleOf=messages=>(messages.join("\n").match(/out_[0-9a-f-]{36}/)||[])[0];
+  for(const permissionProfile of ["supervised","edits"]){
+    const thread=await fixture.start(permissionProfile);
+    const result=await fixture.turn(thread,permissionProfile,[
+      read(fixture.document+".txt"),
+      messages=>({namespace:"trebell_output",name:"inspect",arguments:{handle:handleOf(messages.slice(-1)),query:"Line 1500. The tide"}}),
+      {namespace:"trebell_output",name:"inspect",arguments:{handle:"out_00000000-0000-4000-8000-000000000000",query:"END-OCHRE"}},
+    ],attachedInput(fixture));
+    assert.ok(handleOf(result.toolMessages.slice(0,1)),`${permissionProfile}: the read's output was stored: ${result.toolMessages[0]?.slice(0,300)}`);
+    assert.equal(result.asked.length,1,`${permissionProfile}: only the inspect of an output the session did not store from a read asks: ${result.asked.join(" | ")}`);
+    assert.match(result.asked[0],/^trebell_output\/inspect .*out_00000000-0000-4000-8000-000000000000/);
+    assert.deepEqual(result.rows.map(row=>row.success),[true,true,false],`${permissionProfile}: the read and its output's inspect ran, the other was refused`);
+    assert.match(result.toolMessages[1],/Line 1500. The tide/,"the inspect found the line in the stored text");
   }
 });
 

@@ -20,7 +20,7 @@ import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MUSE_COMPACTION_STOPPED, MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins, safeWorkspacePath } from "./native-builtins.mjs";
-import { nativeProjectReadNeedsNoApproval } from "./native-read-approval.mjs";
+import { nativeProjectReadNeedsNoApproval, nativeReadTool } from "./native-read-approval.mjs";
 import { NativeBackgroundProcessManager, highestProcessHandle } from "./native-background-processes.mjs";
 import { createNativeSourceControl } from "./native-source-control.mjs";
 import { NativeMcpBroker } from "./native-mcp-broker.mjs";
@@ -1197,9 +1197,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           tools[index]={...current,...namespace,tools:[...byName.values()]};
         }
       };
+      // The outputs this session stored from a read of the project or of an attachment (nativeReadTool), which open without asking as
+      // that read did (nativeProjectReadNeedsNoApproval's storedRead).
+      const storedReads=new Set();
       const outputStore=new NativeToolOutputStore({
         directory:join(trebellHome(runtimeManager.env||process.env),"tool-outputs",String(thread.id).replace(/[^a-zA-Z0-9._-]/g,"_")),
         onVirtualized:info=>{
+          if(info?.handle&&nativeReadTool(info.namespace,info.name))storedReads.add(info.handle);
           if(!stableOutputTools)exposeToolNamespaces(platformDynamicToolNamespaces({repository:false,output:true,workspaceTools:false,terminal:false,browser:false,computer:false,sourceControl:false,delegation:false}));
           journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:info.archived?"native.tool_output.archived":"native.tool_output.virtualized",status:"completed",data:{handle:info.handle,totalBytes:info.totalBytes,namespace:info.namespace||null,name:info.name||null}});
         },
@@ -1267,7 +1271,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           // harnesses; its path is placed as the workspace tools place it, so one that leads out of the project still asks.
           // An attached file is the person's own, so its read runs without asking too.
           const inside=path=>attachedFile?.(path)?Promise.resolve(true):safeWorkspacePath(runtimeCwd,path,{environments,environmentId,mustExist:false}).then(()=>true);
-          if(await nativeProjectReadNeedsNoApproval(call,authorization,{inside}))return "accept";
+          if(await nativeProjectReadNeedsNoApproval(call,authorization,{inside,storedRead:handle=>storedReads.has(handle)}))return "accept";
           // The call's row says its card waits until the card is answered, so a restart after Trebell was killed with it waiting,
           // when no close answered it, still shows it did not run (the thread store's reconcileRestart).
           const waiting=call.id?String(call.id):"";markAwaitingApproval(thread.id,waiting,true);
