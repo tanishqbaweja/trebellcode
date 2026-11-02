@@ -32,6 +32,29 @@ for(const mode of ["dark","light"]){
     }finally{back.open();await fixture.close()}
   });
 
+  // The review of L10-21: a request the provider refused at once with a retryable 503, whose retry it then left unanswered, showed
+  // nothing again, as the retry ended the wait.
+  test(`a Native request sent again after a retryable refusal says the turn is still waiting when the retry goes unanswered (${mode})`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    const fixture=await startStreamingFixture(page,{mode,relayOptions:{nativeProviderWaitNoticeMs:1500}}),back=gate();let calls=0;
+    fixture.script.push(async()=>{calls++;throw Object.assign(new Error("OpenAI API HTTP 503: busy"),{status:503,retryable:true})});
+    fixture.script.push(async request=>{calls++;await back.promise;return {id:"after-retry-wait",provider:request.provider,model:request.model,text:REPLY,toolCalls:[],finishReason:"stop",usage:{inputTokens:12,outputTokens:14,totalTokens:26}}});
+    try{
+      await fixture.open("Native streaming");await fixture.send("Say hello. Do not change any files.");
+      const row=page.locator(".tool-event.kind-retry"),card=page.getByTestId("activity-card").filter({has:row});
+      await expect(row).toBeVisible({timeout:20_000});
+      await expect(row.locator("summary strong")).toHaveText(WAITING);await expect(row.locator("summary em")).toHaveText("waiting");
+      expect(calls).toBe(2);
+      await expect(card.locator(".activity-card-failed")).toHaveCount(0);await expect(stop(page)).toBeVisible();await assertNoHorizontalScroll(page);
+      await page.screenshot({animations:"disabled",path:auditDir+`l10-native-provider-retry-waiting-${mode}-1280x800.png`});
+      back.open();
+      await expect(page.locator(".history-assistant").filter({hasText:REPLY})).toHaveCount(1,{timeout:30_000});await expect(stop(page)).toHaveCount(0);
+      await expect(row.locator("summary strong")).toHaveText("Answered after a wait");await expect(row).toHaveClass(/status-done/);
+      await page.screenshot({animations:"disabled",path:auditDir+`l10-native-provider-retry-answered-${mode}-1280x800.png`});
+    }finally{back.open();await fixture.close()}
+  });
+
   test(`a Native turn its provider refused ends with plain words and the provider's reason, never the raw JSON body (${mode})`,async({page})=>{
     test.setTimeout(90_000);
     await page.setViewportSize({width:1280,height:800});

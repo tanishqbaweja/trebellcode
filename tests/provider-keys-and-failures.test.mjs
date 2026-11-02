@@ -1,7 +1,7 @@
 // Tour lane L10's provider findings: a relay with a fixed model list checks a typed key with the provider before keeping it
 // (L10-1), a key read from an environment variable says so and cannot be removed as if it were saved (L10-18), a provider's
 // refusal reads in plain words with its reason, never its raw JSON body (L10-16), and a request its provider has not answered
-// for a while says the turn is still waiting for that provider (L10-21).
+// for a while says the turn is still waiting for that provider (L10-21), counted again from each time it is sent again.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -208,4 +208,39 @@ test("a request its provider has not answered for a while says the turn is still
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal(rpc.notifications.filter(message=>message.method==="error"&&message.params?.turnId===quick.id).length,0,"no notice for an answer that came at once");
   assert.equal(rpc.notifications.filter(message=>message.method==="error"&&message.params?.turnId===slow.id).length,1,"one notice for the slow request");
+});
+
+// Review of L10-21 (2026-11-02): a request refused at once with a retryable 503, whose retry the provider then left unanswered,
+// showed nothing, as the retry's event ended the wait and nothing armed it again. An image the provider cannot decode is taken
+// out and the request sent again at once, which ended the wait the same way.
+test("a request sent again after a retryable refusal or a refused image says the turn is still waiting, counted from when it is sent again (L10-21)",async t=>{
+  const answer=request=>({id:"answer-"+Date.now(),provider:request.provider,model:request.model,text:"PONG",toolCalls:[],finishReason:"stop",usage:{inputTokens:4,outputTokens:1,totalTokens:5}});
+  const hasImage=request=>(request.messages||[]).some(message=>Array.isArray(message?.content)&&message.content.some(part=>part?.type==="image_url"||part?.type==="input_image"));
+  const calls=[];let refuse="busy";
+  const {rpc,threadId}=await nativeRelay(t,async request=>{
+    calls.push({at:Date.now(),image:hasImage(request)});
+    if(refuse==="busy"){refuse=null;throw Object.assign(new Error("HCNSec.cn HTTP 503: busy"),{status:503,retryable:true})}
+    if(refuse==="image"&&hasImage(request))throw Object.assign(new Error('HCNSec.cn HTTP 400: {"error":{"message":"The image data you provided does not represent a valid image."}}'),{status:400,retryable:false});
+    await new Promise(resolve=>setTimeout(resolve,700));return answer(request);
+  },{nativeProviderWaitNoticeMs:120});
+  const notices=turnId=>rpc.notifications.filter(message=>message.method==="error"&&message.params?.turnId===turnId);
+  const start=input=>rpc.request("turn/start",{threadId,model:"glm-5.3",modelProvider:"hcnsec",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input}).then(result=>result.turn);
+
+  const retried=await start([{type:"text",text:"Reply with PONG"}]);
+  const waiting=await rpc.waitFor(message=>message.method==="error"&&message.params?.turnId===retried.id,5_000),seenAt=Date.now();
+  assert.deepEqual([waiting.params.willRetry,waiting.params.waiting,waiting.params.error?.message],[true,true,"Still waiting for HCNSec.cn to answer."]);
+  assert.equal(calls.length,2,"the refused request was sent again");
+  assert.ok(seenAt>=calls[1].at,"the wait counts from the retry, not from the refusal before its delay");
+  assert.equal((await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===retried.id)).params.turn.status,"completed");
+  assert.equal(notices(retried.id).length,1);
+
+  const folder=await mkdtemp(join(tmpdir(),"trebell-provider-wait-image-")),image=join(folder,"screen.png");
+  t.after(()=>rm(folder,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
+  await writeFile(image,Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","base64"));
+  refuse="image";
+  const resent=await start([{type:"text",text:"What is in this picture?"},{type:"localImage",path:image}]);
+  const waitingAgain=await rpc.waitFor(message=>message.method==="error"&&message.params?.turnId===resent.id,5_000);
+  assert.equal(waitingAgain.params.error?.message,"Still waiting for HCNSec.cn to answer.");
+  assert.deepEqual(calls.slice(2).map(call=>call.image),[true,false],"the image was refused, then the request went again without it");
+  assert.equal((await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===resent.id)).params.turn.status,"completed");
 });

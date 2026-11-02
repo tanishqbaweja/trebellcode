@@ -1303,8 +1303,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const current=threadStore.get(thread.id)||thread,providerId=current?.providerMeta?.modelProvider||state?.settings?.().modelProvider||null;
           const category=String(event?.name||"").startsWith("native.model.")?"model":String(event?.name||"").startsWith("native.tool.")?"tool":"turn";
           const active=[...(current?.turns||[])].reverse().find(item=>item?.status==="inProgress"),activeTurnId=active?.id||null;
-          // A request the provider has not answered yet says so after a while (providerWaits); anything the provider or the turn does next ends that wait.
+          // A request the provider has not answered yet says so after a while (providerWaits), and so does each time the loop sends it
+          // again: a retry, after its delay, or at once without an image the provider refused. Any other model event, or an update, ends that wait.
           if(event?.name==="native.model.requested")awaitProvider(thread.id,activeTurnId,providerId);
+          else if(event?.name==="native.model.retrying"||event?.name==="native.model.image_rejected")awaitProvider(thread.id,activeTurnId,providerId,event.data?.delayMs);
           else if(category==="model")endProviderWait(thread.id);
           if(event?.name==="native.model.requested"){
             const count=Math.max(0,Math.floor(Number(event?.data?.modelTurn)||0));
@@ -1438,15 +1440,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
 
   // A Native model request that its provider has not answered within nativeProviderWaitNoticeMs says the turn is still waiting for
-  // that provider, in the turn's retry row (waiting), which settles once the turn goes on; nothing shows for a quick answer.
+  // that provider, in the turn's retry row (waiting), which settles once the turn goes on; nothing shows for a quick answer. One sent
+  // again after a delay (afterMs, the retry's) is counted from when it goes out.
   const providerWaits=new Map();
   function endProviderWait(threadId){const timer=providerWaits.get(String(threadId));if(timer){clearTimeout(timer);providerWaits.delete(String(threadId))}}
-  function awaitProvider(threadId,turnId,providerId){
+  function awaitProvider(threadId,turnId,providerId,afterMs=0){
     endProviderWait(threadId);if(!turnId)return;
     const timer=setTimeout(()=>{
       providerWaits.delete(String(threadId));
       if(threadStore.get(threadId)?.turns?.some(item=>String(item?.id)===String(turnId)&&item.status==="inProgress"))emit("error",{threadId,turnId,willRetry:true,waiting:true,error:{message:providerWaitNotice(providerId)}});
-    },nativeProviderWaitNoticeMs);
+    },nativeProviderWaitNoticeMs+Math.max(0,Math.min(60_000,Number(afterMs)||0)));
     timer.unref?.();providerWaits.set(String(threadId),timer);
   }
 
