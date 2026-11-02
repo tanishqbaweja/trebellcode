@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/tanishqbaweja/trebellcode/blob/main/SECURITY.md
+    about: Please do not open a public issue for a vulnerability. SECURITY.md says how to report it privately.
+  - name: Download Trebell Code
+    url: https://github.com/tanishqbaweja/trebellcode-releases/releases
+    about: The Windows installer and the release notes of every release.

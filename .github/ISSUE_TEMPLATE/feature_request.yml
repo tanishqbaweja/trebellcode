@@ -1,0 +1,56 @@
+name: Feature request
+description: Suggest a new feature or a change to how Trebell Code works.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the suggestion. [ROADMAP.md](https://github.com/tanishqbaweja/trebellcode/blob/main/ROADMAP.md) lists the work that is already planned, and [GOVERNANCE.md](https://github.com/tanishqbaweja/trebellcode/blob/main/GOVERNANCE.md) says how proposals are decided.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How Trebell Code should behave. Say what a person would see and do.
+    validations:
+      required: true
+  - type: dropdown
+    id: agents
+    attributes:
+      label: Agents it is about
+      multiple: true
+      options:
+        - Trebell Native
+        - Codex
+        - Claude Code
+        - OpenCode
+        - Cursor
+        - Grok Build
+        - Antigravity
+        - Muse Code
+        - Not tied to one agent
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other ways you considered
+      description: Workarounds you use today, or other designs you thought of.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How we would know it works
+      description: What a test, a screenshot or a measurement would show once it is done. For a change to Trebell Native's cost or quality, what you would measure, and on which tasks.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send it
+      options:
+        - label: I searched the existing issues and the roadmap, and this is not there yet.
+          required: true
+        - label: It is a general improvement, not a change aimed at a benchmark's tasks or its hidden tests.
+          required: true

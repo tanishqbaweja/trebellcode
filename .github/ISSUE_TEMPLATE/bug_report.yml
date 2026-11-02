@@ -1,0 +1,113 @@
+name: Bug report
+description: Something in Trebell Code does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please do not report a security vulnerability here: [SECURITY.md](https://github.com/tanishqbaweja/trebellcode/blob/main/SECURITY.md) says how to report one privately.
+
+        Remove every API key, token, password and private path or file content from what you paste or attach.
+  - type: input
+    id: version
+    attributes:
+      label: Trebell Code version
+      description: Settings shows it beside View licenses. For a build from source, give the commit (`git rev-parse --short HEAD`).
+      placeholder: "2.1.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11 (x64)
+        - Windows 10 (x64)
+        - Windows on Arm
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      description: The harness the thread ran on, as the composer shows it.
+      options:
+        - Trebell Native
+        - Codex
+        - Claude Code
+        - OpenCode
+        - Cursor
+        - Grok Build
+        - Antigravity
+        - Muse Code
+        - Not tied to one agent
+    validations:
+      required: true
+  - type: input
+    id: provider-model
+    attributes:
+      label: Provider and model
+      description: For Trebell Native, the model provider and the model. For another agent, its model, and whether it signs in with its own login or runs on an API key.
+      placeholder: "OpenAI, gpt-6-luna"
+  - type: dropdown
+    id: access
+    attributes:
+      label: Access mode
+      description: The thread's access mode in the composer.
+      options:
+        - Supervised
+        - Auto-accept edits
+        - Auto
+        - Full access
+        - Read only
+        - Not sure
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Where the agent ran
+      options:
+        - This Windows computer
+        - WSL
+        - SSH
+        - Not tied to an environment
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, step by step, from a fresh start if you can.
+      placeholder: |
+        1. Open a project
+        2. Pick Trebell Native in the composer
+        3. Send "..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: The exact message the app showed, if there was one. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Error text or the end of a log, with every secret removed.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send it
+      options:
+        - label: I searched the existing issues, and this bug is not reported yet.
+          required: true
+        - label: What I pasted and attached contains no API key, token or other secret.
+          required: true
