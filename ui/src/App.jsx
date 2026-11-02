@@ -1861,7 +1861,7 @@ export default function App(){
   }
   function stopHistoryAnchorSettle(){
     const settle=historyAnchorSettleRef.current;historyAnchorSettleRef.current=null;
-    if(settle?.frame)cancelAnimationFrame(settle.frame);
+    if(settle){cancelAnimationFrame(settle.frame);settle.observer?.disconnect();settle.node.style.overflowAnchor=""}
   }
   // A view that follows the end goes back to it. The welcome of a conversation with nothing in it has no end to follow: it comes up at
   // its top, in each view that shows it (a new task, a general chat, a thread with nothing in it: each one clears shownWelcomeRef as it
@@ -1886,21 +1886,27 @@ export default function App(){
     const node=conversationScrollRef.current;const threadId=activeThread?.id;if(!node||!threadId)return;
     if(pendingHistoryPrependRef.current?.threadId===threadId){
       // The older page is placed once: its first row keeps the spot the anchor row had (its virtual chunk mounts with the page). Rows
-      // above it can still change size for a few frames (content-visibility estimates, fonts, chunks mounting), so each frame puts
-      // the anchor back until those settle or something else moves the view (the person scrolls, a send scrolls to the end). Later
-      // message or event changes do not re-pin it.
+      // above it can still change size for a few frames (content-visibility estimates, fonts, chunks mounting), so the anchor is put
+      // back each frame, and as soon as the rows change size, before that frame is drawn, until those settle or something else moves
+      // the view (the person scrolls, a send scrolls to the end). Later message or event changes do not re-pin it. Until then the
+      // anchor row is the view's only scroll anchor (overflow-anchor): the browser's own could keep a row above it in place instead,
+      // one first drawn at its real height in that frame, which moved the view and the anchor row at once, as a scroll does, so the
+      // anchor stopped holding with the view off by that row's change.
       const pending=pendingHistoryPrependRef.current;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();
+      if(pending.anchor)node.style.overflowAnchor="none";
       if(!placeHistoryAnchor(node,pending.anchor))node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
       followConversationEndRef.current=false;
-      const settle={threadId,anchor:pending.anchor,top:node.scrollTop,frame:0,attempts:0};historyAnchorSettleRef.current=settle;
-      const finish=()=>{historyAnchorSettleRef.current=null;const id=settle.anchor?.messageId??null;setHistoryAnchorItemId(current=>current===id?null:current)};
-      const step=()=>{
-        if(historyAnchorSettleRef.current!==settle)return;
+      const settle={threadId,node,anchor:pending.anchor,top:node.scrollTop,frame:0,attempts:0};historyAnchorSettleRef.current=settle;
+      const finish=()=>{stopHistoryAnchorSettle();const id=settle.anchor?.messageId??null;setHistoryAnchorItemId(current=>current===id?null:current)};
+      const hold=()=>{
+        if(historyAnchorSettleRef.current!==settle)return false;
         const live=conversationScrollRef.current;
-        if(!live||activeThreadRef.current?.id!==settle.threadId||!pending.anchor||historyAnchorDisturbed(live,settle.anchor,settle.top)){finish();return}
-        placeHistoryAnchor(live,settle.anchor);settle.top=live.scrollTop;
-        if(++settle.attempts<12)settle.frame=requestAnimationFrame(step);else finish();
+        if(!live||activeThreadRef.current?.id!==settle.threadId||!pending.anchor||historyAnchorDisturbed(live,settle.anchor,settle.top)||!placeHistoryAnchor(live,settle.anchor)){finish();return false}
+        settle.top=live.scrollTop;return true;
       };
+      const step=()=>{if(!hold())return;if(++settle.attempts<12)settle.frame=requestAnimationFrame(step);else finish()};
+      const rows=node.querySelector(".conversation-history");
+      if(rows&&typeof ResizeObserver!=="undefined"){settle.observer=new ResizeObserver(hold);settle.observer.observe(rows)}
       settle.frame=requestAnimationFrame(step);
       return;
     }
