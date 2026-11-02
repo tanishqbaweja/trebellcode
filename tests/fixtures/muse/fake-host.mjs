@@ -35,8 +35,10 @@ export function fakeChild({pid=4242}={}){
   return child;
 }
 
+// initialize: the recorded answer, from a host that can use its sandbox, as these sessions, whose allowed commands run, need; the
+// recording's own "unavailable" (Muse Code 1.4.13's host on Windows) is the sandbox tests' (tests/muse-sandbox.test.mjs).
 export const DEFAULT_HANDLERS={
-  initialize:()=>INIT,
+  initialize:()=>({...INIT,sandboxAvailability:"available"}),
   "session/start":params=>({session:{sessionId:params.sessionId,status:"idle",activeTurnId:null,workspaceRoot:params.workspaceRoot,providerId:params.providerId,modelId:params.modelId??null,kind:"root"},viewCursor:`v4:${params.sessionId}:1`}),
   "session/resume":params=>({session:{sessionId:params.sessionId,status:"idle",modelId:"muse-spark-1.3"},history:{mode:"none",items:null},pendingRequests:[],viewCursor:`v4:${params.sessionId}:9`}),
   "session/setApprovalMode":params=>({commandId:params.commandId,applyOutcome:"completed"}),

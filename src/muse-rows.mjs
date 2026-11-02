@@ -87,13 +87,19 @@ function readCall(item,running){
   };
 }
 
+// Muse's words for a command it never started because its host cannot use its sandbox (Muse Code 1.4.13: "environment failure:
+// sandbox enforcement unavailable: ..." for its own shell, "environment failure: managed shell sandbox is unavailable" for the
+// person's), and what the row says instead.
+const SANDBOX_REFUSAL=/environment failure: (?:sandbox enforcement unavailable|managed shell sandbox is unavailable)/i;
+export const MUSE_SANDBOX_REFUSED_COMMAND="Muse Code didn't run this command because its sandbox isn't available. To let it run commands, switch this task to Full access, which runs them without the sandbox and without asking.";
 // A command: Muse's shell, or the person's own (userShell), with its output and exit code. Muse's shell answers with a record of the
-// run ({command, exit_code, output, ...}), kept whole as the row's output.
+// run ({command, exit_code, output, ...}), kept whole as the row's output. One its sandbox kept from starting says so in Trebell's words.
 function commandParts(call){
   const {item}=call;
   const command=asText(item.commandText??call.named("command","cmd")??item.args??"");
-  const record=parsedObject(item.visibleOutput);
   const parts={title:command||call.tool,input:call.args||{command},output:call.output};
+  if(call.status==="failed"&&[item.failureReason,item.visibleOutput,call.body].some(value=>SANDBOX_REFUSAL.test(asText(value))))return {...parts,output:MUSE_SANDBOX_REFUSED_COMMAND};
+  const record=parsedObject(item.visibleOutput);
   if(record&&typeof record.output==="string")parts.output={...record,output:lines(call.failure,record.output)};
   if(Number.isInteger(item.exitCode))parts.exitCode=item.exitCode;
   return parts;

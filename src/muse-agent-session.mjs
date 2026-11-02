@@ -4,7 +4,7 @@ import { linkedFileLine } from "./prompt-attachments.mjs";
 import { retryNotice, retryReason } from "./retry-notice.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { museAnswerPayload, museCardButtons, museDecisionChoices, museDecisionToSend, museDialogQuestions } from "./muse-asking.mjs";
-import { MuseHost, MUSE_HOST_BOUNDS, loadMuseSdk, museLaunchPlan, museServeArgs, museSessionSettings, museWorkspaceRoot } from "./muse-host.mjs";
+import { MuseHost, MUSE_HOST_BOUNDS, loadMuseSdk, museHostCannotSandbox, museLaunchPlan, museServeArgs, museSessionSettings, museWorkspaceRoot } from "./muse-host.mjs";
 import { resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
 import { MUSE_LAST_DATE_MS, museLimitLiftsAt, museQuotaStop } from "./muse-quota.mjs";
 import { museItemRow, museLabel, museShowsNoRow, museTodoPlan, museWorkProgress, museWorkflowAgentRows } from "./muse-rows.mjs";
@@ -183,9 +183,11 @@ export function museApprovalToolCall(params={}){
 // protected write and a read outside the workspace by name (Muse names a path inside its workspace relative to it), else the card's
 // own; the stage a staged command's choices answer, with the whole command under it; and the agent a child's approval comes from
 // (agent: its name, as its row shows it), which Stop leaves its card waiting for. It runs on past the turn that started it only once
-// that turn has ended with its work running (runsPast): a subagent asking while its turn runs stops with that turn. notice: what is
-// asked, which a desktop notification says, when the card's line is who asks.
-export function museApprovalCard(params={},{agent="",runsPast=false}={}){
+// that turn has ended with its work running (runsPast): a subagent asking while its turn runs stops with that turn. A command a host
+// that cannot use its sandbox asks to run (sandboxUnavailable, museHostCannotSandbox) says before the person answers that allowing it
+// will not run it, and what will. notice: what is asked, which a desktop notification says, when the card's line is not that.
+export const MUSE_SANDBOX_UNAVAILABLE_CARD="Muse Code reports that its sandbox isn't available, so this command will fail even if you allow it. To let it run commands, switch this task to Full access, which runs them without the sandbox and without asking.";
+export function museApprovalCard(params={},{agent="",runsPast=false,sandboxUnavailable=false}={}){
   const subject=params.subject&&typeof params.subject==="object"?params.subject:{},kind=text(subject.kind),asked=museApprovalToolCall(params).title;
   const outside=/^(?:[a-z]:)?[\\/]|^\.\.(?:[\\/]|$)/i.test(text(subject.path).trim());
   const title=kind==="network"?"Network access needs approval":kind!=="fileAccess"?"":subject.access==="read"?outside?"Read outside the workspace needs approval":"File read needs approval"
@@ -194,8 +196,9 @@ export function museApprovalCard(params={},{agent="",runsPast=false}={}){
   const words=(Array.isArray(stage?.argv)?stage.argv:[]).map(word=>text(word)).map(word=>word&&!/\s/.test(word)?word:`"${word}"`).join(" ");
   const staged=Number(stage?.totalStages)>1&&words?`Stage ${Number(stage.position)||index+1} of ${stage.totalStages}: ${words}`:"";
   const asker=params.subagentOrigin?`Asked by ${agent?"the "+agent:"a Muse Code workflow agent"}${runsPast?", which runs on past the turn that started it":""}.`:"";
-  const reason=[asker,staged].filter(Boolean).join(" ");
-  return {...(title?{title}:{}),reason:reason||asked,...(reason?{command:asked}:{}),...(asker?{notice:staged||asked}:{})};
+  const warning=kind==="shell"&&sandboxUnavailable?MUSE_SANDBOX_UNAVAILABLE_CARD:"";
+  const reason=[asker,staged,warning].filter(Boolean).join(" ");
+  return {...(title?{title}:{}),reason:reason||asked,...(reason?{command:asked}:{}),...(asker||warning?{notice:staged||asked}:{})};
 }
 // How a reset time reads: in the person's own zone and locale, with its weekday, its date and year, and the hour and minute.
 const RESET_SHOWN=Object.freeze({weekday:"short",year:"numeric",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
@@ -254,6 +257,8 @@ export class MuseAgentSession{
     this.hostOptions={spawnFn,platform,stopTree,startupTimeoutMs,shutdownTimeoutMs,authMethod};this.platform=platform;this.loadSdk=loadSdk;
     this.requestTimeoutMs=requestTimeoutMs;this.interruptTimeoutMs=interruptTimeoutMs;
     this.args=museServeArgs(this.permissionMode);this.launched=null;this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
+    // Whether the running host cannot use its sandbox for the commands it runs (museHostCannotSandbox), told on their cards.
+    this.sandboxUnavailable=false;
     this.sessionId=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;
     this.dead=false;this.deadError=null;this.closed=false;this.activePrompt=null;
     // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled; the names
@@ -333,6 +338,7 @@ export class MuseAgentSession{
     await host.start({version:this.version,loadSdk:this.loadSdk});
     if(this.closed){await host.close();throw new Error("Muse Code was stopped while it started.")}
     const connection=host.connection;this.connection=connection;this.initializeResult=host.initializeResult;
+    this.sandboxUnavailable=museHostCannotSandbox(this.initializeResult,this.args);
     connection.onNotification(frame=>{if(this.host===host)this.#notification(frame)});
     connection.onServerRequest(request=>this.#serverRequest(host,request));
     connection.onProtocolError(error=>{if(this.host===host)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",message:`Muse Code sent a frame Trebell could not read: ${error?.message||error}`}})});
@@ -714,7 +720,7 @@ export class MuseAgentSession{
     let decision="decline";
     try{
       decision=await this.onPermission({
-        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},card:museApprovalCard(params,{agent:agent?.name||"",runsPast}),
+        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},card:museApprovalCard(params,{agent:agent?.name||"",runsPast,sandboxUnavailable:this.sandboxUnavailable}),
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
         askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept")||read,
         approvalOptions:museCardButtons(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),

@@ -20,6 +20,10 @@
 //                          refused (missing_run) whatever it says
 //   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,048,576 the context holds after each plain turn (session/tokenUsage and
 //                          session/contextUsage), as a long conversation's does
+//   MUSE_FAKE_SANDBOX      what initialize says of the host's sandbox (sandboxAvailability): "available" unless it says
+//                          "unavailable", as Muse Code 1.4.13's host answers on Windows. Then a command the person (or Muse's reviewer)
+//                          allows is never started: its tool call fails with Muse's environment failure, and the turn replies
+//                          COULD NOT RUN IT
 //   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
 //                          `touch trebell-approved.txt`, as "child approval" asks it, whether a turn runs or not. A child's approval
 //                          names, as its subagent id, the child id of the agent of "run workflow" running then, if one runs
@@ -252,7 +256,7 @@ function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,pro
     :{kind:"shell",command,workspaceRoot,stages:staged?[stage(0,["touch","a.txt"]),stage(1,["rm","b.txt"])]:[stage(0,["touch","trebell-approved.txt"])]};
   const params={sessionId,approvalId,turnId,taskId:approvalId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:read?"read_file":protectedWrite?"write_file":"bash",rawArgs:JSON.stringify(read?{file_path:outside}:protectedWrite?{file_path:".muse/settings.json"}:{command}),viewCursor:`v:${sessionId}:${++cursor}`,sourceRange:{},
     subject,currentRequirementId:requirement,availableChoices:choices,protectedWrite,judgeEscalated:false,...origin};
-  approvals.set(approvalId,{sessionId,turnId,parentTurnId,settled:false,choices,requirement,read,staged});
+  approvals.set(approvalId,{sessionId,turnId,parentTurnId,settled:false,choices,requirement,read,staged,shell:subject.kind==="shell"?command:null});
   write({jsonrpc:"2.0",id:++nextRequest,method:"approval/request",params});
   notify("approval/requested",sessionId,{...params,emittedAtMs:Date.now()});
   if(reviewer)later(process.env.MUSE_FAKE_REVIEW_HOLD,Number(process.env.MUSE_FAKE_REVIEW_MS||300),()=>settleApproval(approvalId,{decision:"approved",resolvedBy:"llmJudge"}));
@@ -269,9 +273,18 @@ function settleApproval(approvalId,{decision,resolvedBy="user",commandId=null,ch
   notify("approval/resolved",approval.sessionId,{approvalId,itemId:approvalId,turnId:approval.turnId,decision,policyResult:decision==="abort"||decision==="denied"||decision==="deniedPolicyAmendment"?"deny":"allow",resolvedBy,...(commandId?{decidedByCommandId:commandId}:{}),stageEvidence:[],sourceRange:{}});
   // A workflow child's approval answers in the turn that waits on the child, while it still runs.
   const turnId=running.has(approval.turnId)?approval.turnId:approval.parentTurnId,turn=running.get(turnId);
-  const said=approval.staged?`STAGE DECIDED: ${choiceId}`:resolvedBy==="llmJudge"?"THE REVIEWER ALLOWED IT":decision==="abort"||decision==="denied"?"REJECTED":decision==="approvedPolicyAmendment"?"ALWAYS ALLOWED":approval.read?"READ IT":"APPROVED";
-  if(turn)setTimeout(()=>{reply(approval.sessionId,turn,said);complete(approval.sessionId,turnId)},20);
+  // A host that cannot use its sandbox never starts an allowed command (MUSE_FAKE_SANDBOX).
+  const refused=Boolean(approval.shell)&&!approval.staged&&String(decision).startsWith("approved")&&process.env.MUSE_FAKE_SANDBOX==="unavailable";
+  const said=refused?"COULD NOT RUN IT":approval.staged?`STAGE DECIDED: ${choiceId}`:resolvedBy==="llmJudge"?"THE REVIEWER ALLOWED IT":decision==="abort"||decision==="denied"?"REJECTED":decision==="approvedPolicyAmendment"?"ALWAYS ALLOWED":approval.read?"READ IT":"APPROVED";
+  if(turn)setTimeout(()=>{if(refused)sandboxRefusal(approval.sessionId,turnId,approval.shell);reply(approval.sessionId,turn,said);complete(approval.sessionId,turnId)},20);
   return true;
+}
+// What Muse 1.4.13's tool call says of a command its host cannot run in its sandbox (its session log and its user shell, 2026-11-02).
+const SANDBOX_REFUSAL="tool failed: environment failure: sandbox enforcement unavailable: windows_elevated setup_required: windows elevated sandbox setup has not run\nThe execution environment is broken: the command was never started and every later command will fail the same way. Do not retry and do not fabricate command output; report this environment failure.";
+function sandboxRefusal(sessionId,turnId,command){
+  const call=(revision,status,extra={})=>({itemId:turnId+"-command",kind:"toolCall",turnId,revision,status,tool:"powershell",callId:"call_"+turnId+"-command",args:JSON.stringify({command,description:"Run the command"}),...extra});
+  notify("item/started",sessionId,{item:call(1,"inProgress")});
+  notify("item/completed",sessionId,{item:call(2,"failed",{visibleOutput:SANDBOX_REFUSAL})});
 }
 function askQuestion(sessionId,turnId){
   const userInputId=turnId+"-question";
@@ -305,7 +318,7 @@ function compactSession(params){
 }
 
 const answers={
-  initialize:params=>({serverInfo:{name:"muse",version:"1.4.13"},userAgent:"muse-build/1.4.13 (serve; fake)",museHome:"~/.local/share/muse",platformFamily:process.platform==="win32"?"windows":"unix",platformOs:process.platform==="win32"?"windows":process.platform,schema:{version:1,fingerprint:"sha256:7fddaf646dbc317e5fcac0785e135eb04df14fbb0db1863089dfd6da21730e5b"},grantedCapabilities:[...(params?.capabilities?.requestedCapabilities||[])],experimentalApi:false,sessionDurability:argv.includes("--no-session-log")?"ephemeral":"durable",sandboxAvailability:"unavailable"}),
+  initialize:params=>({serverInfo:{name:"muse",version:"1.4.13"},userAgent:"muse-build/1.4.13 (serve; fake)",museHome:"~/.local/share/muse",platformFamily:process.platform==="win32"?"windows":"unix",platformOs:process.platform==="win32"?"windows":process.platform,schema:{version:1,fingerprint:"sha256:7fddaf646dbc317e5fcac0785e135eb04df14fbb0db1863089dfd6da21730e5b"},grantedCapabilities:[...(params?.capabilities?.requestedCapabilities||[])],experimentalApi:false,sessionDurability:argv.includes("--no-session-log")?"ephemeral":"durable",sandboxAvailability:process.env.MUSE_FAKE_SANDBOX==="unavailable"?"unavailable":"available"}),
   "model/list":()=>catalog(),
   "session/start":params=>{
     const state={modelId:params.modelId||"muse-spark-1.2",workspaceRoot:params.workspaceRoot};sessions.set(params.sessionId,state);

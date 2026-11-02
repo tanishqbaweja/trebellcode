@@ -70,6 +70,14 @@ export function museSessionSettings(mode="supervised"){
 }
 // Everything a mode fixes when the host launches: a mode with another plan needs a new host (needsRelaunch).
 export function museLaunchPlan(mode="supervised"){return {args:museServeArgs(mode),...museSessionSettings(mode)}}
+// Whether a host cannot run the commands it was started to run: it launched with its shell and its sandbox (args), and its answer
+// to initialize says it cannot use that sandbox (sandboxAvailability "unavailable"), so each command fails before it starts, one the
+// person allowed too. Muse Code 1.4.13's host answers so on Windows even where `muse sandbox windows check` reports the sandbox
+// ready. A host that names no availability, one older than the field, is taken as able to.
+export function museHostCannotSandbox(initializeResult,args=[]){
+  const flags=new Set(Array.isArray(args)?args:[]);
+  return initializeResult?.sandboxAvailability==="unavailable"&&!flags.has("--disable-sandbox")&&!flags.has("--disable-shell");
+}
 
 // Variables that would give Muse Code a key or extra request headers in place of the person's own `muse login` (its binary:
 // "META_API_KEY always takes priority over the account login"), or send it to another provider. Held back from every host, by

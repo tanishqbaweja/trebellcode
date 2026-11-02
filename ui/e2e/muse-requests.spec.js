@@ -9,6 +9,8 @@ import spawn from "cross-spawn";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
+import { MUSE_SANDBOX_UNAVAILABLE_CARD } from "../../src/muse-agent-session.mjs";
+import { MUSE_SANDBOX_REFUSED_COMMAND } from "../../src/muse-rows.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // Muse Code asking the person, as they meet it in Trebell: its approval on Trebell's approval card with Muse's own three choices, its
@@ -117,6 +119,42 @@ test("Muse Code's approval shows on Trebell's approval card with Muse's own thre
     await expect(card).toHaveCount(0);
     expect((await harness.frames("approval/decide")).map(frame=>frame.params.choiceId)).toEqual(["allow_once","abort"]);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-approval-answered-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+test("on a Muse Code host that cannot use its sandbox, the command's card says before the person answers that allowing it will not run it and what will, and the command Muse never started fails on its row in Trebell's words",async({page})=>{
+  test.setTimeout(90_000);
+  // As Muse Code 1.4.13's host answers on Windows: initialize names its sandbox unavailable, and an allowed command never starts.
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_SANDBOX:"unavailable"}});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const card=page.locator(".inline-approval .approval-card");
+    await send(page,"Please ask approval to touch trebell-approved.txt");
+    await expect(card).toBeVisible({timeout:20_000});
+    await expect(card.locator(".card-title strong")).toHaveText("Command needs approval");
+    await expect(card.locator(":scope > p")).toHaveText(MUSE_SANDBOX_UNAVAILABLE_CARD);
+    await expect(card.getByTestId("approval-command")).toHaveText("touch trebell-approved.txt");
+    await expect(card.locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-sandbox-unavailable-card-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // The person still decides: Allow once reaches Muse, which never starts the command and says so.
+    await card.getByRole("button",{name:"Allow once",exact:true}).click();
+    await expect(reply(page,"COULD NOT RUN IT")).toBeVisible({timeout:20_000});
+    await expect(card).toHaveCount(0);
+    expect((await harness.frames("approval/decide")).map(frame=>frame.params.choiceId)).toEqual(["allow_once"]);
+    const activity=page.getByTestId("activity-card").last();
+    if(await activity.getAttribute("data-state")!=="open")await activity.locator(".activity-card-head").click();
+    await expect(activity.locator(".activity-card-failed")).toHaveText("1 failed");
+    const row=activity.locator(".tool-event").filter({has:page.locator("summary strong",{hasText:"touch trebell-approved.txt"})});
+    await expect(row).toHaveClass(/status-error/);
+    await row.locator("summary").click();
+    const body=row.locator(".tool-event-body");
+    await expect(body).toContainText(MUSE_SANDBOX_REFUSED_COMMAND);
+    await expect(body).not.toContainText("windows_elevated");
+    await expect(body).not.toContainText("environment failure");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await row.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-sandbox-unavailable-row-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
 
