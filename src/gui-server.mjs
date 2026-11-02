@@ -29,6 +29,7 @@ import { DEFAULT_MODEL_PROVIDER, MODEL_PROVIDERS, ProviderManager, normalizeProv
 import { isRetiredProviderModel, removeRetiredProviderData } from "./legacy-provider-migration.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
 import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
+import { withCustomModels } from "./custom-model-catalog.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { ANTIGRAVITY_API_KEY_METHOD, prepareAntigravityHome, signInAntigravityProfile } from "./antigravity-auth.mjs";
 import { HARNESS_KEY_VARIABLES, harnessAuthMethod } from "./harness-auth.mjs";
@@ -1879,14 +1880,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // and the app keeps only a catalog named for the runtime it shows, so the payload must never name the newly selected one.
   async function selectedModels({nativeProviderCatalog=null}={}){
     const runtime=selectedAgentRuntime,provider=selectedProvider;
-    const mergeCustom=catalog=>{
-      if(!["native","codex","claude","opencode","cursor","grok","antigravity","muse"].includes(runtime))return catalog;
-      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===runtime&&(runtime!=="native"||item.provider===provider));
-      if(!custom.length)return catalog;
-      const baseModels=Array.isArray(catalog.models)?catalog.models:[];const models=[...baseModels];for(const item of custom)if(!models.includes(item.id))models.push(item.id);
-      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:runtime==="native"?provider:runtime,agent:runtime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
-      return {...catalog,models,metadata:{...(catalog.metadata||{}),models:metadataModels}};
-    };
+    const mergeCustom=catalog=>withCustomModels(catalog,{customModels:state.settings().customModels,runtime,provider});
     const finish=catalog=>{
       const merged=mergeCustom(catalog);
       const normalized={...merged,metadata:{...(merged.metadata||{}),models:(merged.metadata?.models||[]).map(withNormalizedModelCapabilities)}};
