@@ -91,7 +91,8 @@ test("Update shows for a newer Muse Code release when Meta's launcher runs it, r
     const fx=await machine(root),pressed=[];await serve(page,fx.manager,pressed);
     await openHarnesses(page);
     const row=harnessRow(page,"Muse Code"),update=row.getByRole("button",{name:"Update",exact:true});
-    await expect(row.locator("button").first().locator("small")).toHaveText("1.4.13-R6996.1",{timeout:30_000});
+    // The version, then (on Sign in) that its sign-in is not known until a turn runs (tour L10-19).
+    await expect(row.locator("button").first().locator("small")).toHaveText("1.4.13-R6996.1 · Trebell Code cannot tell whether Muse Code is signed in until a turn runs. If you have not run muse login, press Sign in.",{timeout:30_000});
     await expect(update).toBeVisible();await expect(row.locator("p.agent-runtime-option-note:not([role])")).toHaveCount(0);
     await shootRow(page,"offered");
     // Update asks first, naming the release and the launcher's own update it runs.
@@ -115,7 +116,7 @@ test("Update shows for a newer Muse Code release when Meta's launcher runs it, r
     await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Update Muse Code",exact:true})).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(row.getByRole("status")).toHaveText("Muse Code installed and ready.",{timeout:60_000});
-    await expect(row.locator("button").first().locator("small")).toHaveText("1.4.14-R7010.1");
+    await expect(row.locator("button").first().locator("small")).toHaveText("1.4.14-R7010.1 · Trebell Code cannot tell whether Muse Code is signed in until a turn runs. If you have not run muse login, press Sign in.");
     await expect(update).toHaveCount(0);
     await shootRow(page,"updated");
     // Each press was for the row's own profile, and each ran Meta's launcher once with its synchronous update on.
