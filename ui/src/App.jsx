@@ -3168,6 +3168,8 @@ export default function App(){
         // Stop ended it before its turn existed: the queue is left as it is, this follow-up first, held (stop()), and only its dispatch
         // mark goes (clearQueuedDispatch).
         if(error?.trebellSendStopped){setEvents([]);await clearQueuedDispatch(threadId,next.id);return}
+        // A file of it that is gone leaves it, which waits for the person, and the composer says so (dropGoneAttachments).
+        if(dropGoneAttachments(error,next))return setEvents([]);
         const failed=queueNow(threadId).map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
         try{await persistLocalQueue(threadId,failed)}catch{setQueued(failed)}
         // As a send that fails: no turn exists to show it on, so why goes beside the composer, under the queue that keeps the
@@ -4735,12 +4737,13 @@ export default function App(){
   // Files whose saved copies are gone (the check before a send names them, missing, and where, missingIn, for a remote environment's
   // copy) leave the draft with their chips, a context chip's too, and the composer says so once, so the next send goes: a chip of a
   // file that is no longer there refused every later send the same way. Every send does this, a follow-up's (queued, steered, an edit
-  // of one queued), a multi-model send's and a background send's too. Given a follow-up of Trebell's own queue (its Send now), the files
+  // of one queued), a multi-model send's and a background send's too. Given a follow-up of Trebell's own queue (its Send now, or the
+  // queue's own start of it once a turn ends), the files
   // leave that follow-up, which waits for the person (autoStartFailed), so it never goes without them unasked. True when it did.
   function dropGoneAttachments(error,item){
     const gone=error?.data?.missing;if(!gone?.length)return false;
     const keep=list=>(list||[]).filter(entry=>!gone.includes(entry?.path??entry)),threadId=activeThreadRef.current?.id;
-    if(item)persistLocalQueue(threadId,queueNow(threadId).map(q=>q.id===item.id?{...q,attachments:keep(q.attachments),contextChips:keep(q.contextChips),autoStartFailed:true}:q)).catch(showActionError);
+    if(item)persistLocalQueue(threadId,queueNow(threadId).map(q=>q.id===item.id?{...q,attachments:keep(q.attachments),contextChips:keep(q.contextChips),dispatchingAt:null,autoStartFailed:true}:q)).catch(showActionError);
     else{setAttachments(keep);setContextChips(keep)}
     const one=gone.length<2,it=one?"it":"them",names=new Intl.ListFormat("en").format(gone.map(path=>`"${attachmentDisplayName(path)}"`));
     setComposerAlert({kind:"send",queuedId:item?.id,text:names+(one?" is":" are")+" no longer "+(error.data.missingIn?"in "+error.data.missingIn:"on this computer")+", so "+(one?"it was":"they were")+" taken off "+(item?"the queued follow-up. Edit the follow-up to attach "+it+" again, or send the follow-up":"your message. Attach "+it+" again, or send the message")+" without "+it+"."});
