@@ -152,8 +152,9 @@ export async function planCompletedTurnEvidence(deps,threadId,turnId){
   if(!threadId||!turnId)return;
   try{
     const result=await requestTurnVerificationPlan({request:api,threadId,turnId});
+    // A check turn whose check was not allowed (stopped) turns its own card from done to a warning that says so.
     const event=verificationPlanEvent(result,turnId);
-    if(event&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!==event.id),event]);
+    if(event&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!==event.id).map(item=>result.stopped&&item.raw?.turnId==turnId&&item.status!="warning"&&item.kind=="verification"?{...item,status:"warning",title:item.title+" · not allowed"}:item),event]);
     if(result?.record&&rpcRef.current){
       const refreshed=await rpcRef.current.request("thread/continuity/get",{threadId}).catch(()=>null);
       if(refreshed&&activeThreadRef.current?.id===threadId)setContinuity(refreshed.continuity||null);

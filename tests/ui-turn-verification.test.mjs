@@ -51,3 +51,8 @@ test("a step reads in plain words for what it checks, never as its id",()=>{
   const behavior=verificationPlanEvent({record:{id:"v",risk:"low",assessment:{status:"incomplete",summary:{required:1,missing:1}}},nextAction:{action:"verify",nextStep:{id:"focused_behavior",kind:"behavioral"}}},"turn-3");
   assert.equal(behavior.title,"Verification planned · low risk · 1 required check · next: trying the changed behavior");assert.doesNotMatch(behavior.title,/focused_behavior/);
 });
+
+test("a check turn whose check was not allowed names no next check: its row says checking stopped",()=>{
+  const stopped=verificationPlanEvent({stopped:"not-approved",record:{id:"v2",risk:"low",assessment:{status:"incomplete",summary:{required:1,missing:1}}},nextAction:{action:"verify",nextStep:{id:"focused_behavior",kind:"behavioral"}}},"check-turn");
+  assert.equal(stopped.title,"Verification planned · low risk · 1 required check · checking stopped");assert.equal(stopped.status,"incomplete");assert.doesNotMatch(stopped.title,/next:/);
+});

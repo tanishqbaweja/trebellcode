@@ -12,14 +12,15 @@ import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { ContextEngine } from "../../src/context-engine.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { assessVerification } from "../../src/verification-assessor.mjs";
-import { verificationCheckNotApproved } from "../../src/verification-continuation.mjs";
-import { nextVerificationAction } from "../../src/verification-loop.mjs";
+import { verificationCheckTurnReading } from "../../src/verification-continuation.mjs";
+import { mergeVerificationEvidence, nextVerificationAction } from "../../src/verification-loop.mjs";
 
 // A Supervised Native turn's automatic check: its command waits for the person's approval, which does not count toward the command's
 // time limit; the check turn ends with Stop gone and its card done; a step its check turn left unchecked, and a check the person
-// denied, start no further check turn; the card says what it checks in plain words. The model is a scripted mock (no live call), the
-// relay, policy, approval and command run are Trebell's own, and the server's reading of each turn (plan-turn) is played here with
-// the helpers the server uses (verificationCheckNotApproved, nextVerificationAction).
+// denied, start no further check turn; the card says what it checks in plain words, the check that ran is kept (the plan reads
+// verified), and a denied check's card and plan say checking stopped. The model is a scripted mock (no live call), the relay, policy,
+// approval and command run are Trebell's own, and the server's reading of each turn (plan-turn) is played here with the helpers the
+// server uses (verificationCheckTurnReading, which reads the turn with collectVerificationEvidence, and mergeVerificationEvidence).
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 const json=(route,body)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
@@ -72,9 +73,10 @@ test("a Supervised Native check waits for approval outside its time limit, ends 
       const {threadId,turnId}=route.request().postDataJSON(),chain=state.threadMeta(threadId)?.verificationContinuationChain||null;
       if(chain?.lastContinuationTurnId===turnId&&chain.sourceRecordId){
         const source=state.verificationRecords({threadId,limit:100}).find(item=>item.id===chain.sourceRecordId),turn=threadStore.get(threadId)?.turns?.find(item=>String(item.id)===String(turnId));
-        const record=state.recordVerification({threadId,turnId,projectPath:repo,plan:source.plan,evidence:source.evidence,assessment:assessVerification({plan:source.plan,evidence:source.evidence})});
-        const stopped=verificationCheckNotApproved({turnItems:turn?.items||[],traces:[]})?"not-approved":null;if(stopped)state.updateThreadMeta(threadId,{verificationContinuationChain:{...chain,stopped}});
-        readings.push({turnId,check:true,stopped});
+        const {observed,stopped}=verificationCheckTurnReading({plan:source.plan,evidence:source.evidence,turnItems:turn?.items||[],traces:[]}),evidence=mergeVerificationEvidence(source.evidence,observed);
+        const record=state.recordVerification({threadId,turnId,projectPath:repo,plan:source.plan,evidence,assessment:assessVerification({plan:source.plan,evidence})});
+        if(stopped)state.updateThreadMeta(threadId,{verificationContinuationChain:{...chain,stopped}});
+        readings.push({turnId,check:true,stopped,status:record.assessment?.status||null});
         return json(route,{supported:true,continuation:true,sourceRecordId:source.id,rootRecordId:String(chain.rootRecordId||source.id),...(stopped?{stopped}:{}),threadId,turnId,changedPaths:[],record,nextAction:nextVerificationAction({plan:record.plan,evidence:record.evidence})});
       }
       const record=state.recordVerification({threadId,turnId,projectPath:repo,plan,evidence:[],assessment:assessVerification({plan,evidence:[]})});readings.push({turnId,check:false});
@@ -102,8 +104,10 @@ test("a Supervised Native check waits for approval outside its time limit, ends 
     // 2. Once allowed, the command runs with its whole limit and finishes.
     await expect(page.getByText("The check ran: node check.js printed checked.",{exact:true})).toBeVisible({timeout:15_000});
     expect(checkResults).toHaveLength(1);expect(checkResults[0]).toMatchObject({exitCode:0,timedOut:false,signal:null});expect(String(checkResults[0].stdout)).toMatch(/^checked/);
-    // 3. The check's end ends the running state: Stop goes, the card reads done, and no second check turn starts for the same step.
+    // 3. The check's end ends the running state: Stop goes, the card reads done, the check that ran is kept (the plan reads verified),
+    // and no second check turn starts for the same step.
     await expect(card.locator("summary em")).toHaveText("done",{timeout:10_000});await expect(stop).toHaveCount(0);
+    const verified=page.locator(".tool-event.kind-verification").filter({hasText:"Verified · low risk · 1 required check passed"});await expect(verified).toHaveCount(1,{timeout:10_000});await expect(verified.locator("summary em")).toHaveText("done");
     await expect.poll(()=>readings.filter(item=>item.check).length,{timeout:10_000}).toBe(1);await page.waitForTimeout(1500);
     expect(checkCalls).toHaveLength(1);await expect(stop).toHaveCount(0);
     await expect(page.locator(".tool-event.kind-verification summary em",{hasText:/^(pending|running)$/})).toHaveCount(0);
@@ -115,10 +119,14 @@ test("a Supervised Native check waits for approval outside its time limit, ends 
     await expect(page.getByText("The parser reads key=value lines.",{exact:true})).toHaveCount(2,{timeout:15_000});
     await expect(approval).toBeVisible({timeout:15_000});await approval.getByRole("button",{name:"Deny",exact:true}).click();
     await expect(page.getByText("The check could not run: Tool execution was not approved.",{exact:true})).toBeVisible({timeout:15_000});
-    await expect.poll(()=>readings.filter(item=>item.check).map(item=>item.stopped),{timeout:10_000}).toEqual([null,"not-approved"]);
+    await expect.poll(()=>readings.filter(item=>item.check).map(item=>item.stopped),{timeout:10_000}).toEqual([null,"not-approved"]);expect(readings.filter(item=>item.check).map(item=>item.status)).toEqual(["verified","incomplete"]);
     await page.waitForTimeout(1500);expect(checkCalls).toHaveLength(2);await expect(stop).toHaveCount(0);
     await expect(page.locator(".tool-event.kind-verification summary em",{hasText:/^(pending|running)$/})).toHaveCount(0);
-    await page.getByText("The check could not run: Tool execution was not approved.",{exact:true}).scrollIntoViewIfNeeded();await shot("denied");
+    // Its card says the check was not allowed, as a warning, and its plan says checking stopped instead of naming a next check.
+    const denied=page.locator(".tool-event.kind-verification").filter({hasText:"Automatic check · trying the changed behavior · not allowed"});await expect(denied).toHaveCount(1,{timeout:10_000});await expect(denied.locator("summary em")).toHaveText("warning");
+    const stoppedPlan=page.locator(".tool-event.kind-verification").filter({hasText:"Verification planned · low risk · 1 required check · checking stopped"});await expect(stoppedPlan).toHaveCount(1);await expect(stoppedPlan.locator("summary em")).toHaveText("incomplete");
+    await expect(stoppedPlan).not.toContainText("next:");
+    await stoppedPlan.scrollIntoViewIfNeeded();await shot("denied");
     // The server refuses an automatic check after the denied one, whoever asks.
     const ws=new WebSocket(`ws://127.0.0.1:${relayPort}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
     const refused=await new Promise(resolve=>{ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.id==="check-again")resolve(message)});ws.send(JSON.stringify({id:"check-again",method:"thread/verification/continue",params:{threadId:thread.id,auto:true}}))});ws.close();
