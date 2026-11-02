@@ -364,6 +364,82 @@ test("an older turn cut by the open page reads as not fully loaded until earlier
   }finally{await harness.close()}
 });
 
+// The first message row in view, then, at the start of each of the next count frames, how far it is from where it was and whether
+// the user row with text is in the conversation yet. The watch asks for each frame before the app does, so each reading is where the
+// frame before drew the row.
+function watchFirstInView(page,text,count=90){
+  return page.locator(".conversation-scroll").evaluate((node,[text,count])=>{
+    const viewTop=()=>node.getBoundingClientRect().top;
+    const first=[...node.querySelectorAll("[data-message-id]")].find(element=>element.getBoundingClientRect().bottom>viewTop());if(!first)return null;
+    const id=first.dataset.messageId,top=first.getBoundingClientRect().top-viewTop(),seen=window.__firstInView=[];
+    const tick=()=>{
+      const row=node.querySelector(`[data-message-id="${id}"]`);
+      seen.push({shift:row?+(row.getBoundingClientRect().top-viewTop()-top).toFixed(3):null,landed:[...node.querySelectorAll(".user-row")].some(element=>element.textContent.includes(text))});
+      if(seen.length<count)requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);return {id,top};
+  },[text,count]);
+}
+async function watchedFrames(page,count=90){
+  await page.waitForFunction(count=>window.__firstInView?.length>=count,count,{timeout:10_000});
+  return page.evaluate(()=>window.__firstInView);
+}
+async function expectKeptInEveryFrame(page,count=90){
+  const seen=await watchedFrames(page,count);
+  // The older page landed while the frames were watched, with twenty frames or more after it.
+  expect(seen.filter(frame=>frame.landed).length).toBeGreaterThanOrEqual(20);
+  expect(seen.map(frame=>frame.shift).filter(shift=>shift==null||Math.abs(shift)>1)).toEqual([]);
+}
+
+test("earlier messages that land above a newest page a little taller than the view keep the view's first message in place, short of the end",async({page})=>{
+  test.setTimeout(60_000);
+  const thread=codexThread("codex-short-newest","Codex short newest");
+  const seed=Array.from({length:30},(_,index)=>codexTurn(index+1,{user:`Request ${index+1}`,commands:Array.from({length:5},(_,step)=>`step ${index+1}.${step+1}`),reply:`Answer ${index+1}.`}));
+  // The open page is turns 28 to 30 and the end of turn 27. The older page's rows are drawn shorter than their estimate, by more
+  // than the rows below the view reach: the end of the rows came up into the view, and the view went to it.
+  const harness=await startCodexHarness(thread,[],{pageItems:23,seed});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Codex short newest");
+    await expect(reply(page,"Answer 30.")).toBeVisible({timeout:10_000});
+    const scroll=page.locator(".conversation-scroll");await scroll.evaluate(node=>{node.scrollTop=0});await frames(page,4);
+    const size=await scroll.evaluate(node=>({view:node.clientHeight,rows:node.scrollHeight}));
+    expect(size.rows).toBeGreaterThan(size.view);expect(size.rows).toBeLessThan(2*size.view);
+    const before=await watchFirstInView(page,"Request 27");expect(before).toBeTruthy();
+    await page.getByRole("button",{name:"Load earlier messages"}).click();
+    await expect(userRow(page,"Request 27")).toBeAttached({timeout:10_000});
+    await expectKeptInEveryFrame(page);
+    const after=await scroll.evaluate((node,id)=>node.querySelector(`[data-message-id="${id}"]`).getBoundingClientRect().top-node.getBoundingClientRect().top,before.id);
+    expect(Math.abs(after-before.top)).toBeLessThanOrEqual(1);
+    // Short of the end (the app takes 48px from it as at the end, and would follow the end from there).
+    expect(await distanceFromEnd(page)).toBeGreaterThan(48);
+  }finally{await harness.close()}
+});
+
+test("earlier messages that land while the live turn's block shows keep the view's first message in place in every frame",async({page})=>{
+  test.setTimeout(60_000);
+  const thread=codexThread("codex-cut-block","Codex cut block");
+  const seed=Array.from({length:30},(_,index)=>codexTurn(index+1,{user:`Request ${index+1}`,commands:Array.from({length:5},(_,step)=>`step ${index+1}.${step+1}`),reply:`Answer ${index+1}.`}));
+  const harness=await startCodexHarness(thread,[
+    (turn,tools)=>{tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});codexCommand(turn,tools,"cmd-"+turn.id,"npm test");codexReply(turn,tools,"The tests pass.");tools.finish("completed")},
+  ],{pageItems:100,seed});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Codex cut block");
+    await expect(reply(page,"Answer 30.")).toBeVisible({timeout:10_000});
+    await page.getByTestId("composer").fill("Run the tests");await page.getByTestId("send").click();
+    await expect(replyText(page,"The tests pass.")).toBeVisible({timeout:10_000});
+    // A turn ran in the window: its block shows, and the history's rows are laid out in the column itself (with-agent-block).
+    await expect(page.locator(".conversation-column")).toHaveClass(/with-agent-block/);
+    const scroll=page.locator(".conversation-scroll");await scroll.evaluate(node=>{node.scrollTop=0});await frames(page,4);
+    const before=await watchFirstInView(page,"Request 16");expect(before).toBeTruthy();
+    await page.getByRole("button",{name:"Load earlier messages"}).click();
+    await expect(userRow(page,"Request 16")).toBeAttached({timeout:10_000});
+    await expectKeptInEveryFrame(page);
+    await expect(page.locator(".conversation-column")).toHaveClass(/with-agent-block/);
+  }finally{await harness.close()}
+});
+
 test("a long turn find read from its start keeps its steps in order as earlier messages bring the steps between",async({page})=>{
   test.setTimeout(120_000);
   const harness=await startRelayHarness(),needle="zebra-needle-77";

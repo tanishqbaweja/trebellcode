@@ -1842,14 +1842,18 @@ export default function App(){
     const next=Math.max(0,Math.ceil(Number(value)||0));if(!node||next===historyHoldRef.current)return;
     historyHoldRef.current=next;if(next)node.style.setProperty("--history-hold",next+"px");else node.style.removeProperty("--history-hold");
   }
+  // Scrolling up uncovers less of the held space: only what still reaches the view's bottom edge stays held, and a hold the rows
+  // have outgrown holds nothing any more.
+  function fitHistoryHold(node){
+    if(!node||!historyHoldRef.current)return;
+    setHistoryHold(node,historyHoldAfterScroll(node,historyHoldRef.current));
+    if(historyHoldRef.current&&(node.firstElementChild?.getBoundingClientRect().height||0)>historyHoldRef.current+0.5)setHistoryHold(node,0);
+  }
   function conversationScrolled(){
     const node=conversationScrollRef.current;if(!node)return;
-    // Scrolling up uncovers less of the held space: only what still reaches the view's bottom edge stays held, and a hold the rows
-    // have outgrown holds nothing any more.
-    if(historyHoldRef.current){
-      setHistoryHold(node,historyHoldAfterScroll(node,historyHoldRef.current));
-      if(historyHoldRef.current&&(node.firstElementChild?.getBoundingClientRect().height||0)>historyHoldRef.current+0.5)setHistoryHold(node,0);
-    }
+    // While an older page's anchor settles, the hold stays whole, so rows above drawn shorter cannot pull the end up into the view;
+    // the settle fits it as it ends.
+    if(!historyAnchorSettleRef.current)fitHistoryHold(node);
     let position=captureConversationPosition(node);
     // Short of its end, a view that follows the end stops following only when its top is above where it was last at its end: the
     // person scrolled up. Otherwise the conversation grew under it after its move to the end, whose scroll event comes once what grew
@@ -1861,7 +1865,7 @@ export default function App(){
   }
   function stopHistoryAnchorSettle(){
     const settle=historyAnchorSettleRef.current;historyAnchorSettleRef.current=null;
-    if(settle){cancelAnimationFrame(settle.frame);settle.observer?.disconnect();settle.node.style.overflowAnchor=""}
+    if(settle){cancelAnimationFrame(settle.frame);settle.observer?.disconnect();settle.node.style.overflowAnchor="";fitHistoryHold(settle.node)}
   }
   // A view that follows the end goes back to it. The welcome of a conversation with nothing in it has no end to follow: it comes up at
   // its top, in each view that shows it (a new task, a general chat, a thread with nothing in it: each one clears shownWelcomeRef as it
@@ -1887,26 +1891,38 @@ export default function App(){
     if(pendingHistoryPrependRef.current?.threadId===threadId){
       // The older page is placed once: its first row keeps the spot the anchor row had (its virtual chunk mounts with the page). Rows
       // above it can still change size for a few frames (content-visibility estimates, fonts, chunks mounting), so the anchor is put
-      // back each frame, and as soon as the rows change size, before that frame is drawn, until those settle or something else moves
+      // back each frame, and as soon as a row changes size, before that frame is drawn, until those settle or something else moves
       // the view (the person scrolls, a send scrolls to the end). Later message or event changes do not re-pin it. Until then the
       // anchor row is the view's only scroll anchor (overflow-anchor): the browser's own could keep a row above it in place instead,
       // one first drawn at its real height in that frame, which moved the view and the anchor row at once, as a scroll does, so the
-      // anchor stopped holding with the view off by that row's change.
+      // anchor stopped holding with the view off by that row's change. And the column keeps at least the height that reaches the
+      // view's bottom edge (--history-hold): rows above drawn shorter than their estimate would otherwise pull the end of a newest
+      // page little taller than the view up into it, and the browser would move the view up to that end, as a scroll does. The
+      // rows are watched one by one: the history has no box of its own while the live turn's block shows (with-agent-block), and
+      // the column's is held.
       const pending=pendingHistoryPrependRef.current;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();
       if(pending.anchor)node.style.overflowAnchor="none";
-      if(!placeHistoryAnchor(node,pending.anchor))node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
+      if(placeHistoryAnchor(node,pending.anchor))setHistoryHold(node,historyHoldAfterScroll(node,node.firstElementChild?.getBoundingClientRect().height));
+      else node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
       followConversationEndRef.current=false;
       const settle={threadId,node,anchor:pending.anchor,top:node.scrollTop,frame:0,attempts:0};historyAnchorSettleRef.current=settle;
       const finish=()=>{stopHistoryAnchorSettle();const id=settle.anchor?.messageId??null;setHistoryAnchorItemId(current=>current===id?null:current)};
-      const hold=()=>{
-        if(historyAnchorSettleRef.current!==settle)return false;
+      const step=()=>{
+        if(historyAnchorSettleRef.current!==settle)return;
         const live=conversationScrollRef.current;
-        if(!live||activeThreadRef.current?.id!==settle.threadId||!pending.anchor||historyAnchorDisturbed(live,settle.anchor,settle.top)||!placeHistoryAnchor(live,settle.anchor)){finish();return false}
-        settle.top=live.scrollTop;return true;
+        if(!live||activeThreadRef.current?.id!==settle.threadId||!pending.anchor||historyAnchorDisturbed(live,settle.anchor,settle.top)||!placeHistoryAnchor(live,settle.anchor)){finish();return}
+        settle.top=live.scrollTop;
+        if(++settle.attempts<12)settle.frame=requestAnimationFrame(step);else finish();
       };
-      const step=()=>{if(!hold())return;if(++settle.attempts<12)settle.frame=requestAnimationFrame(step);else finish()};
-      const rows=node.querySelector(".conversation-history");
-      if(rows&&typeof ResizeObserver!=="undefined"){settle.observer=new ResizeObserver(hold);settle.observer.observe(rows)}
+      // A row's new size puts the anchor back by scrolling only: a hold changed here would resize the column while the browser tells
+      // its observers of sizes, too late for the column's own (keepConversationEnd), which it then reports as an error. A hold the
+      // anchor still needs, and the settle's end, come with the next frame's step.
+      const resized=()=>{
+        const live=conversationScrollRef.current;
+        if(historyAnchorSettleRef.current===settle&&live&&!historyAnchorDisturbed(live,settle.anchor,settle.top)&&restoreHistoryPrependAnchor(live,settle.anchor))settle.top=live.scrollTop;
+      };
+      const column=node.firstElementChild;
+      if(pending.anchor&&column&&typeof ResizeObserver!=="undefined"){settle.observer=new ResizeObserver(resized);for(const box of [...column.children,...column.querySelector(".conversation-history")?.children||[]])settle.observer.observe(box)}
       settle.frame=requestAnimationFrame(step);
       return;
     }
