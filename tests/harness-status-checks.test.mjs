@@ -186,8 +186,8 @@ test("a harness whose --version exits with an error reads installed and may star
 
 test("only a command that is not there reads not installed; one that cannot start is installed but not ready",async t=>{
   for(const [kind,result,message] of [
-    ["claude",{ok:false,code:null,error:"spawn C:\\tools\\claude.exe ENOENT",stdout:"",stderr:""},"Claude Code executable was not found."],
-    ["opencode",exited(1,"'opencode' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"),"OpenCode executable was not found."],
+    ["claude",{ok:false,code:null,error:"spawn C:\\tools\\claude.exe ENOENT",stdout:"",stderr:""},"Claude Code is not installed, or Trebell Code cannot find it."],
+    ["opencode",exited(1,"'opencode' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"),"OpenCode is not installed, or Trebell Code cannot find it."],
   ]){
     const status=await (await localHarness(t,kind,()=>result)).manager.probe(kind);
     assert.deepEqual([status.installed,status.available,status.message],[false,false,message],kind);
@@ -205,7 +205,7 @@ test("a --version a signal stopped reads installed and may start, and what a CLI
     ["claude",exited(1,"Error: ENOENT: no such file or directory, open '/home/me/.claude/settings.json'\n    at Object.openSync (node:fs:573:18)\n"),[true,true,true,"Claude Code is installed but `claude --version` exited with code 1: Error: ENOENT: no such file or directory, open '/home/me/.claude/settings.json'"]],
     ["cursor",exited(1,"sh: 1: git: command not found\nError: could not read the repository\n"),[true,true,true,"Cursor is installed but `cursor-agent --version` exited with code 1: sh: 1: git: command not found"]],
     // The command itself not being there: a shell's 127 (the spawn's ENOENT and cmd.exe's line are in the test above).
-    ["claude",exited(127,"/bin/sh: 1: claude: command not found\n"),[false,false,undefined,"Claude Code executable was not found."]],
+    ["claude",exited(127,"/bin/sh: 1: claude: command not found\n"),[false,false,undefined,"Claude Code is not installed, or Trebell Code cannot find it."]],
   ];
   const read=[];
   for(const [kind,result] of cases){const status=await (await localHarness(t,kind,()=>result)).manager.probe(kind);read.push([status.installed,status.available,status.versionCheckFailed,status.message])}

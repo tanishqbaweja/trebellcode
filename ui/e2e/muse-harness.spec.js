@@ -182,8 +182,8 @@ test("Settings says Muse Code could not list its models and to press Refresh, an
     await rm(harness.failing);
     await status.getByRole("button",{name:"Refresh"}).click();
     await expect(status).toHaveClass(/provider-note/);
-    await expect(status).toContainText("Muse Code · Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out.");
-    await expect(page.locator(".agent-runtime-option").filter({hasText:"Muse Code"}).locator("small")).toHaveText("1.4.13-R6996.1");
+    await expect(status).toContainText("Muse Code · Trebell Code cannot tell whether Muse Code is signed in until a turn runs. If you have not run muse login, press Sign in.");
+    await expect(page.locator(".agent-runtime-option").filter({hasText:"Muse Code"}).locator("small")).toHaveText("1.4.13-R6996.1 · Trebell Code cannot tell whether Muse Code is signed in until a turn runs. If you have not run muse login, press Sign in.");
     // Settings' next poll finds Muse Code ready too: its status checks read the list Refresh read.
     await expect(page.locator(".settings-card").filter({hasText:"Harness connection:"})).toContainText("Agent runtime: ready",{timeout:15_000});
     for(const mode of ["dark","light"]){await switchMode(page,mode);await status.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`settings-muse-list-refreshed-${mode}-1280x800.png`})}

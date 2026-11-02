@@ -170,7 +170,7 @@ test("Muse Code's status check: not found, a failed --version (no host, nothing 
     const status=await ready.manager.probe("muse",{fresh:true});
     assert.deepEqual([status.available,status.installed,status.authenticated,status.version,status.compatibility.status],[true,true,null,"1.4.13-R6996.1","supported"]);
     assert.equal(status.binary,ready.launcher);
-    assert.equal(status.message,"Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out.");
+    assert.equal(status.message,"Trebell Code cannot tell whether Muse Code is signed in until a turn runs. If you have not run muse login, press Sign in.");
     assert.equal((await launches(ready.log)).every(entry=>entry.env.META_API_KEY===null),true);
   }finally{await ready.close()}
 });

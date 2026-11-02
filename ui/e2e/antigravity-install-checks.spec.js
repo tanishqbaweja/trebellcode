@@ -88,11 +88,11 @@ test("Settings says why an Antigravity install was refused: a download that is n
     await page.getByRole("button",{name:"Settings",exact:true}).click();
     await page.getByRole("button",{name:/Agents & models/}).click();
     const antigravity=harnessRow(page,"Antigravity"),install=antigravity.getByRole("button",{name:"Install",exact:true});
-    await expect(antigravity.locator("button").first().locator("small")).toHaveText("Antigravity ACP runtime is not installed");
+    await expect(antigravity.locator("button").first().locator("small")).toHaveText("Antigravity is not installed in Trebell Code. Press Install to add it.");
     // Install asks first, saying where the runtime comes from; the person confirms.
     const confirmInstall=async()=>{
       await install.click();
-      const asked=page.getByRole("dialog",{name:/^Install or update Antigravity ACP runtime on this machine\?/});
+      const asked=page.getByRole("dialog",{name:/^Install or update Antigravity on this computer\?/});
       await expect(asked).toBeVisible();await asked.getByRole("button",{name:"Install Antigravity",exact:true}).click();await expect(asked).toHaveCount(0);
     };
     // A download that is not the archive the registry hashed: read in full, then refused.

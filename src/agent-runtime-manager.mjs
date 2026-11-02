@@ -145,10 +145,12 @@ function stripAnsi(value){return String(value||"").replace(/\x1B\[[0-?]*[ -/]*[@
 function runtimeProbeFailure(def,result={}){
   const raw=stripAnsi(String(result.stderr||result.error||"")).trim();
   if(/spawn\s+EINVAL/i.test(raw))return `${def?.name||"Runtime"} launcher could not start on this system. Reinstall or update the CLI, then refresh.`;
-  if(/ENOENT|not recognized as an internal or external command|command not found/i.test(raw))return `${def?.name||"Runtime"} executable was not found.`;
+  if(/ENOENT|not recognized as an internal or external command|command not found/i.test(raw))return harnessNotFound(def);
   const first=raw.split(/\r?\n/).map(line=>line.trim()).find(Boolean);
-  return (first||`${def?.name||"Runtime"} executable was not found`).slice(0,500);
+  return (first||harnessNotFound(def)).slice(0,500);
 }
+// A harness whose command is not there, in plain words: its name, and that Trebell Code cannot find it.
+const harnessNotFound=def=>`${def?.name||"The harness"} is not installed, or Trebell Code cannot find it.`;
 // How long a harness's --version may take: Claude Code's native CLI can take longer to start on a cold Windows start
 // or while Defender scans it, so Trebell gives it 30 s, and an OpenCode behind its npm shim several seconds. Codex keeps 6 s: one
 // that runs out of time leaves the answer to its account read, which has a bound of its own (CODEX_ACCOUNT_PROBE_TIMEOUT_MS), so a
@@ -1329,7 +1331,7 @@ export class AgentRuntimeManager{
       try{await access(command)}catch{
         const desktopCandidates=this.platform==="win32"&&this.env.LOCALAPPDATA?[join(this.env.LOCALAPPDATA,"Programs","antigravity","Antigravity.exe")]:this.platform==="darwin"?["/Applications/Antigravity.app"]:[];
         let companionInstalled=false;for(const candidate of desktopCandidates){try{await access(candidate);companionInstalled=true;break}catch{}}
-        return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:true,companionInstalled,message:companionInstalled?"Antigravity desktop is installed. Install the ACP runtime to use Antigravity inside Trebell Code.":"Antigravity ACP runtime is not installed"};
+        return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:true,companionInstalled,message:companionInstalled?"Antigravity desktop is installed. Press Install to use Antigravity in Trebell Code too.":"Antigravity is not installed in Trebell Code. Press Install to add it."};
       }
       const install=await readAntigravityInstall({env:this.env});
       // Antigravity on an API key is ready once Trebell has a Google Gemini key (#probeNow says when it has none); whether Google
@@ -1433,7 +1435,9 @@ export class AgentRuntimeManager{
   }
   // Muse Code's status check: `muse --version`, then the models a short read-only host lists. The Muse
   // Session Protocol says nothing of the sign-in and Muse lists Meta's models only once signed in, so a list with models is ready
-  // with the sign-in unknown (a turn checks it), and an empty one is not. A failed version check starts no host.
+  // with the sign-in unknown (a turn checks it), and an empty one is not. Signed out, Muse still lists the catalog it saved in its
+  // home while a key or login worked (source "providerCatalog", as a live one; 1.4.13, 2026-11-02), so the row says the sign-in is
+  // not known until a turn runs, whatever was there before. A failed version check starts no host.
   async #museStatus(instance,{environmentId=undefined,fresh=false}={}){
     const def=RUNTIMES.muse,binary=this.executable(instance,{environmentId});
     const answer=fields=>({id:instance.id,kind:"muse",name:def.name,protocol:def.protocol,managed:false,binary,authenticated:null,account:null,...fields});
@@ -1454,7 +1458,7 @@ export class AgentRuntimeManager{
     catch(error){const reason=String(error?.message||error).trim().slice(0,400);return answer({...known,available:false,reason,message:`Muse Code could not list its models: ${/[.!?…]$/.test(reason)?reason:reason+"."} Press Refresh to check it again.`})}
     const onKey=this.authMethod(instance)===HARNESS_API_KEY;
     if(!catalog.models.length)return answer({...known,available:false,message:onKey?"Muse Code listed no models for the Meta Model API key. Check the key, then press Refresh.":"Muse Code listed no models. Sign in with muse login, then press Refresh."});
-    return answer({...known,available:true,message:onKey?"Muse Code runs on the Meta Model API key.":"Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out."});
+    return answer({...known,available:true,message:onKey?"Muse Code runs on the Meta Model API key.":"Trebell Code cannot tell whether Muse Code is signed in until a turn runs. If you have not run muse login, press Sign in."});
   }
   #museCatalogs=new Map();
   // The models Muse Code lists (readMuseModelCatalog), read once per profile as it is set (its binary, version, environment and

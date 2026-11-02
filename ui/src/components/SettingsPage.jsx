@@ -547,7 +547,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
     // CODEX_HOME set to …)", "(OpenCode 1.x)").
     const [,command,beside=""]=/^(.*?)( \([^()]*\))?$/.exec(String(update?update.command:definition.installCommand||"npm install -g "+packageName));
     const confirmation=kind==="antigravity"
-      ?"Install or update "+label+" ACP runtime on this machine?\n\nTrebell will download Google's published Antigravity ACP runtime through the official Agent Client Protocol registry."
+      ?"Install or update "+label+" on this computer?\n\nTrebell Code downloads Google's published Antigravity release."
       :[(update?"Update "+label+" to "+update.latest:"Install or update "+label)+" in the selected environment?\n\nTrebell will run: ",{command},beside];
     // One install of a harness at a time, also from a Settings page opened while one runs.
     if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"})||agentInstalls.running.includes(kind))return;
@@ -1195,7 +1195,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
           // A harness on its API key says so beside its version, as an Antigravity says its own sign-in (no check before a chat tells
           // whether the provider takes the key); one on Sign in offers its own sign-in.
           const profile=(agentInfo?.instances||[]).find(item=>item.id===(status?.id||def.id+"-default")),onKey=profile?.signIn?.method==="api-key";
-          const keySaved=(onKey||def.id==="antigravity")&&Boolean(status?.available)&&status.message;
+          const keySaved=(onKey||def.id==="antigravity"||def.id==="muse")&&Boolean(status?.available)&&status.message;
           const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):noSignIn||unverified?status.message:status?.available?[status?.version,keySaved].filter(Boolean).join(" · ")||status?.message||"Ready":status?.message||"Unavailable";
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
           const installing=installs.running.includes(def.id),installNote=installs.note?.kind===def.id?installs.note:null;

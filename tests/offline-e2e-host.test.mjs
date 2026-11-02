@@ -91,7 +91,7 @@ test("offline E2E harness checks find no harness CLI and start none",async()=>{
     for(const kind of ["claude","cursor","grok","opencode"]){
       const status=await manager.probe(kind,{fresh:true});
       assert.equal(status.installed,false,kind);assert.equal(status.available,false,kind);
-      assert.match(status.message,/executable was not found\.$/,kind);
+      assert.match(status.message,/is not installed, or Trebell Code cannot find it\.$/,kind);
     }
     assert.ok(asked.length>=5);
     assert.ok(asked.every(call=>/ --version$/.test(call)),"only the version checks were asked, of the offline runner: "+asked.join(", "));
