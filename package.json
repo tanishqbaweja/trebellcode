@@ -3,6 +3,7 @@
   "version": "2.1.4",
   "description": "A coding harness optimized for verified software-engineering quality per dollar: same or better results at lower model cost.",
   "author": "Trebell",
+  "license": "Apache-2.0",
   "homepage": "https://trebell.dev/code",
   "repository": {
     "type": "git",
