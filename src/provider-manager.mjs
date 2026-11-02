@@ -906,7 +906,7 @@ export class ProviderManager {
   #missingKeyError(providerId){const check=this.keyChecks.get(providerId);return check?"API key check failed: "+check.message:"API key required"}
 
   // The body of the provider's model list for the key in use, or the provider's refusal ({status, providerMessage} on the error).
-  // A relay whose turns go as Anthropic Messages with a Bearer key (JustWorker.icu) is asked with both of its headers.
+  // A relay whose turns go as Anthropic Messages (JustWorker.icu, with an x-api-key) is asked with that header and a Bearer one.
   async #modelList(provider){
     const key = this.key(provider.id),anthropicRelay=!provider.authStyle&&provider.protocolCompatibility?.includes("anthropic-messages");
     let response, raw;
