@@ -29,7 +29,8 @@ export function gate(){let open=()=>{};const promise=new Promise(resolve=>{open=
 // holds the relay's answers about that thread after its next thread/resume until the function it returns is called, so the
 // app keeps that thread's notifications back while it opens. providerTurn, when given, answers every call instead of the
 // script (a live provider); rootDir is where the run keeps its files.
-export async function startStreamingFixture(page,{mode="dark",threads=[{name:"Native streaming",preview:"Live reply"}],model="gpt-5.6",providerTurn=null,rootDir=tmpdir()}={}){
+// relayOptions go to the relay as they are (nativeProviderWaitNoticeMs, how long a request waits before the turn says so).
+export async function startStreamingFixture(page,{mode="dark",threads=[{name:"Native streaming",preview:"Live reply"}],model="gpt-5.6",providerTurn=null,rootDir=tmpdir(),relayOptions={}}={}){
   const root=await mkdtemp(join(rootDir,"trebell-native-reply-stream-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await writeFile(join(repo,"session.js"),"export class SessionManager { refresh(){ return true; } }\n","utf8");
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
@@ -46,7 +47,7 @@ export async function startStreamingFixture(page,{mode="dark",threads=[{name:"Na
     const step=script.shift();if(!step)throw new Error("unexpected provider call");return step(request,typeof hook==="function"?hook:()=>{});
   };
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"visual-fixture"});
+  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"visual-fixture",...relayOptions});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const wsUrl=`ws://127.0.0.1:${relayPort}/api/agent/ws`;
   let opening=null;

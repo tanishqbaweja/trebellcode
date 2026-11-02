@@ -78,7 +78,9 @@ function EventIcon({event}){
 // status.
 function eventPill(event){
   if(event.kind==="error")return "error";
-  if(event.kind==="retry")return event.status==="running"?"retrying":event.status==="done"?"recovered":event.status;
+  // A wait for the provider to answer (raw.waiting, agent-relay providerWaits) is no retry: it waits, then the provider answered.
+  const waited=event.raw?.waiting===true;
+  if(event.kind==="retry")return event.status==="running"?(waited?"waiting":"retrying"):event.status==="done"?(waited?"answered":"recovered"):event.status;
   return event.status==="notRun"?"not run":event.status;
 }
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){

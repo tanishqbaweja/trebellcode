@@ -91,7 +91,9 @@ export function settledRetryRows(rows,{turnId=null,outcome="recovered"}={}){
   const next=rows.map(row=>{
     if(row?.kind!=="retry"||row.status!=="running"||(turnId!=null&&row.turnId!=null&&row.turnId!==String(turnId)))return row;
     changed=true;
-    return outcome==="stopped"?{...row,status:"stopped",title:RETRY_STOPPED_TITLE}:{...row,status:"done",title:RETRY_RECOVERED_TITLE};
+    // A wait for the provider (raw.waiting) that ends was no retry: it answered, or the turn stopped while it waited.
+    const waited=row.raw?.waiting===true;
+    return outcome==="stopped"?{...row,status:"stopped",title:waited?"Stopped while waiting":RETRY_STOPPED_TITLE}:{...row,status:"done",title:waited?"Answered after a wait":RETRY_RECOVERED_TITLE};
   });
   return changed?next:rows;
 }

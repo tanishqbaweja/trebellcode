@@ -176,8 +176,9 @@ export function codexErrorNotice(params={}){
   const hint=kind==="usage_limit"?"See Usage for your Codex limits.":kind==="auth"?"Sign in to Codex again from Agents & models, or run codex login.":"";
   const willRetry=params?.willRetry===true;
   const retry=willRetry?codexRetryCount(error?.message||message):null;
+  // waiting: Trebell Native still waiting for its provider to answer, which is no retry (agent-relay providerWaits).
   const title=willRetry
-    ?`Retrying${retry?` (${retry.attempt}/${retry.maxAttempts})`:""}: ${message}`
+    ?params?.waiting===true?message:`Retrying${retry?` (${retry.attempt}/${retry.maxAttempts})`:""}: ${message}`
     :(hint?`${message} · ${hint}`:message);
   return {message,code,kind,hint,willRetry,retry,title};
 }

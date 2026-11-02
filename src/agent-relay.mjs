@@ -29,6 +29,7 @@ import { nativeSystemPrompt } from "./native-system-prompt.mjs";
 import { attachNativePromptProvenance } from "./native-request-metrics.mjs";
 import { NATIVE_COMPACTION, continuityCheckpoints, nativeModelSettings, nativePolicyContext, nativePromptBudgets, nativeSessionSettings, nativeToolNamespaceOptions } from "./native-configuration.mjs";
 import { configuredReasoningEffort } from "./model-reasoning-effort.mjs";
+import { plainProviderFailure, providerWaitNotice } from "./provider-failure-words.mjs";
 import { configuredModelServiceTier } from "./model-service-tier.mjs";
 import { discoverRepositoryCapabilities, exposedToolNamed, platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession, nativeMcpServersForSession } from "./mcp-registry.mjs";
@@ -716,7 +717,7 @@ export function nativeNetworkWaitMessage(data={}){
 }
 
 // claudeSdk: the Claude Agent SDK the relay's Claude Code sessions drive, when not the installed one (tests pass a scripted one).
-export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null,claudeSdk=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null,claudeSdk=null,nativeProviderWaitNoticeMs=30_000}={}){
   const wss=new WebSocketServer({noServer:true});
   // Each change to sessions arms or stops the idle sweep below (armSessionSweep), as does a session the sweep comes to keep (keepSession).
   const sessions=new (class extends Map{set(key,value){super.set(key,value);armSessionSweep();return this}delete(key){const had=super.delete(key);if(had)armSessionSweep();return had}clear(){super.clear();armSessionSweep()}})();
@@ -1287,7 +1288,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const compactedMessage=compactionBoundary?nativeCompactionMessage(compactionBoundary.summary):null;
       // Native updates name the session that sent them, so a draft's frames belong to the turn that session is running.
       const runtime=new NativeAgentSession({
-        ...common,streamDrafts:true,onUpdate:params=>handleUpdate(thread.id,params,runtime),provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),
+        ...common,streamDrafts:true,onUpdate:params=>{endProviderWait(thread.id);handleUpdate(thread.id,params,runtime)},provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),
         // The shared configuration's gate, window and server compaction threshold (native-configuration.mjs); turn/start applies the
         // window and threshold again for the model each message runs.
         ...nativeSessionSettings({provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null}),
@@ -1302,6 +1303,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const current=threadStore.get(thread.id)||thread,providerId=current?.providerMeta?.modelProvider||state?.settings?.().modelProvider||null;
           const category=String(event?.name||"").startsWith("native.model.")?"model":String(event?.name||"").startsWith("native.tool.")?"tool":"turn";
           const active=[...(current?.turns||[])].reverse().find(item=>item?.status==="inProgress"),activeTurnId=active?.id||null;
+          // A request the provider has not answered yet says so after a while (providerWaits); anything the provider or the turn does next ends that wait.
+          if(event?.name==="native.model.requested")awaitProvider(thread.id,activeTurnId,providerId);
+          else if(category==="model")endProviderWait(thread.id);
           if(event?.name==="native.model.requested"){
             const count=Math.max(0,Math.floor(Number(event?.data?.modelTurn)||0));
             if(active&&count>Number(active.modelTurns||0))threadStore.updateTurn(thread.id,active.id,{modelTurns:count});
@@ -1433,6 +1437,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     };
   }
 
+  // A Native model request that its provider has not answered within nativeProviderWaitNoticeMs says the turn is still waiting for
+  // that provider, in the turn's retry row (waiting), which settles once the turn goes on; nothing shows for a quick answer.
+  const providerWaits=new Map();
+  function endProviderWait(threadId){const timer=providerWaits.get(String(threadId));if(timer){clearTimeout(timer);providerWaits.delete(String(threadId))}}
+  function awaitProvider(threadId,turnId,providerId){
+    endProviderWait(threadId);if(!turnId)return;
+    const timer=setTimeout(()=>{
+      providerWaits.delete(String(threadId));
+      if(threadStore.get(threadId)?.turns?.some(item=>String(item?.id)===String(turnId)&&item.status==="inProgress"))emit("error",{threadId,turnId,willRetry:true,waiting:true,error:{message:providerWaitNotice(providerId)}});
+    },nativeProviderWaitNoticeMs);
+    timer.unref?.();providerWaits.set(String(threadId),timer);
+  }
+
   function emit(method,params){
     const thread=params?.threadId?threadMetadata(params.threadId):null;
     journal?.recordProtocol?.({
@@ -1509,7 +1526,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // (cursor-transport-failure.mjs), so a turn that wrote nothing before it keeps no reply and ends with that error alone.
       const said=String(session.__assistant||""),dump=error?.code==="CURSOR_TRANSPORT_FAILURE"?String(error.dump||""):null;session.__assistant="";
       keepReply(dump==null?said:dump&&said.endsWith(dump)?said.slice(0,said.length-dump.length):"");
-      const fail=message=>{const completed=finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
+      // A provider that refused a Native turn is said in plain words with its reason, never its raw body (plainProviderFailure).
+      const fail=said=>{const message=plainProviderFailure(said),completed=finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
       // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
       const harness=sessionHarnesses.get(session);
       if(stoppedTurns.get(session)===turn.id||!failedWhereItRuns(harness,error,generation,session))return fail(error.message);
