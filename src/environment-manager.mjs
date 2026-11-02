@@ -625,13 +625,17 @@ export class EnvironmentManager {
 
   async validateAttachments(id,paths,{maxCount=100,maxImageBytes=80*1024*1024}={}){
     const requested=Array.isArray(paths)?paths:[];if(requested.length>maxCount)throw new Error(`A message supports up to ${maxCount} attachments`);
-    const files=[];let imageBytes=0;
+    // Every file that is gone is named at once (missingPaths, as the composer sent them), so the composer takes all their chips off
+    // with one refusal, which says the first one's name.
+    const files=[],missingPaths=[];let imageBytes=0,gone=null;
     for(const path of requested){
-      const file=await this.attachmentInfo(id,path);const maxBytes=file.image?10*1024*1024:50*1024*1024;
+      let file;try{file=await this.attachmentInfo(id,path)}catch(error){if(!error?.missingPath)throw error;gone??=error;missingPaths.push(String(path));continue}
+      const maxBytes=file.image?10*1024*1024:50*1024*1024;
       if(file.size>maxBytes)throw new Error(`${file.image?"Image":"Attachment"} is larger than ${Math.round(maxBytes/1024/1024)} MB`);
       if(file.image){imageBytes+=file.size;if(imageBytes>maxImageBytes)throw new Error("Images in one message cannot exceed 80 MiB total")}
       files.push(file);
     }
+    if(gone)throw Object.assign(gone,{missingPaths});
     return {files,count:files.length,imageBytes,maxImageBytes};
   }
 }

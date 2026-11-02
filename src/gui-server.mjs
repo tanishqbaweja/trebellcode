@@ -3401,7 +3401,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         // check, which comes right after the first, asks for no extraction (extract: false): a send extracts each document once.
         if(!profile||profile.type==="local")for(const [index,file] of result.files.entries())result.files[index]=await withDocumentText(file,{extract:body.extract!==false});
         return json(res,200,result);
-      }catch(error){return json(res,400,{error:error.message});}
+      }catch(error){return json(res,400,{error:error.message,...(error.missingPaths?{missing:error.missingPaths}:{})});}
     }
     if(url.pathname==="/api/models"){
       const runtime=selectedAgentRuntime,provider=selectedProvider;

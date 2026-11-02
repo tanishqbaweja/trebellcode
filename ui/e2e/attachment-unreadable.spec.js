@@ -4,8 +4,10 @@ import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
-// An attachment whose saved file is gone by the time its message goes is named, with what to do, instead of Node's bare ENOENT.
-// The composer's check before a send says so and keeps the draft; so does the relay for an
+// An attachment whose saved file is gone by the time its message goes is named, with what to do, in plain words with no system code.
+// The composer's check before a send takes the chip of every file that is gone off the draft and says so once beside the composer,
+// keeping the draft, so the next send goes (L10-F-1, 2026-11-02: the dead chip refused every later send, after a restart and on
+// another provider too, with only the first refusal's card to show for it); the relay says so and keeps the draft for an
 // image that went after that check, before the message's turn exists, so no turn is left running and the thread takes the next
 // message. Either says so after the conversation's last reply, as the message's own, never as a step of the turn before it: also
 // the queue's refusal of a follow-up whose image went while it waited. A Trebell Native thread on the real agent relay, with its
@@ -55,21 +57,59 @@ async function shots(page,name,check=async()=>{}){
   if(await page.locator("html").getAttribute("data-mode")!=="dark")await page.getByTestId("appearance-toggle").first().click();
 }
 
-test("a send whose attached file is gone says which one and to attach it again, keeps the draft and sends nothing",async({page})=>{
+test("a send whose attached file is gone takes its chip off, says so once beside the composer and keeps the draft, and the next send goes",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await openThread(page);
+  const harness=await openThread(page,[{text:"The notes did not come with it."}]);
   try{
     const saved=await attach(page,{name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("release notes\n")});
+    await attach(page,{name:"plan.txt",mimeType:"text/plain",buffer:Buffer.from("the plan\n")});
     // The saved copy goes before the message is sent, as a cleanup of the attachments folder would take it.
     await rm(saved,{force:true});
     await type(page,"Summarize the notes");await page.getByTestId("send").click();
-    const said=page.getByText('The attached file "notes.txt" could not be read (ENOENT). Attach it again.').first();
-    await expect(said).toBeVisible();
-    await expect(page.getByText(/no such file or directory/)).toHaveCount(0);
+    const said=page.getByTestId("composer-alert");
+    await expect(said).toHaveText('"notes.txt" is no longer on this computer, so it was taken off your message. Attach it again, or send the message without it.');
+    await expect(said).toHaveAttribute("role","alert");
+    await expect(page.getByText(/ENOENT|no such file or directory/)).toHaveCount(0);
+    await expect(page.locator(".tool-event"),"no card stands for the refusal").toHaveCount(0);
     await expect(page.getByTestId("composer")).toHaveValue("Summarize the notes");
-    await expect(page.locator(".attachment-shelf > span")).toContainText("notes.txt");
+    await expect(page.getByRole("button",{name:"Remove notes.txt"}),"the chip of the file that is gone is off the draft").toHaveCount(0);
+    await expect(page.getByRole("button",{name:"Remove plan.txt"}),"the other file stays").toBeVisible();
     expect(harness.providerCalls(),"nothing went to the provider").toBe(0);
     await shots(page,"send-attachment-gone",()=>expect(said).toBeVisible());
+    // At a phone's width too, where the header's toggle is folded away: the mode is switched at 1280 first.
+    await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").first().click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      await page.setViewportSize({width:390,height:800});await expect(said).toBeVisible();
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),"no sideways scroll at 390").toBe(true);
+      await page.screenshot({animations:"disabled",path:`${auditDir}send-attachment-gone-${mode}-390x800.png`});
+      await page.setViewportSize({width:1280,height:800});
+    }
+    if(await page.locator("html").getAttribute("data-mode")!=="dark")await page.getByTestId("appearance-toggle").first().click();
+    // The next press sends the message, with the file that is still there.
+    await page.getByTestId("send").click();
+    await expect(page.getByText("The notes did not come with it.",{exact:true})).toBeVisible({timeout:20_000});
+    expect(harness.providerCalls(),"the message went").toBe(1);
+    await expect(said).toHaveCount(0);
+    await expect(page.locator(".user-bubble").last()).toContainText("plan.txt");
+    await expect(page.locator(".user-bubble").last()).not.toContainText("notes.txt");
+  }finally{await harness.close()}
+});
+
+test("every attached file that is gone comes off the draft with one refusal that names them all",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openThread(page);
+  try{
+    const first=await attach(page,{name:"number-png.png",mimeType:"image/png",buffer:PNG});
+    const second=await attach(page,{name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("release notes\n")});
+    await rm(first,{force:true});await rm(second,{force:true});
+    await type(page,"What is in these?");await page.getByTestId("send").click();
+    await expect(page.getByTestId("composer-alert")).toHaveText('"number-png.png" and "notes.txt" are no longer on this computer, so they were taken off your message. Attach them again, or send the message without them.');
+    await expect(page.locator(".attachment-shelf > span")).toHaveCount(0);
+    await expect(page.getByTestId("composer")).toHaveValue("What is in these?");
+    expect(harness.providerCalls()).toBe(0);
+    await shots(page,"send-attachments-gone",()=>expect(page.getByTestId("composer-alert")).toBeVisible());
   }finally{await harness.close()}
 });
 
@@ -82,8 +122,8 @@ test("a send whose attached image went after the composer's check is not sent, s
     await page.route(/\/api\/attachments\/validate$/,async route=>{await rm(saved,{force:true});return json(route,{files:[],count:1,imageBytes:PNG.length})});
     await type(page,"What is in this screenshot?");await page.getByTestId("send").click();
     const said=page.getByTestId("composer-alert");
-    await expect(said).toHaveText('Not sent: The attached image "shot.png" could not be read (ENOENT). Attach it again. Your draft is kept.',{timeout:20_000});
-    await expect(page.getByText(/no such file or directory/)).toHaveCount(0);
+    await expect(said).toHaveText('Not sent: The attached image "shot.png" is no longer on this computer. Attach it again. Your draft is kept.',{timeout:20_000});
+    await expect(page.getByText(/ENOENT|no such file or directory/)).toHaveCount(0);
     await expect(page.getByTestId("composer")).toHaveValue("What is in this screenshot?");
     await expect(page.getByRole("button",{name:"Remove shot.png"})).toBeVisible();
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
@@ -103,13 +143,15 @@ test("a send its own file check refuses says so below the conversation's last re
   test.setTimeout(90_000);
   const harness=await openThread(page);
   try{
-    const saved=await attach(page,{name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("release notes\n")});
-    await rm(saved,{force:true});
+    await attach(page,{name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("release notes\n")});
+    // A refusal of the check that is no file gone (one a file that is gone gets is said beside the composer, above): the message's
+    // images over their limit together.
+    await page.route(/\/api\/attachments\/validate$/,route=>route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:"Images in one message cannot exceed 80 MiB total"})}));
     const answer=page.locator(".history-assistant").filter({hasText:"The login page renders."});
     await expect(answer).toBeVisible();const before=await edges(answer);
     // Sent with the Send button, then again with Enter: each refusal reads after the earlier turn's reply, which stays where it was.
     await type(page,"Summarize the notes");await page.getByTestId("send").click();
-    const said=page.locator(".tool-event").filter({hasText:'The attached file "notes.txt" could not be read (ENOENT). Attach it again.'});
+    const said=page.locator(".tool-event").filter({hasText:"Images in one message cannot exceed 80 MiB total"});
     await expect(said).toHaveCount(1);
     expect(await edges(answer),"the earlier reply has not moved").toEqual(before);
     await readsBelow(said.first(),answer);
@@ -143,7 +185,7 @@ test("a follow-up the queue cannot start because its image is gone says so below
     await rm(saved,{force:true});release();
     const answer=page.locator(".history-assistant").filter({hasText:"The login form has two fields."});
     await expect(answer).toBeVisible({timeout:20_000});
-    const said=page.locator(".tool-event").filter({hasText:'Could not start queued Native follow-up: The attached image "shot.png" could not be read (ENOENT). Attach it again.'});
+    const said=page.locator(".tool-event").filter({hasText:'Could not start queued Native follow-up: The attached image "shot.png" is no longer on this computer. Attach it again.'});
     await expect(said).toHaveCount(1,{timeout:20_000});
     // The turn's card lists its own step only, nothing failed, and the refusal reads below that turn's reply.
     const card=page.locator("[data-testid=activity-card]").filter({hasText:"Trebell context skipped"});

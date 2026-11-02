@@ -4535,7 +4535,7 @@ export default function App(){
     }
     try{await waitForActiveClone()}catch(error){keepDraft();setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const fanned=await sendModelFanout(text);if(fanned){if(fanned==="kept")keepDraft();return}
-    try{await validateAttachmentPaths(attachments)}catch(e){keepDraft();setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
+    try{await validateAttachmentPaths(attachments)}catch(e){keepDraft();if(e.data?.missing?.length)return dropGoneAttachments(e.data.missing);setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};if(sendView)sendDraftsRef.current.set(sendView,draft);
     setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock){
@@ -4731,6 +4731,13 @@ export default function App(){
     if(pinnedEnvironment!==undefined)body.environmentId=pinnedEnvironment;
     const result=await api("/api/attachments/import",{method:"POST",body});
     return (result.files||[]).map(file=>file.path);
+  }
+  // Files whose saved copies are gone (the check before a send names them) leave the draft, which says so once beside the composer, so
+  // the next send goes: a chip of a file that is no longer there refused every later send the same way.
+  function dropGoneAttachments(gone){
+    setAttachments(prev=>prev.filter(path=>!gone.includes(path)));
+    const one=gone.length<2,names=new Intl.ListFormat("en").format(gone.map(path=>`"${attachmentDisplayName(path)}"`));
+    setComposerAlert({kind:"send",text:one?names+" is no longer on this computer, so it was taken off your message. Attach it again, or send the message without it.":names+" are no longer on this computer, so they were taken off your message. Attach them again, or send the message without them."});
   }
   async function validateAttachmentPaths(paths,{extract=true}={}){
     if(!paths?.length)return {files:[],count:0,imageBytes:0};

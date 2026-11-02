@@ -18,7 +18,7 @@ const GROK={initialize:{protocolVersion:1,agentCapabilities:{loadSession:true,se
 test("an image of a thread in a remote environment is refused saying where it is, and one gone from this machine still says to attach it again",async()=>{
   const remote=[{type:"text",text:"What is this?"},{type:"localImage",path:"/home/dev/.trebell/attachments/1761500000000-ab12cd34-shot.png"}];
   await assert.rejects(contextualAgentPrompt(remote,{},{remote:true}),{message:REMOTE});
-  await assert.rejects(contextualAgentPrompt([{type:"localImage",path:join(process.cwd(),"no-such-folder","1761500000000-ab12cd34-shot.png")}],{}),{message:'The attached image "shot.png" could not be read (ENOENT). Attach it again.'});
+  await assert.rejects(contextualAgentPrompt([{type:"localImage",path:join(process.cwd(),"no-such-folder","1761500000000-ab12cd34-shot.png")}],{}),{message:'The attached image "shot.png" is no longer on this computer. Attach it again.'});
   // Text and files of a remote thread go as before.
   const parts=await contextualAgentPrompt([{type:"text",text:"Read it"},{type:"mention",name:"notes.md",path:"/home/dev/notes.md"}],{},{remote:true});
   assert.deepEqual(parts.map(part=>part.type),["text","resource_link"]);

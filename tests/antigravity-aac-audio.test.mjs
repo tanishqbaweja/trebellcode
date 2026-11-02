@@ -35,6 +35,6 @@ test("an .aac with no room in the message stays the link alone, and one that is 
   const link=path=>contextualAgentPrompt([{type:"mention",name:"x.aac",path}]);
   assert.deepEqual(shape(await antigravityPromptParts(await link(big),ADVERTISED)),[["resource_link","x.aac"]]);
   await assert.rejects(antigravityPromptParts(await link(join(root,"1761500000000-ab12cd34-gone.aac")),ADVERTISED),error=>{
-    assert.ok(isSessionRefusal(error));assert.equal(error.message,'The attached file "gone.aac" could not be read (ENOENT). Attach it again.');return true;
+    assert.ok(isSessionRefusal(error));assert.equal(error.message,'The attached file "gone.aac" is no longer on this computer. Attach it again.');return true;
   });
 });

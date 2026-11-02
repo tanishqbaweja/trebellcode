@@ -34,12 +34,14 @@ export function attachmentName(path){
   return name.replace(/^\d{10,}-[0-9a-f]{8}-(?=.)/i,"");
 }
 
-// An attached file Trebell cannot read, said by its name with what to do instead of Node's bare error. The harness has
-// nothing yet, so the relay ends the turn with it and asks the
-// harness nothing.
+// An attached file Trebell cannot read, said by its name with what to do, in plain words instead of Node's error or its code: a file
+// that is gone is no longer on this computer (missingPath names it, for the composer to take its chip off), one the system does not
+// let Trebell open says so. The harness has nothing yet, so the relay ends the turn with it and asks the harness nothing.
 export function unreadableAttachment(kind,path,error){
-  const code=typeof error?.code==="string"&&error.code?` (${error.code})`:"";
-  return new SessionRefusalError(`The attached ${kind} "${attachmentName(path)}" could not be read${code}. Attach it again.`);
+  const named=`The attached ${kind} "${attachmentName(path)}"`,code=error?.code,gone=code==="ENOENT"||code==="ENOTDIR";
+  const refusal=new SessionRefusalError(gone?`${named} is no longer on this computer. Attach it again.`:code==="EACCES"||code==="EPERM"?`${named} could not be read, since this computer does not let Trebell Code open it.`:`${named} could not be read. Attach it again.`);
+  if(gone)refusal.missingPath=String(path);
+  return refusal;
 }
 // An image of a thread in a remote environment: the composer keeps the copy it made on the remote host, which this machine cannot read
 // to send as an image. The file is not gone, so attaching it again would not help.

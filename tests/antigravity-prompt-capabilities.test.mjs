@@ -163,7 +163,7 @@ test("an attached audio file that Antigravity would hear but is gone is refused 
   const root=await folder(t),gone=join(root,"1761500000000-ab12cd34-memo.mp3");
   const prompt=await relayPrompt("What is said?",[{type:"localAudio",path:gone}]);
   await assert.rejects(antigravityPromptParts(prompt,{audio:true}),error=>{
-    assert.equal(error.message,'The attached file "memo.mp3" could not be read (ENOENT). Attach it again.');
+    assert.equal(error.message,'The attached file "memo.mp3" is no longer on this computer. Attach it again.');
     assert.ok(isSessionRefusal(error),"Antigravity had nothing yet, so it is asked nothing");
     return true;
   });

@@ -41,7 +41,7 @@ test("a Codex prompt at the composer's limit still names every attachment after 
 test("an attached image whose saved file is gone is refused by its name with what to do, not with Node's bare error",async t=>{
   const root=await folder(t),gone=join(root,"1761500000000-ab12cd34-shot.png");
   await assert.rejects(contextualAgentPrompt([{type:"text",text:"What is this?"},{type:"localImage",path:gone}]),error=>{
-    assert.equal(error.message,'The attached image "shot.png" could not be read (ENOENT). Attach it again.');
+    assert.equal(error.message,'The attached image "shot.png" is no longer on this computer. Attach it again.');
     assert.ok(isSessionRefusal(error),"the harness had nothing yet, so it is asked nothing");
     return true;
   });
@@ -60,7 +60,7 @@ test("Muse Code's turn input names every attachment of a long message, and an im
   assert.deepEqual(input.map(part=>part.type==="image"?["image",part.mediaType]:["text",part.text.length>200?part.text.length:part.text]),[
     ["text",long.length],["image","image/png"],["text",`[File attachment "notes.md" at ${notes}]`],["text",`[Audio attachment "memo.mp3" at ${join(root,"memo.mp3")}]`],
   ],"no text budget leaves one out");
-  await assert.rejects(contextualAgentPrompt([{type:"text",text:"What is this?"},{type:"localImage",path:join(root,"gone.png")}]).then(museInputParts),{message:'The attached image "gone.png" could not be read (ENOENT). Attach it again.'});
+  await assert.rejects(contextualAgentPrompt([{type:"text",text:"What is this?"},{type:"localImage",path:join(root,"gone.png")}]).then(museInputParts),{message:'The attached image "gone.png" is no longer on this computer. Attach it again.'});
 });
 
 test("a send whose attached image is gone is refused by its name before its turn exists, the harness is sent nothing, and the thread goes on",async t=>{
@@ -69,7 +69,7 @@ test("a send whose attached image is gone is refused by its name before its turn
   const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"}),threadId=started.thread.id;
   let turnStarted=false;const listen=raw=>{if(JSON.parse(String(raw)).method==="turn/started")turnStarted=true};ws.on("message",listen);
   await assert.rejects(rpc("turn/start",{threadId,input:[{type:"text",text:"What is this?"},{type:"localImage",path:join(fx.root,"1761500000000-ab12cd34-shot.png")}]}),
-    {message:'The attached image "shot.png" could not be read (ENOENT). Attach it again.'});
+    {message:'The attached image "shot.png" is no longer on this computer. Attach it again.'});
   assert.deepEqual(threadStore.get(threadId).turns,[],"no turn is left running behind the refusal");
   assert.notEqual(threadStore.get(threadId).status?.type,"active");
   assert.equal(turnStarted,false,"the window was told of no turn");ws.off("message",listen);
@@ -84,8 +84,8 @@ test("a send whose attached file is gone is refused by its name with what to do,
   const root=await folder(t),manager=new EnvironmentManager({state:{environments:()=>[]}});
   const kept=join(root,"1761500000000-ab12cd34-notes.txt");await writeFile(kept,"notes","utf8");
   assert.equal((await manager.validateAttachments(null,[kept])).count,1);
-  await assert.rejects(manager.validateAttachments(null,[kept,join(root,"1761500000000-ab12cd34-report.pdf")]),{message:'The attached file "report.pdf" could not be read (ENOENT). Attach it again.'});
-  await assert.rejects(manager.validateAttachments(null,[join(root,"gone.png")]),{message:'The attached image "gone.png" could not be read (ENOENT). Attach it again.'});
+  await assert.rejects(manager.validateAttachments(null,[kept,join(root,"1761500000000-ab12cd34-report.pdf")]),{message:'The attached file "report.pdf" is no longer on this computer. Attach it again.'});
+  await assert.rejects(manager.validateAttachments(null,[join(root,"gone.png")]),{message:'The attached image "gone.png" is no longer on this computer. Attach it again.'});
   // Nor is a file taken in (an @ file, a pick) once it is gone.
-  await assert.rejects(manager.prepareAttachment(null,join(root,"1761500000000-ab12cd34-report.pdf")),{message:'The attached file "report.pdf" could not be read (ENOENT). Attach it again.'});
+  await assert.rejects(manager.prepareAttachment(null,join(root,"1761500000000-ab12cd34-report.pdf")),{message:'The attached file "report.pdf" is no longer on this computer. Attach it again.'});
 });
