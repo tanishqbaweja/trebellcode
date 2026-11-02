@@ -1,9 +1,9 @@
 // A send extracts an attached document's text at most once, where its text can be used: attaching a file on this machine extracts it
 // (/api/attachments/import) and the check of a message about to go extracts what attaching did not (/api/attachments/validate),
 // while the relay only names the text that is there
-// already. So the relay never runs a second extraction while the turn waits, for Trebell Native neither, whose
-// prompt names no text, and an upload is not extracted before the composer takes it in, which for a thread in a remote environment
-// copies it to that host, where no harness is told of text on this machine.
+// already. So the relay never runs a second extraction while the turn waits, and an upload is not extracted before the composer
+// takes it in, which for a thread in a remote environment copies it to that host, where no harness is told of text on this machine.
+// Trebell Native gets its documents' text as every other harness does (L10-8, 2026-11-02: it got none, and could not read the file).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
@@ -57,7 +57,7 @@ test("an upload is not extracted before the composer takes it in, and taking it 
   assert.deepEqual(checked.files.map(file=>file.textPath),[taken.textPath],"and the send's check finds that text");
 });
 
-test("with Trebell Native, whose prompt names no document's text, neither taking a document in nor checking a message extracts it",async t=>{
+test("with Trebell Native too, taking a document in on this machine extracts it, and checking a message finds that text",async t=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-document-native-")),home=join(root,"home"),env={...process.env,TREBELL_HOME:home};
   const saved=new TrebellStateStore(env);saved.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default"});saved.close();
   const [port,appPort]=await Promise.all([freePort(),freePort()]),gui=await createGuiServer({port,appPort,mock:true,env});
@@ -66,5 +66,10 @@ test("with Trebell Native, whose prompt names no document's text, neither taking
   const own=join(root,"Harbor plan.docx");await copyFile(join(FIXTURES,"report.docx"),own);
   const uploaded=await post("/api/attachments/blob",{name:"deck.pptx",mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",dataBase64:(await readFile(join(FIXTURES,"deck.pptx"))).toString("base64")});
   const {files:taken}=await post("/api/attachments/import",{paths:[uploaded.path,own]}),checked=await post("/api/attachments/validate",{paths:[uploaded.path,own]});
-  assert.deepEqual({taken:taken.map(file=>file.textPath??null),checked:checked.files.map(file=>file.textPath??null),attachments:await readdir(join(home,"attachments"))},{taken:[null,null],checked:[null,null],attachments:[basename(uploaded.path)]},"no text extracted, and no worker's file written");
+  const texts=taken.map(file=>file.textPath??null);
+  assert.equal(texts[0],uploaded.path+".txt","an upload's text is beside it");
+  assert.match(String(texts[1]),/[\\/]attachments[\\/][0-9a-f]{32}-Harbor_plan\.docx\.txt$/,"the person's own file's text is in the attachments folder, and nothing is written beside the file");
+  assert.deepEqual(checked.files.map(file=>file.textPath??null),texts,"and the send's check finds that text");
+  assert.match(await readFile(texts[0],"utf8"),/Slide 1 of /);assert.match(await readFile(texts[1],"utf8"),/^# Quarterly Harbor Report\n/);
+  assert.deepEqual((await readdir(root)).sort(),["Harbor plan.docx","home"].sort());
 });

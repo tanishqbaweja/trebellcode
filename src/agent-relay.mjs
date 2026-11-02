@@ -15,6 +15,7 @@ import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
 import { remoteEnvironmentImage, unreadableAttachment, withPromptAudioPath, withPromptImagePath, withPromptTextPath } from "./prompt-attachments.mjs";
 import { attachmentLine } from "./attachment-line.mjs";
 import { extractedDocumentText } from "./document-text.mjs";
+import { NativeAttachedFiles } from "./native-attached-files.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MUSE_COMPACTION_STOPPED, MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
@@ -1214,9 +1215,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const mcpDiscovery=mcpBroker.discoveryNamespace();if(mcpDiscovery)tools.push(mcpDiscovery);
       // The thread's history may name process handles from before a restart; the processes it starts now get later ones.
       nativeBackgroundProcesses.reserveHandles(thread.id,highestProcessHandle(thread));
+      // The thread's attachments on this machine and their extracted text, which its read tool opens where they are at every access
+      // level (native-attached-files.mjs): those its earlier messages carried, and each new message's as it goes (turn/start, steer).
+      // A thread in a remote environment keeps its attachments on that host, inside its workspace, so it has none of these.
+      const attachedFiles=remoteIo?null:new NativeAttachedFiles({platform:runtimeManager.platform||process.platform});
+      attachedFiles?.addThread(threadStore.get(thread.id)||thread,{home:documentHome});
+      const attachedFile=attachedFiles?path=>attachedFiles.find(path):null;
       const nativeBuiltins=createNativeBuiltins({
         root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,
-        backgroundProcesses:nativeBackgroundProcesses,threadId:thread.id,environmentNames:runtimeManager.childEnvironmentKeys(instance),
+        backgroundProcesses:nativeBackgroundProcesses,threadId:thread.id,environmentNames:runtimeManager.childEnvironmentKeys(instance),attachedFile,
       });
       const nativeSourceControl=!projectless&&namespaceNames.has("trebell_source_control")?createNativeSourceControl({
         root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,environmentNames:runtimeManager.childEnvironmentKeys(instance),
@@ -1231,11 +1238,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         discoverRepositoryTools,directTool:requested=>exposedToolNamed(tools,requested),outputStore,
         projectAvailable:!projectless,
-        policyContext:()=>nativePolicyContext({
+        policyContext:()=>({...nativePolicyContext({
           permissionProfile:normalizePermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),workspace:runtimeCwd,projectAvailable:!projectless,
           desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),delegationAvailable:namespaceNames.has("trebell_delegate"),
           environmentType:environmentProfile?.type||"local",
-        }),
+        }),...(attachedFile?{attachedFile}:{})}),
         executeShared:async call=>{
           if(["trebell_workspace","trebell_terminal","trebell_process"].includes(call.namespace))return nativeBuiltins(call);
           if(call.namespace==="trebell_source_control"&&call.name!=="link_pull_request"){
@@ -1257,7 +1264,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const grant=nativeApprovalGrantKey(call,authorization);if(nativeSessionGrants.has(grant))return "accept";
           // A read, listing or search inside the project runs without asking in Supervised and Auto-accept edits, as in the other
           // harnesses; its path is placed as the workspace tools place it, so one that leads out of the project still asks.
-          const inside=path=>safeWorkspacePath(runtimeCwd,path,{environments,environmentId,mustExist:false}).then(()=>true);
+          // An attached file is the person's own, so its read runs without asking too.
+          const inside=path=>attachedFile?.(path)?Promise.resolve(true):safeWorkspacePath(runtimeCwd,path,{environments,environmentId,mustExist:false}).then(()=>true);
           if(await nativeProjectReadNeedsNoApproval(call,authorization,{inside}))return "accept";
           // The call's row says its card waits until the card is answered, so a restart after Trebell was killed with it waiting,
           // when no close answered it, still shows it did not run (the thread store's reconcileRestart).
@@ -1298,7 +1306,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           journal?.record?.({runtime:"native",provider:providerId,environmentId:current?.providerMeta?.environmentId??null,threadId:thread.id,turnId:activeTurnId,category,name:event.name,status:event.status,data:event.data||{}});
         },
       });
-      runtime.__trebellMcpFingerprint=JSON.stringify(mcpServers);
+      runtime.__trebellMcpFingerprint=JSON.stringify(mcpServers);runtime.__attachedFiles=attachedFiles;
       const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
       if(generation!==sessionGeneration){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
       const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
@@ -2259,6 +2267,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // and leaves no turn running behind it.
       const messageParts=await acpPrompt(params.input||[],{remote:threadRunsRemote(thread),home:documentHome});
       if(send?.stopped)throw stoppedBeforeTurn();
+      session.__attachedFiles?.addPromptParts(messageParts);
       // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
       endFailureWait(thread.id);
       // A message that takes over the report Muse Code writes itself ends the report's turn first, with its own reply and tokens, so the
@@ -2330,7 +2339,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));if(!activeTurn)throw new Error("Trebell Native has no active turn to steer.");
       if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error("The active Native turn changed before steering could be applied.");
       const session=sessions.get(thread.id);if(!(session instanceof NativeAgentSession))throw new Error("The active Native session is unavailable for steering.");
-      const prompt=await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome}),result=session.steer(prompt),text=textOfInput(params.input||[]);
+      const prompt=await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome});session.__attachedFiles?.addPromptParts(prompt);
+      const result=session.steer(prompt),text=textOfInput(params.input||[]);
       const safeText=redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env});
       const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:safeText},...fileInputs(params.input)]};threadStore.addItem(thread.id,activeTurn.id,item);
       emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});

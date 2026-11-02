@@ -286,7 +286,10 @@ async function processStatus(backgroundProcesses,threadId,args={},signal=null,wa
   return backgroundProcesses.status(threadId,processId);
 }
 
-export function createNativeBuiltins({root,environments=null,environmentId=null,environment=process.env,platform=process.platform,backgroundProcesses=null,threadId=null,environmentNames=null}={}){
+// attachedFile(path): the file on this machine a read_file path names when it is one of the thread's attachments or the text extracted
+// from one (the relay's list of them), which the read opens where it is, else null. Without it (the benchmark runner) every read
+// stays in the workspace, as does every other tool.
+export function createNativeBuiltins({root,environments=null,environmentId=null,environment=process.env,platform=process.platform,backgroundProcesses=null,threadId=null,environmentNames=null,attachedFile=null}={}){
   if(!root)throw new Error("Native built-in tools require an active workspace root");
   return async function execute(call={}){
     const namespace=String(call.namespace||""),name=String(call.name||""),args=call.arguments&&typeof call.arguments==="object"?call.arguments:{};
@@ -297,14 +300,16 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
         return await environmentWorkspaceTree(located.path,{depth:boundedInteger(args.depth,3,1,8),limit:boundedInteger(args.limit,500,1,1000),environments,environmentId});
       }
       if(name==="read_file"){
-        const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:true});
-        if(internalRecovery&&args._trebell_internal_binary===true)return await workspaceBinary(located,args.max_bytes,{environments,environmentId});
-        if(args.as_image===true)return await workspaceImage(located,{environments,environmentId});
+        // An attached file is read where it is, on this machine; any other path is placed in the workspace.
+        const attached=typeof attachedFile==="function"&&typeof args.path==="string"?attachedFile(args.path):null,where=attached?{environments:null,environmentId:null}:{environments,environmentId};
+        const located=attached?{path:attached,remote:false,profile:null}:await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:true});
+        if(internalRecovery&&args._trebell_internal_binary===true)return await workspaceBinary(located,args.max_bytes,where);
+        if(args.as_image===true)return await workspaceImage(located,where);
         const imageMimeType=imageMimeFromPath(located.path);
         if(imageMimeType)return {success:true,path:located.path,mimeType:imageMimeType,imageModeRequired:true,message:"Raster image text decoding was skipped to avoid binary data in model context. Re-read this path with as_image=true to inspect its pixels."};
         // A file over max_bytes gives the model its first max_bytes, marked truncated, to read on from. A recovery read may write the
         // text it gets back, so it needs the whole file or a refusal; its id names it, whichever executor sent it.
-        return await environmentWorkspaceFile(located.path,boundedInteger(args.max_bytes,DEFAULT_READ_BYTES,1,1024*1024),{root,environments,environmentId,truncate:!/^native-recovery-/.test(String(call.id||""))});
+        return await environmentWorkspaceFile(located.path,boundedInteger(args.max_bytes,DEFAULT_READ_BYTES,1,1024*1024),{root,...where,truncate:!/^native-recovery-/.test(String(call.id||""))});
       }
       if(name==="write_file"){
         if(internalRecovery&&args._trebell_internal_binary===true){const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:false});return await writeWorkspaceBinary(located,args.content_base64,{environments,environmentId})}

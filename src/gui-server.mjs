@@ -623,11 +623,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // sign-ins: host discovery (ssh -V, wsl --list), the harness checks and the code-host CLIs answer from offline-e2e-host.mjs.
   const environments=new EnvironmentManager({state,env,...(offlineE2E?{discoveryRun:offlineE2eDiscoveryRun}:{})});
   // An attachment on this machine as the composer gets it back, with the file a Word, Excel or other document's text was extracted
-  // to (textPath, document-text.mjs), which the composer names in a Codex message as the relay names it for every other harness.
-  // Trebell Native's prompt names a document itself and no text of it, so nothing is extracted while it is the harness; a message
-  // sent to another harness has its documents extracted as its files are checked before it goes. extract false: only the text a
-  // document has already, for a send's second check of its files, right after the first one extracted it.
-  const withDocumentText=async(file,{extract=true}={})=>{const textPath=selectedAgentRuntime==="native"?null:await (extract?ensureDocumentText:extractedDocumentText)(file.path,{home:trebellHome(env)});return textPath?{...file,textPath}:file};
+  // to (textPath, document-text.mjs), which the composer names in a Codex message as the relay names it for every other harness,
+  // Trebell Native among them, whose read tool opens the thread's attachments and their text wherever they are. extract false: only
+  // the text a document has already, for a send's second check of its files, right after the first one extracted it.
+  const withDocumentText=async(file,{extract=true}={})=>{const textPath=await (extract?ensureDocumentText:extractedDocumentText)(file.path,{home:trebellHome(env)});return textPath?{...file,textPath}:file};
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
   if(storedActiveEnvironmentId&&!environments.get(storedActiveEnvironmentId))state.updateSettings({activeEnvironmentId:null});
   function requestedEnvironmentId(value,{fallback=true}={}){

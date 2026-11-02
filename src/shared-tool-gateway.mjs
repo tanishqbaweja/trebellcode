@@ -22,10 +22,19 @@ function normalizedPlatformArguments(namespace,name,value){
   return args;
 }
 
+// A read of a file attached to the thread opens that file where it is: context.attachedFile (the relay's list of the thread's
+// attachments and the text extracted from them) names it, its path is kept as it was given instead of being placed in the project,
+// and the read is inside what the thread may read. Every other path and tool is placed and judged as before, and a context without
+// the list (the benchmark runner's) has no attached file.
+function attachedFileRead(namespace,name,value,context){
+  if(namespace!=="trebell_workspace"||name!=="read_file"||typeof context?.attachedFile!=="function")return false;
+  const path=objectArguments(value).path;return typeof path==="string"&&Boolean(context.attachedFile(path));
+}
+
 function normalizedWorkspaceArguments(namespace,name,value,context={}){
   const args={...normalizedPlatformArguments(namespace,name,value)},workspace=context?.workspace;
   if(!workspace)return args;
-  if(["trebell_workspace","trebell_repo"].includes(namespace)&&typeof args.path==="string")args.path=normalizeRepositoryWorkspacePath(workspace,args.path);
+  if(["trebell_workspace","trebell_repo"].includes(namespace)&&typeof args.path==="string"&&!attachedFileRead(namespace,name,value,context))args.path=normalizeRepositoryWorkspacePath(workspace,args.path);
   if(namespace==="trebell_repo"&&name==="invoke"&&args.arguments&&typeof args.arguments==="object"&&!Array.isArray(args.arguments)&&typeof args.arguments.path==="string"){
     args.arguments={...args.arguments,path:normalizeRepositoryWorkspacePath(workspace,args.arguments.path)};
   }
@@ -161,6 +170,7 @@ export function authorizePlatformToolCall(call={},context={},resolveDefinition=p
       rawInput:args,
       workspace:context.workspace||null,
       requestedPath:context.requestedPath||null,
+      ...(attachedFileRead(namespace,name,call.arguments,context)?{pathInsideWorkspace:true}:{}),
       networkTarget:context.networkTarget||args.url||null,
       ...policyMetadata,
       provenance:context.provenance||"model",
