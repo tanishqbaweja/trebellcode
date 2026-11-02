@@ -153,8 +153,9 @@ for(const mode of ["dark","light"])test(`the composer shows a Native Meta turn's
     await page.getByTestId("send").click();
     await expect(page.getByText("Parsed four keys.",{exact:true})).toBeVisible({timeout:15_000});
     const context=page.locator(".composer-context");
-    await expect(context).toContainText("43,402 tokens · $0.0011",{timeout:10_000});
-    await expect(context).toHaveAttribute("title","Tokens 43,402 · $0.0011");
+    // The context in use is the request's input; the turn's whole total is in the title, and its cost.
+    await expect(context).toContainText("42,232 tokens · $0.0011",{timeout:10_000});
+    await expect(context).toHaveAttribute("title","Context 42,232 input · 43,402 total · $0.0011");
     await page.screenshot({animations:"disabled",path:auditDir+`native-model-prices-composer-${mode}-1280.png`});
     await expect.poll(()=>state.usage({days:30,limit:5000}).records.length).toBe(1);
     expect(state.usage({days:30,limit:5000}).records[0]).toMatchObject({runtime:"native",provider:"meta",model,usage:{inputTokens:42232,cachedInputTokens:33845,outputTokens:1170}});

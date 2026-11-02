@@ -520,12 +520,13 @@ function tokenLabel(tokenUsage,price=null,runtime=""){
   const cost=Number.isFinite(actual)?actual:priceUsage(tokenUsage?.total,runtime,price);
   const suffix=cost!=null?` · $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`:"";
   if(!(Number(total)>0))return "Context —";
-  if(windowSize&&contextTokens>0)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
+  if(contextTokens>0)return "Context "+(windowSize?Math.round(contextTokens/windowSize*100)+"% · ":"")+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
   return "Tokens "+total.toLocaleString()+suffix;
 }
 // The context value without the "Context" label, for places that already print the label next to a meter or in a stat cell:
-// "—" before the harness reports usage, "50% · 1,444/120,000" with a known window, else the thread's token total. A cost
-// joins when the harness reports one (or a custom model's prices give one).
+// "—" before the harness reports usage, "50% · 1,444/120,000" with a known window, else the last request's input (the context in
+// use, not the turn's requests summed), else the thread's token total. A cost joins when the harness reports one (or a custom
+// model's prices give one).
 function contextValueLabel(tokenUsage,price=null,runtime=""){
   const label=tokenLabel(tokenUsage,price,runtime);
   const total=tokenUsage?.total?.totalTokens,contextTokens=tokenUsage?.last?.inputTokens,windowSize=Number(tokenUsage?.modelContextWindow);
@@ -533,7 +534,7 @@ function contextValueLabel(tokenUsage,price=null,runtime=""){
   // A turn always sends some context, so a zero total means the provider reported no usage, not an empty window.
   if(!(Number(total)>0))return "—";
   if(windowSize&&contextTokens>0)return Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+"/"+windowSize.toLocaleString()+(cost?" · "+cost:"");
-  return total.toLocaleString()+" tokens"+(cost?" · "+cost:"");
+  return (contextTokens>0?contextTokens:total).toLocaleString()+" tokens"+(cost?" · "+cost:"");
 }
 // The share of the model's context window the last request used, or null when the harness has not reported both numbers.
 function contextUsagePercent(tokenUsage){
