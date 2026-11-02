@@ -15,6 +15,8 @@ Use the repository's **GitHub Security Advisory** flow to report the issue priva
 - the potential impact;
 - logs or screenshots with secrets removed.
 
+If the advisory form is not available to you, e-mail the report to founder@trebell.dev instead, with the subject prefix `[SECURITY]`, as https://trebell.dev/security/ says.
+
 ## Scope
 
 Security-sensitive surfaces include:

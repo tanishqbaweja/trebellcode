@@ -187,6 +187,18 @@ tests/         deterministic and integration coverage
 ui/            React/Vite desktop UI and Playwright tests
 ```
 
+## Contributing
+
+Contributions are welcome: bug reports, fixes, tests and documentation. [CONTRIBUTING.md](CONTRIBUTING.md) says how to set up on Windows, run the app and its tests from source, and what a pull request needs. In short:
+
+1. Find or open an issue, and for anything bigger than a small fix agree on the approach there first. Issues labelled [good first issue](https://github.com/tanishqbaweja/trebellcode/labels/good%20first%20issue) are a good place to start.
+2. Fork the repository, install with `npm ci`, and make the change with a test that fails before it and passes after it, plus screenshots for an interface change.
+3. Run `npm test`, and `npm run test:budgets` for a change under `ui/src/`, then open a pull request and fill in its template.
+
+- [Code of Conduct](CODE_OF_CONDUCT.md): how everyone who takes part is expected to behave.
+- [Governance](GOVERNANCE.md): who decides, and how proposals, pull requests, releases and benchmark claims are handled.
+- [Roadmap](ROADMAP.md): where the project stands and what is planned.
+
 ## Security and secrets
 
 Provider credentials belong in Trebell's Settings/secret paths. Repository `.env` files are ignored and are used only for explicit developer/live-provider testing. Tool execution is capability- and policy-aware, and secret-bearing outputs are redacted from persisted telemetry where applicable.
@@ -196,3 +208,15 @@ Please report security issues privately as described in [SECURITY.md](SECURITY.m
 ## Third-party notices
 
 Third-party attribution is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## License
+
+Trebell Code's own code is licensed under the [Apache License 2.0](LICENSE). Third-party material keeps its own license, as [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [third-party-licenses/](third-party-licenses/) record.
+
+## Links
+
+- Website: https://code.trebell.dev/
+- Releases: https://github.com/tanishqbaweja/trebellcode-releases/releases
+- Issues: https://github.com/tanishqbaweja/trebellcode/issues
+- Security policy: [SECURITY.md](SECURITY.md)
+- Contact: founder@trebell.dev
