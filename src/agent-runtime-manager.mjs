@@ -1649,7 +1649,13 @@ export class AgentRuntimeManager{
     }
     // Muse Code's are the windows of the last report its sessions keep for the profile's Muse home (the one its status check's host
     // named), as no read asks Muse: MSP's usage/read answers only the host's last report too. A Muse Code runs only on this machine.
-    if(instance.kind==="muse")return this.processSpawner(instance,environmentId)?{checkedAt:new Date(this.now()).toISOString(),windows:[],unavailable:{reason:"unsupported",message:MUSE_LOCAL_ONLY}}:museUsageLimits(this.museUsageReport({museHome:this.#museCatalogs.get(instance.id)?.value?.museHome??null}),{now:this.now()});
+    // On an API key it has none (the key is billed by its provider), and its card says the account has no limits to show, as Claude
+    // Code's does on an API key.
+    if(instance.kind==="muse"){
+      const checkedAt=new Date(this.now()).toISOString();
+      if(this.processSpawner(instance,environmentId))return {checkedAt,windows:[],unavailable:{reason:"unsupported",message:MUSE_LOCAL_ONLY}};
+      return harnessAuthMethod(instance)===HARNESS_API_KEY?{checkedAt,windows:[],unavailable:{reason:"unsupported"}}:museUsageLimits(this.museUsageReport({museHome:this.#museCatalogs.get(instance.id)?.value?.museHome??null}),{now:this.now()});
+    }
     // Cursor's, Grok Build's and OpenCode Go's usage would take the sign-in each keeps for itself (its stored login or a token in
     // the environment), which Trebell never reads: their meters say so, until a harness reports its usage over its own protocol.
     return readAgentRuntimeUsage(instance.kind,{name:RUNTIMES[instance.kind]?.name||instance.kind});
