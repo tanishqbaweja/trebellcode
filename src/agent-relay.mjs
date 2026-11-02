@@ -50,7 +50,9 @@ import { providerFeatureEnabled } from "./provider-capabilities.mjs";
 import { normalizeProviderId } from "./provider-manager.mjs";
 import { isRetiredModelProvider, isRetiredProviderModel, migrateLegacyNativeThread } from "./legacy-provider-migration.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
-import { cutOffCall, cutOffTurn, threadTitleFromText, turnWithCutOffCallsStopped } from "./agent-thread-store.mjs";
+// APPROVAL_CUT_OFF: what a call waiting on its approval is answered when the relay closes (Trebell stops or restarts): it never ran,
+// and its row says so.
+import { APPROVAL_CUT_OFF, cutOffCall, cutOffTurn, threadTitleFromText, turnWithCutOffCallsStopped } from "./agent-thread-store.mjs";
 import { compareSectionOrder, sectionMovePlacement, sectionRanks, threadSectionId, withSectionPlace } from "./thread-section-order.mjs";
 import { trebellHome } from "./paths.mjs";
 import { userResponseTimeout } from "./user-response-timeout.mjs";
@@ -75,8 +77,6 @@ const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity","opencode","m
 const SETTLED_TOOL_KINDS=new Set(["read","edit","delete","move","search","fetch","switch_mode"]);
 // The statuses a stored tool call ends with: a later update of one goes nowhere (toolUpdateTurn).
 const SETTLED_ITEM_STATUSES=new Set(["completed","failed","declined","stopped","cancelled","canceled","rejected","skipped","notRun"]);
-// What a call waiting on its approval is answered when the relay closes (Trebell stops or restarts): it never ran, and its row says so.
-const APPROVAL_CUT_OFF="Trebell closed before this was approved, so it did not run.";
 function expandableNativeToolNamespaces(values=[]){
   const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   const active=requested.filter(name=>!RETIRED_NATIVE_TOOL_NAMESPACES.has(name));
@@ -825,17 +825,29 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     calls.set(toolCallId,{turnId,at:Date.now(),item:null,timer:null});
   }
   // The turn a tool update goes to: the one that holds its call. An update that comes after the call's turn ended (a run its harness let
-  // go on, a stop or a restart that cut it off) goes to that earlier turn, so a thread stores each call once, and one for a call that
-  // turn already settled is left out: the first result is the one kept (null). A call no turn holds yet starts in the turn running.
+  // go on, a stop or a restart that cut it off) goes to that earlier turn, so a thread stores each call once, and one for a call its
+  // harness already settled is left out: the first result is the one kept (null). A call only its turn's end settled (stopped: no
+  // harness reports that, finishTurn gives it to a call cut off pending, which may have run) takes its harness's own result there. A
+  // call no turn holds yet starts in the turn running.
   function toolUpdateTurn(threadId,toolCallId,turnId){
     if(toolWrites.get(threadId)?.has(toolCallId))return toolWrites.get(threadId).get(toolCallId).turnId;
     const turns=peekThread(threadId)?.turns||[];
     for(let index=turns.length-1;index>=0;index--){
       const item=(turns[index].items||[]).find(entry=>entry?.id===toolCallId);if(!item)continue;
-      if(turns[index].id===turnId||item.runsPastTurn===true)return turns[index].id;
+      if(turns[index].id===turnId||item.runsPastTurn===true||item.status==="stopped")return turns[index].id;
       return SETTLED_ITEM_STATUSES.has(item.status)?null:turns[index].id;
     }
     return turnId;
+  }
+  // Keeps on a stored call whether its approval card waits (awaitingApproval), in the turn that holds it.
+  function markAwaitingApproval(threadId,toolCallId,waiting){
+    if(!toolCallId)return;
+    const turns=peekThread(threadId)?.turns||[];
+    for(let index=turns.length-1;index>=0;index--){
+      const item=(turns[index].items||[]).find(entry=>entry?.id===toolCallId);if(!item)continue;
+      if(Boolean(item.awaitingApproval)!==waiting)threadStore.addItem(threadId,turns[index].id,{id:toolCallId,awaitingApproval:waiting});
+      return;
+    }
   }
   function deferToolItem(threadId,toolCallId,turnId,item){
     const entry=toolWrites.get(threadId)?.get(toolCallId),now=Date.now();
@@ -1247,7 +1259,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           // harnesses; its path is placed as the workspace tools place it, so one that leads out of the project still asks.
           const inside=path=>safeWorkspacePath(runtimeCwd,path,{environments,environmentId,mustExist:false}).then(()=>true);
           if(await nativeProjectReadNeedsNoApproval(call,authorization,{inside}))return "accept";
-          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:nativeApprovalReason(call,authorization),toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}});
+          // The call's row says its card waits until the card is answered, so a restart after Trebell was killed with it waiting,
+          // when no close answered it, still shows it did not run (the thread store's reconcileRestart).
+          const waiting=call.id?String(call.id):"";markAwaitingApproval(thread.id,waiting,true);
+          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:nativeApprovalReason(call,authorization),toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}}).finally(()=>markAwaitingApproval(thread.id,waiting,false));
           const decision=result?.decision||"decline";
           if(decision==="acceptForSession"){nativeSessionGrants.add(grant);return "accept"}
           return decision;

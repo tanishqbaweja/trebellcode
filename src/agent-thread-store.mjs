@@ -32,6 +32,10 @@ function recoveryToolSummary(item={}){
 // its completed turn never started (which the window reads not run, activity-item.js settledRow). Work that runs on past its turn
 // (runsPastTurn) is left to its own updates.
 export const cutOffCall=item=>item?.status==="pending"&&item.runsPastTurn!==true;
+// What a call whose approval card waited when Trebell stopped reads: it never ran (the relay's close answers the card with it, and a
+// restart after Trebell was killed gives it to a call whose row still says its card waits, awaitingApproval).
+export const APPROVAL_CUT_OFF="Trebell closed before this was approved, so it did not run.";
+const notRunCall=item=>({...item,status:"notRun",success:false,awaitingApproval:false,rawOutput:APPROVAL_CUT_OFF,contentItems:[{type:"inputText",text:APPROVAL_CUT_OFF}]});
 const CUT_OFF_TURN_STATUSES=new Set(["cancelled","failed","interrupted"]);
 export const cutOffTurn=turn=>CUT_OFF_TURN_STATUSES.has(turn?.status);
 // A turn as a read of its thread gives it: one that was stopped, failed or ended by a restart has the calls it still had pending
@@ -209,7 +213,8 @@ export class AgentThreadStore{
       }
       // A turn that does not go on ends with the calls it still had pending stopped, as the relay ends a stopped or failed turn's
       // (cutOffCall); they still block its continuation, as they were pending when Trebell stopped. A queued continuation has none.
-      if(activeTurn&&!thread.recovery?.pending)activeTurn.items=turnWithCutOffCallsStopped(activeTurn).items;
+      // A call whose approval card still waited did not run, and reads so.
+      if(activeTurn&&!thread.recovery?.pending)activeTurn.items=turnWithCutOffCallsStopped(activeTurn).items.map(item=>item?.awaitingApproval===true&&!TERMINAL_TOOL_STATUSES.has(item.status)?notRunCall(item):item);
       thread.updatedAt=now;
     }
     for(const thread of changed){this.#persistThread(thread,{replaceTurns:true});this.#cacheMetadata(thread)}return clone(recoverable);

@@ -36,3 +36,34 @@ test("a late update of an earlier turn's call settles it in that turn, and one o
   assert.equal(first.items.find(item=>item.id==="run-2").status,"completed","a call already settled keeps its first result");
   assert.equal(first.items.find(item=>item.id==="run-2").aggregatedOutput,"lint clean");
 });
+
+// A call its harness calls pending may run (Antigravity's commands and Cursor's edits go from pending to completed with nothing between),
+// so the stop that ended its turn marks it stopped, not settled: the harness's own later result settles it, in its own turn, also
+// after the person's next message, and the window is told there.
+test("a pending call cut off by its turn's stop takes its harness's later result in that turn",{timeout:60000},async t=>{
+  const fx=await scriptedAcp(t,{...CURSOR,prompts:[
+    {steps:[
+      step({sessionUpdate:"tool_call",toolCallId:"edit-1",title:"Edit a.txt",kind:"edit",status:"pending"}),
+      step({sessionUpdate:"agent_message_chunk",content:{type:"text",text:"Editing."}}),
+    ],stopReason:"cancelled"},
+    {steps:[
+      step({sessionUpdate:"tool_call_update",toolCallId:"edit-1",status:"completed",rawOutput:"a.txt saved"}),
+      step({sessionUpdate:"agent_message_chunk",content:{type:"text",text:"The edit went through."}}),
+    ]},
+  ]});
+  const {rpc,next,threadStore}=await acpRelay(t,"cursor",fx);
+  const thread=(await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"})).thread;
+  let completed=next(message=>message.method==="turn/completed");
+  await rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"edit a.txt"}]});
+  assert.equal((await completed).params.turn.status,"cancelled");
+  const firstTurnId=threadStore.get(thread.id).turns[0].id;
+  assert.equal(threadStore.get(thread.id).turns[0].items.find(item=>item.id==="edit-1").status,"stopped","the stop cut the pending call off");
+  completed=next(message=>message.method==="turn/completed");
+  const told=next(message=>message.method==="item/completed"&&message.params?.item?.id==="edit-1"&&message.params.item.status==="completed");
+  await rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"did it save?"}]});
+  assert.equal((await told).params.turnId,firstTurnId,"the window is told in the call's own turn");
+  assert.equal((await completed).params.turn.status,"completed");
+  const [first,second]=threadStore.get(thread.id).turns;
+  assert.equal(first.items.find(item=>item.id==="edit-1").status,"completed","the harness's result settles the call it ran");
+  assert.deepEqual(second.items.filter(item=>item.id==="edit-1"),[],"the later turn stores no copy");
+});
