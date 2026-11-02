@@ -2250,7 +2250,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // thread and the window show this turn running after it (MuseAgentSession.takeOverWake). The message's Muse turn is made here, so
       // a report Muse starts while this turn gathers its context joins it rather than starting a turn of its own after it.
       if(session instanceof MuseAgentSession&&session.takeOverWake())await wakeSettlements.get(session)?.catch(()=>{});
-      const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress",model:params.model||session.model||thread.model||null,modelLabel:typeof params.modelLabel==="string"?params.modelLabel.slice(0,120):null,permissionProfile:(threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||null});session.__assistant="";
+      // The turn keeps the model and the mode the window sent it with (none for one Trebell starts itself, a queued follow-up), which
+      // the thread opened again names over its replies, as the window that sent it did.
+      const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress",model:typeof params.model==="string"?params.model:null,modelLabel:typeof params.modelLabel==="string"?params.modelLabel.slice(0,120):null,permissionProfile:permissionPatch.permissionProfile||null});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
       if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
