@@ -385,7 +385,9 @@ test("a thread that fails to open says so beside the draft, with where a send no
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
     // Editing the draft keeps the note, which is about where the draft goes; a thread that opens ends it.
     await composer.press("End");await composer.pressSequentially(" Today.");await expect(note).toBeVisible();
-    await openRow(page,BETA);await expect(note).toHaveCount(0);await expect(composer).toHaveValue("Ship the release notes. Today.");
+    // The thread opened shows its own draft (none yet), and the new task keeps the one typed on it (tour L10-17): it came into the
+    // thread, where a send would have sent it there. The person types the message there.
+    await openRow(page,BETA);await expect(note).toHaveCount(0);await expect(composer).toHaveValue("");await composer.fill("Ship the release notes. Today.");
     // From a thread, the note names the thread shown, which is where the draft goes; sending it there ends the note.
     release=harness.hold(GAMMA.thread.id);
     await row(page,GAMMA).locator(".thread-main").click();await expect(opening(page)).toBeVisible();
@@ -472,11 +474,14 @@ test("a new task asked for with Ctrl+N, the sidebar's New thread or New task, or
   const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
   const composer=page.getByTestId("composer"),palette=page.getByTestId("command-palette");
   const newThread=page.getByRole("button",{name:"New thread",exact:true}),newTask=page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true});
-  // The new task shows with the keyboard in its composer, and the text typed next is its draft.
+  // The new task shows with the keyboard in its composer, and the text typed next is its draft. It keeps its own draft from a thread
+  // and back (tour L10-17): the one typed on it last comes back with it, and the text typed now replaces it.
+  let kept="";
   const typeInNewTask=async text=>{
     await expect(headerTitle(page)).toHaveText("New Trebell task");await expect(page.locator(".thread-row.active")).toHaveCount(0);
-    await expect(composer).toBeFocused();
-    await page.keyboard.type(text,{delay:15});await expect(composer).toHaveValue(text);
+    await expect(composer).toBeFocused();await expect(composer).toHaveValue(kept);
+    if(kept)await page.keyboard.press("Control+A");
+    await page.keyboard.type(text,{delay:15});await expect(composer).toHaveValue(text);kept=text;
   };
   try{
     await start(page,harness);
