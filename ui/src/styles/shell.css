@@ -887,7 +887,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    it holds the hero, and as its room shrinks the mark, the subtitle, the starters and at last the title give way, so a tall drawer
    never cuts the hero (the mark showed cut in half behind the composer with the drawer at its tallest, tour L10-23). */
 .main-frame.terminal-open .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){container-type:size}
-@container (max-height:250px){.main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.welcome-mark{display:none}}
+/* That room ends where the composer stands as it is drawn (--composer-height): in a narrow window its controls take a second row,
+   and the 116px the welcome keeps for it otherwise put the composer over the hero's title with the drawer at its tallest. */
+.main-frame.terminal-open .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(var(--composer-height,115px) + 1px)}
+.main-frame.terminal-open .chat-workspace.with-shelf-chips .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(var(--composer-height,115px) + max(32px,var(--composer-shelf,0px)))}
+@container (max-height:300px){.main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.welcome-mark{display:none}}
 @container (max-height:190px){
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{padding-block:4px}
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>p{display:none}
