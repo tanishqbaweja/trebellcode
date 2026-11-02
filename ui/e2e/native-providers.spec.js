@@ -691,7 +691,6 @@ for(const mode of MODES)test(`a key from an environment variable names its varia
   try{
     await page.setViewportSize({width:1280,height:800});
     await openGeneralChat(page,relay);
-    await expect(page.locator(".sidebar-provider div span")).toHaveText("Meta Model API");
     await page.getByRole("button",{name:"Settings",exact:true}).click();
     await page.getByRole("button",{name:/Agents & models/}).click();
     const card=page.getByTestId("provider-settings-card"),keyField=page.getByTestId("provider-api-key"),providerStatus=page.getByTestId("provider-status");
@@ -702,6 +701,7 @@ for(const mode of MODES)test(`a key from an environment variable names its varia
     await expect(card).toContainText("Choose whose models Trebell Native uses. Your chats, tools and files stay the same.");
     await expect(card).not.toContainText(/inference|agent loop|owns/);
     await expect(page.locator(".agent-runtime-settings")).not.toContainText(/owns its model\/tool loop|coding-agent runtime/);
+    await expect(page.locator(".sidebar-provider div span"),"the sidebar names the provider, without inference").toHaveText("Meta Model API");
     await card.scrollIntoViewIfNeeded();await settle(page);
     const overflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);expect(overflow).toBeLessThanOrEqual(1);
     await page.screenshot({animations:"disabled",path:auditDir+`l10-provider-env-key-${mode}-1280x800.png`});
