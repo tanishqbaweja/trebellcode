@@ -24,11 +24,10 @@ function pngProblem(bytes){
   while(offset<bytes.length){
     if(offset+8>bytes.length){if(!data.length)return "the file is cut off between chunks";cut=true;break}
     const length=bytes.readUInt32BE(offset),type=bytes.toString("latin1",offset+4,offset+8);
-    // A chunk's type is four ASCII letters. Before any pixel data, bytes that do not read as a chunk are no PNG at all (a PNG signature
-    // in front of text, say), so the reason names no chunk; after it they are judged by the pixel data, as a cut file is.
-    if(!data.length&&!/^[A-Za-z]{4}$/.test(type))return "it is not a valid PNG image";
     if(length>0x7fffffff||offset+12+length>bytes.length){
-      if(type!=="IDAT"&&!data.length)return `the file is cut off inside its ${type} chunk`;
+      // A chunk's type is four ASCII letters: bytes that run past the file's end and name no chunk are no PNG at all (a PNG signature in
+      // front of text, say), so the reason names no chunk read from them.
+      if(type!=="IDAT"&&!data.length)return /^[A-Za-z]{4}$/.test(type)?`the file is cut off inside its ${type} chunk`:"it is not a valid PNG image";
       if(type==="IDAT"&&header)data.push(bytes.subarray(offset+8,Math.min(bytes.length,offset+8+length)));
       cut=true;break;
     }

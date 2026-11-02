@@ -77,6 +77,9 @@ test("Native image check says an image whose bytes after its signature are no ch
   const riffText=Buffer.concat([Buffer.from("RIFF","latin1"),Buffer.alloc(4),Buffer.from("WEBPthis is not really an image","latin1")]);riffText.writeUInt32LE(riffText.length-8,4);
   assert.equal(imageDecodeProblem(riffText,"image/webp"),"its first chunk is not a VP8, VP8L or VP8X image chunk");
   // Every other reason reads as before: a real chunk cut off still names it, and bytes after the pixel data are judged by the pixels.
+  // A whole chunk with an odd name before the pixel data is passed over as before, so what is refused is unchanged.
+  const plain=png({width:5,height:3}),oddChunk=Buffer.concat([plain.subarray(0,33),chunk("1x2y",Buffer.alloc(3)),plain.subarray(33)]);
+  assert.equal(imageDecodeProblem(oddChunk,"image/png"),null);
   assert.equal(imageDecodeProblem(PIXEL_PNG.subarray(0,20),"image/png"),"the file is cut off inside its IHDR chunk");
   assert.equal(imageDecodeProblem(Buffer.concat([png({width:5,height:3,end:false}),Buffer.from("trailing text, not a chunk")]),"image/png"),null);
   assert.equal(imageDecodeProblem(TINY_WEBP.subarray(0,40),"image/webp"),`the file is shorter than its RIFF size (40 of ${TINY_WEBP.readUInt32LE(4)+8} bytes), so it looks cut off`);
