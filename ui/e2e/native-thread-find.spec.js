@@ -179,7 +179,8 @@ test("turns loaded above a find hit in an item-paged thread carry the done pills
       const view=node.getBoundingClientRect();
       return [...node.querySelectorAll(".history-assistant[data-message-id]")].filter(row=>{const box=row.getBoundingClientRect();return box.height&&box.bottom>view.top&&box.top<view.bottom}).map(row=>row.querySelector("[data-testid=turn-outcome]")?.textContent||"none");
     });
-    const expectDonePills=async()=>{const pills=await pillsInView();expect(pills.length).toBeGreaterThan(0);expect(pills).toEqual(pills.map(()=>"done · 1.0s"))};
+    // These turns were stored in whole seconds (no start to the millisecond), so their time reads without a tenth.
+    const expectDonePills=async()=>{const pills=await pillsInView();expect(pills.length).toBeGreaterThan(0);expect(pills).toEqual(pills.map(()=>"done · 1s"))};
     await expectDonePills();
     await page.keyboard.press("Control+f");const find=page.getByTestId("thread-find-bar");await page.getByTestId("thread-find-input").fill(needle);
     await expect(find.locator(".thread-find-count")).toHaveText("1 / 1",{timeout:10_000});await expect(page.locator('[data-message-id="find-user-5"]')).toHaveClass(/find-active/);
@@ -190,7 +191,7 @@ test("turns loaded above a find hit in an item-paged thread carry the done pills
     await expect(page.locator('[data-message-id="find-user-0"]')).toBeAttached({timeout:10_000});await frames(page,8);
     await expect(page.locator('[data-message-id="find-answer-4"]')).toBeVisible();
     await expectDonePills();
-    for(const index of [0,1,2,3,4])await expect(page.locator(`[data-message-id="find-answer-${index}"] [data-testid=turn-outcome]`)).toHaveText("done · 1.0s");
+    for(const index of [0,1,2,3,4])await expect(page.locator(`[data-message-id="find-answer-${index}"] [data-testid=turn-outcome]`)).toHaveText("done · 1s");
     await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-loaded-above-hit-1280x800.png"});
   }finally{await fixture.close()}
 });

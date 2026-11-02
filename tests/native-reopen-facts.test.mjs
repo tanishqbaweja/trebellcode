@@ -61,3 +61,24 @@ test("a Native turn reopened from the thread names its model and mode, and the t
     assert.equal(mergeTurnOutcomes(sent,thread.id,resumed.turns)[turnInfoKey(thread.id,turn.id)].model,"Muse Spark 1.3 Contributor");
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));state.close?.();threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
+
+// A turn stored before turns kept their start to the millisecond (an upgrading person's threads) has its time in whole seconds only,
+// so its pill says whole seconds ("4s"), not a tenth it does not know ("4.0s" for a turn that took 3.3 s). A time measured to the
+// millisecond reads as before, and one the window measured live is kept over a page's whole seconds.
+test("a turn stored in whole seconds reads whole seconds, and a measured time keeps its tenth",()=>{
+  const turns=[
+    {id:"old",status:"completed",startedAt:1_700_000_000,completedAt:1_700_000_004,durationMs:4000,items:[]},
+    {id:"oldLong",status:"failed",startedAt:1_700_000_010,completedAt:1_700_000_022,durationMs:12000,error:{message:"It failed."},items:[]},
+    {id:"measured",status:"completed",startedAt:1_700_000_030,startedAtMs:1_700_000_030_200,completedAt:1_700_000_034,durationMs:3304,items:[]},
+    {id:"codex",status:"completed",startedAt:1_700_000_040,completedAt:1_700_000_043,durationMs:3304,items:[]},
+    {id:"live",status:"completed",startedAt:1_700_000_050,completedAt:1_700_000_052,durationMs:2000,items:[]},
+  ];
+  const live={[turnInfoKey("thread-1","live")]:{status:"completed",durationMs:1304}};
+  const outcomes=mergeTurnOutcomes(live,"thread-1",turns),pill=id=>turnOutcomePill(outcomes[turnInfoKey("thread-1",id)])?.label;
+  assert.equal(pill("old"),"done · 4s");
+  assert.equal(pill("oldLong"),"failed · 12s");
+  assert.equal(pill("measured"),"done · 3.3s");
+  assert.equal(pill("codex"),"done · 3.3s","a harness's own time to the millisecond keeps its tenth");
+  assert.equal(pill("live"),"done · 1.3s","the time this window measured is kept");
+  assert.equal(mergeTurnOutcomes(outcomes,"thread-1",turns),outcomes,"a page read again changes nothing");
+});

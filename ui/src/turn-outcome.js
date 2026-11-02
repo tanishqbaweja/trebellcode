@@ -44,14 +44,16 @@ export function turnFailureText(turn){
 
 // How finished turns ended, by turn id, from a page of history turns, with the model and permission mode a turn was sent with when
 // the thread keeps them (the relay's turns do). Imported history reports durationMs 0, which is not a measurement, so it is dropped.
-// completedAt (seconds) tells a later completion of a turn from a replay of one.
+// completedAt (seconds) tells a later completion of a turn from a replay of one. A turn stored before turns kept their start to the
+// millisecond (no startedAtMs) has its time in whole seconds only (wholeSeconds), which its pill shows without a tenth.
 export function turnOutcomesFromTurns(turns=[]){
   const out={};
   for(const turn of turns||[]){
     const id=turn?.id;if(!id)continue;
     const status=turnOutcomeStatus(turn.status);if(!status)continue;
     const error=turnFailureText(turn),completedAt=positiveDuration(turn.completedAt),model=String(turn.modelLabel||"")||String(turn.model||"").split("/").filter(Boolean).pop(),mode=permissionModeLabel(turn.permissionProfile);
-    out[String(id)]={status,durationMs:positiveDuration(turn.durationMs),...(completedAt?{completedAt}:{}),...(error?{error}:{}),...(model?{model}:{}),...(mode?{mode}:{})};
+    const durationMs=positiveDuration(turn.durationMs),whole=durationMs!=null&&turn.startedAtMs==null&&durationMs%1000===0;
+    out[String(id)]={status,durationMs,...(whole?{wholeSeconds:true}:{}),...(completedAt?{completedAt}:{}),...(error?{error}:{}),...(model?{model}:{}),...(mode?{mode}:{})};
   }
   return out;
 }
@@ -70,8 +72,9 @@ export function mergeTurnOutcomes(current={},threadId,turns=[]){
     const merged=later?{...kept,...outcome}:{...kept,status:known.status||outcome.status,durationMs:known.durationMs??outcome.durationMs};
     const completedAt=later?outcome.completedAt:known.completedAt??outcome.completedAt;if(completedAt)merged.completedAt=completedAt;
     for(const fact of ["model","mode"]){const value=known[fact]||outcome[fact];if(value)merged[fact]=value}
+    if(later||known.durationMs==null?outcome.wholeSeconds:known.wholeSeconds)merged.wholeSeconds=true;else delete merged.wholeSeconds;
     const error=later?outcome.error:knownError||outcome.error;if(error)merged.error=error;else delete merged.error;
-    if(known.status===merged.status&&known.durationMs===merged.durationMs&&known.mode===merged.mode&&known.model===merged.model&&known.error===merged.error&&known.completedAt===merged.completedAt)continue;
+    if(known.status===merged.status&&known.durationMs===merged.durationMs&&known.mode===merged.mode&&known.model===merged.model&&known.error===merged.error&&known.completedAt===merged.completedAt&&known.wholeSeconds===merged.wholeSeconds)continue;
     if(next===current)next={...current};
     next[key]=merged;
   }
@@ -121,9 +124,9 @@ export function prependTurnOrder(order=[],older=[]){
   return run.some(id=>seen.has(id))?order:[...run,...known];
 }
 
-export function formatTurnDuration(ms){
+export function formatTurnDuration(ms,wholeSeconds=false){
   const value=positiveDuration(ms);if(value==null)return "";
-  if(value<10_000)return (Math.max(100,value)/1000).toFixed(1)+"s";
+  if(value<10_000&&!wholeSeconds)return (Math.max(100,value)/1000).toFixed(1)+"s";
   const seconds=Math.round(value/1000);
   if(seconds<60)return seconds+"s";
   const minutes=Math.floor(seconds/60),restSeconds=seconds%60;
@@ -136,7 +139,7 @@ export function formatTurnDuration(ms){
 // a turn under a second, like an imported one, reads "done").
 export function turnOutcomePill(info){
   const status=turnOutcomeStatus(info?.status);if(!status)return null;
-  const time=formatTurnDuration(info?.durationMs);
+  const time=formatTurnDuration(info?.durationMs,info?.wholeSeconds);
   if(status==="completed")return {label:time?"done · "+time:"done",tone:"ok"};
   const word=status==="interrupted"?"stopped":"failed";
   return {label:time?word+" · "+time:word,tone:status==="interrupted"?"warn":"err"};
