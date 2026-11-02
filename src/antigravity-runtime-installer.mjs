@@ -35,15 +35,15 @@ export function antigravityRegistryTarget(platform=process.platform,arch=process
 // without one is refused, as is one with no version for the started runtime to be checked against.
 function validateDistribution(entry,target){
   const distribution=entry?.distribution?.binary?.[target];
-  if(!distribution?.archive||!distribution?.cmd)throw new Error(`The ACP registry does not publish Google Antigravity for ${target}`);
+  if(!distribution?.archive||!distribution?.cmd)throw new Error(`Google Antigravity is not published for this computer (${target}).`);
   const archive=new URL(distribution.archive);
-  if(archive.protocol!=="https:"||archive.hostname!=="dl.google.com")throw new Error("Refusing an unexpected Antigravity download host from the ACP registry");
+  if(archive.protocol!=="https:"||archive.hostname!=="dl.google.com")throw new Error("The Antigravity download is not on Google's download site, so Trebell Code did not download it.");
   const binaryName=basename(String(distribution.cmd).replace(/^\.\//,""));
-  if(!/^agy_acp_server\.(?:exe|par)$/i.test(binaryName))throw new Error("The ACP registry returned an unexpected Antigravity executable name");
+  if(!/^agy_acp_server\.(?:exe|par)$/i.test(binaryName))throw new Error("The Antigravity release names a program Trebell Code does not expect, so nothing was installed.");
   const version=typeof entry.version==="string"?entry.version.trim():"";
-  if(!version)throw new Error("The ACP registry lists no version for Google Antigravity, so Trebell Code cannot check the runtime it would download. Nothing was installed.");
+  if(!version)throw new Error("The Antigravity release lists no version, so Trebell Code cannot check what it would install. Nothing was installed.");
   const sha256=typeof distribution.sha256==="string"?distribution.sha256.trim().toLowerCase():"";
-  if(!/^[0-9a-f]{64}$/.test(sha256))throw new Error(`The ACP registry lists no SHA-256 for Google Antigravity ${version} on ${target}, so Trebell Code cannot check its download. Nothing was installed.`);
+  if(!/^[0-9a-f]{64}$/.test(sha256))throw new Error(`The Google Antigravity ${version} release for this computer lists no checksum, so Trebell Code cannot check its download. Nothing was installed.`);
   // Antigravity's server starts its helper from its own folder: localharness_external, an .exe beside an .exe.
   const helperName=/\.exe$/i.test(binaryName)?"localharness_external.exe":"localharness_external";
   return {archive:archive.href,binaryName,helperName,version,sha256,args:Array.isArray(distribution.args)?distribution.args.map(String):[]};
@@ -127,9 +127,9 @@ async function checkRuntimeStarts({binary,args,launchEnv,version,spawnProcess}){
   catch(error){throw startFailure(error,version)}
   finally{await client.stop().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:200}).catch(()=>{})}
   if(agent?.name!=="antigravity-acp"||String(agent?.version??"").trim()!==version){
-    const expected=`Google Antigravity ${version} (antigravity-acp ${version})`,said=saidName(agent);
-    throw new Error(said?`The downloaded runtime started as ${said}, not as ${expected}, which the ACP registry lists. Nothing was installed.`
-      :`The downloaded runtime did not say which agent it is when it started, so it is not the ${expected} the ACP registry lists. Nothing was installed.`);
+    const expected=`Google Antigravity ${version}`,said=saidName(agent);
+    throw new Error(said?`The downloaded Antigravity started as ${said}, not as ${expected}. Nothing was installed.`
+      :`The downloaded Antigravity did not say what it is when it started, so it may not be ${expected}. Nothing was installed.`);
   }
 }
 
@@ -155,13 +155,13 @@ async function renameSettled(from,to,platform){
 // The unpacked folder is then renamed into place, not copied. On Windows a folder a running Antigravity chat holds cannot be renamed:
 // that is said, and nothing changes.
 export async function installAntigravityRuntime({env=process.env,fetchImpl=globalThis.fetch,platform=process.platform,arch=process.arch,extractImpl=null,launchEnv=env,spawnProcess=null,freeBytes=freeBytesAt}={}){
-  const target=antigravityRegistryTarget(platform,arch);if(!target)throw new Error(`Antigravity ACP is not supported on ${platform}/${arch}`);
+  const target=antigravityRegistryTarget(platform,arch);if(!target)throw new Error(`Antigravity does not run on this computer (${platform}/${arch}).`);
   const extract=extractImpl||(await loadExtractZip()).default;
   const registryResponse=await fetchImpl(ACP_REGISTRY_URL,{headers:{accept:"application/json"}});
-  if(!registryResponse?.ok)throw new Error(`Could not read the ACP registry (${registryResponse?.status||"network error"})`);
+  if(!registryResponse?.ok)throw new Error(`Could not read the list of Antigravity releases (${registryResponse?.status||"network error"}).`);
   const registry=await registryResponse.json();
   const entry=(registry?.agents||[]).find(item=>item?.id==="antigravity-acp");
-  if(!entry)throw new Error("Google Antigravity is missing from the ACP registry");
+  if(!entry)throw new Error("The list of releases does not have Google Antigravity.");
   const distribution=validateDistribution(entry,target),version=distribution.version;
   const root=join(trebellHome(env),"agent-runtimes","antigravity"),installId=randomUUID(),temp=join(root,`.install-${installId}`),archivePath=join(temp,"runtime.zip"),extracted=join(temp,"extracted"),ready=join(temp,"ready"),current=join(root,"current"),previous=join(root,`.previous-${installId}`);
   // A drive whose free space cannot be read is not checked; a full one still fails as ENOSPC, said below.
@@ -169,7 +169,7 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
   await mkdir(extracted,{recursive:true});
   try{
     const response=await fetchImpl(distribution.archive,{redirect:"follow"});
-    if(!response?.ok||!response.body)throw new Error(`Could not download Google Antigravity ACP (${response?.status||"network error"})`);
+    if(!response?.ok||!response.body)throw new Error(`Could not download Google Antigravity (${response?.status||"network error"}).`);
     // Room for the download and what it unpacks to, at least as much again, from the size it says it has (a gzip-encoded download
     // says its encoded size, about the same for a zip); each file's own size is checked again as it is unpacked.
     const downloadMb=wholeMb(Number(response.headers?.get?.("content-length"))||0),neededMb=2*downloadMb+ANTIGRAVITY_FREE_SPACE_MARGIN/MB,free=freeOn(temp);
@@ -179,7 +179,7 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
     }
     const hash=createHash("sha256");
     await pipeline(Readable.fromWeb(response.body),async function*(chunks){for await(const chunk of chunks){hash.update(chunk);yield chunk}},createWriteStream(archivePath,{mode:0o600}));
-    if(hash.digest("hex")!==distribution.sha256)throw new Error(`The Google Antigravity ${version} download does not match the SHA-256 the ACP registry lists for it. Nothing was installed.`);
+    if(hash.digest("hex")!==distribution.sha256)throw new Error(`The Google Antigravity ${version} download is not the file its release lists, so it may be damaged or changed. Nothing was installed.`);
     // Room for what it unpacks to, as its central directory lists it, before any file is written: the install needs the download,
     // its files and the margin at once. Named whole, with what is free as the drive shows it once the download has gone again, so
     // freeing what is named lets the next install through. An archive whose sizes cannot be read is left to the checks below.

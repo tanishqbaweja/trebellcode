@@ -98,7 +98,7 @@ test("Settings says why an Antigravity install was refused: a download that is n
     // A download that is not the archive the registry hashed: read in full, then refused.
     await confirmInstall();
     const refusal=antigravity.getByRole("alert");
-    await expect(refusal).toHaveText("Could not install Antigravity: The Google Antigravity 1.4.3 download does not match the SHA-256 the ACP registry lists for it. Nothing was installed.");
+    await expect(refusal).toHaveText("Could not install Antigravity: The Google Antigravity 1.4.3 download is not the file its release lists, so it may be damaged or changed. Nothing was installed.");
     expect(reads.download,"the download was read").toBe(1);nothingInstalled();
     await expect(install).toBeEnabled();
     for(const mode of ["dark","light"]){await switchMode(page,mode);await expect(refusal).toBeInViewport();await page.screenshot({animations:"disabled",path:shots+`sha256-refused-${mode}-1280.png`})}

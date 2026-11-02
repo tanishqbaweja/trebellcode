@@ -122,7 +122,7 @@ test("a download whose SHA-256 is not the one the registry lists is refused, and
   const fx=await home(t);
   const first=await install(fx);assert.equal(first.error,null,String(first.error?.message));
   const second=await install(fx,{version:"1.4.4-fixture",files:{...RUNTIME,"agy_acp_server.exe":"tampered server"},entry:{sha256:sha256("what the registry hashed")}});
-  assert.equal(second.error?.message,"The Google Antigravity 1.4.4-fixture download does not match the SHA-256 the ACP registry lists for it. Nothing was installed.");
+  assert.equal(second.error?.message,"The Google Antigravity 1.4.4-fixture download is not the file its release lists, so it may be damaged or changed. Nothing was installed.");
   assert.equal(second.launches.length,0,"nothing downloaded was started");
   assert.equal(await readFile(join(fx.current,"agy_acp_server.exe"),"utf8"),"stand-in server");
   assert.equal((await readAntigravityInstall({env:fx.env})).version,VERSION);
@@ -133,7 +133,7 @@ test("a registry entry without a SHA-256 is refused before anything is downloade
   const fx=await home(t);
   for(const sha of [undefined,"","not-a-sha256"]){
     const {error,requests}=await install(fx,{entry:{sha256:sha}});
-    assert.equal(error?.message,`The ACP registry lists no SHA-256 for Google Antigravity ${VERSION} on windows-x86_64, so Trebell Code cannot check its download. Nothing was installed.`);
+    assert.equal(error?.message,`The Google Antigravity ${VERSION} release for this computer lists no checksum, so Trebell Code cannot check its download. Nothing was installed.`);
     assert.deepEqual(requests,[ACP_REGISTRY_URL],"the archive is never requested");
   }
   assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
@@ -153,12 +153,12 @@ test("a downloaded runtime that says it is another agent, or another version, is
   const fx=await home(t);
   const first=await install(fx);assert.equal(first.error,null,String(first.error?.message));
   const other=await install(fx,{version:"1.4.4-fixture",agent:SCRIPTED,initialize:{protocolVersion:1,agentCapabilities:{},agentInfo:{name:"other-agent",version:"1.4.4-fixture"}}});
-  assert.equal(other.error?.message,"The downloaded runtime started as other-agent 1.4.4-fixture, not as Google Antigravity 1.4.4-fixture (antigravity-acp 1.4.4-fixture), which the ACP registry lists. Nothing was installed.");
+  assert.equal(other.error?.message,"The downloaded Antigravity started as other-agent 1.4.4-fixture, not as Google Antigravity 1.4.4-fixture. Nothing was installed.");
   assert.equal(other.launches.length,1);
   const older=await install(fx,{version:"1.4.4-fixture"});// the stand-in says 1.4.3-fixture
-  assert.equal(older.error?.message,"The downloaded runtime started as antigravity-acp 1.4.3-fixture, not as Google Antigravity 1.4.4-fixture (antigravity-acp 1.4.4-fixture), which the ACP registry lists. Nothing was installed.");
+  assert.equal(older.error?.message,"The downloaded Antigravity started as antigravity-acp 1.4.3-fixture, not as Google Antigravity 1.4.4-fixture. Nothing was installed.");
   const silent=await install(fx,{version:"1.4.4-fixture",agent:SCRIPTED,initialize:{protocolVersion:1,agentCapabilities:{}}});
-  assert.equal(silent.error?.message,"The downloaded runtime did not say which agent it is when it started, so it is not the Google Antigravity 1.4.4-fixture (antigravity-acp 1.4.4-fixture) the ACP registry lists. Nothing was installed.");
+  assert.equal(silent.error?.message,"The downloaded Antigravity did not say what it is when it started, so it may not be Google Antigravity 1.4.4-fixture. Nothing was installed.");
   assert.equal((await readAntigravityInstall({env:fx.env})).version,VERSION,"the runtime in place is unchanged");
   assert.deepEqual(await leftovers(fx),[]);
 });
