@@ -186,7 +186,7 @@ export function museApprovalToolCall(params={}){
 // that turn has ended with its work running (runsPast): a subagent asking while its turn runs stops with that turn. A command a host
 // that cannot use its sandbox asks to run (sandboxUnavailable, museHostCannotSandbox) says before the person answers that allowing it
 // will not run it, and what will. notice: what is asked, which a desktop notification says, when the card's line is not that.
-export const MUSE_SANDBOX_UNAVAILABLE_CARD="Muse Code reports that its sandbox isn't available, so this command will fail even if you allow it. To let it run commands, switch this task to Full access, which runs them without the sandbox and without asking.";
+export const MUSE_SANDBOX_UNAVAILABLE_CARD="Muse Code reports that its sandbox is not available, so this command will fail even if you allow it. To let it run commands, switch this task to Full access, which runs them without the sandbox and without asking.";
 export function museApprovalCard(params={},{agent="",runsPast=false,sandboxUnavailable=false}={}){
   const subject=params.subject&&typeof params.subject==="object"?params.subject:{},kind=text(subject.kind),asked=museApprovalToolCall(params).title;
   const outside=/^(?:[a-z]:)?[\\/]|^\.\.(?:[\\/]|$)/i.test(text(subject.path).trim());

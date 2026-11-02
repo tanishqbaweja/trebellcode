@@ -34,7 +34,7 @@ test("a command's card says before the person answers that allowing it will not 
   const card=(extra={},options={})=>museApprovalCard({...shellApproval("s-1","t-1"),...extra},{sandboxUnavailable:true,...options});
   assert.deepEqual(card(),{reason:MUSE_SANDBOX_UNAVAILABLE_CARD,command:"node parse-kv.js sample.env",notice:"node parse-kv.js sample.env"});
   assert.match(MUSE_SANDBOX_UNAVAILABLE_CARD,/fail even if you allow it.*switch this task to Full access/);
-  assert.doesNotMatch(MUSE_SANDBOX_UNAVAILABLE_CARD+MUSE_SANDBOX_REFUSED_COMMAND,/\u2014|windows_elevated|setup_required/,"plain words, no em dash and none of Muse's own");
+  assert.doesNotMatch(MUSE_SANDBOX_UNAVAILABLE_CARD+MUSE_SANDBOX_REFUSED_COMMAND,/\u2014|n't\b|windows_elevated|setup_required/,"plain words in full forms, as the app's others are, with no em dash and none of Muse's own");
   const stage=(index,argv)=>({requirementId:{approvalId:"ap-1",sourceIndex:index},position:index+1,totalStages:2,argv,argvComplete:true,resolution:{kind:"unresolved"}});
   const staged={subject:{kind:"shell",command:"npm ci && npm test",stages:[stage(0,["npm","ci"]),stage(1,["npm","test"])]},currentRequirementId:{approvalId:"ap-1",sourceIndex:1}};
   assert.deepEqual(card(staged),{reason:`Stage 2 of 2: npm test ${MUSE_SANDBOX_UNAVAILABLE_CARD}`,command:"npm ci && npm test",notice:"Stage 2 of 2: npm test"});
@@ -53,6 +53,8 @@ test("a command Muse never started because its host cannot use its sandbox says 
   assert.deepEqual([refused.kind,refused.title,refused.status,refused.rawOutput],["execute","node parse-kv.js sample.env","failed",MUSE_SANDBOX_REFUSED_COMMAND]);
   assert.equal(acpToolFrame(refused).rawOutput,MUSE_SANDBOX_REFUSED_COMMAND);
   assert.equal(call({status:"failed",failureReason:"environment failure: sandbox enforcement unavailable: windows_elevated setup_required: windows elevated sandbox setup has not run"}).rawOutput,MUSE_SANDBOX_REFUSED_COMMAND,"Muse's reason alone");
+  const live=call({status:"failed",failureReason:TOOL_REFUSAL.slice("tool failed: ".length),visibleOutput:TOOL_REFUSAL,exitCode:null});
+  assert.deepEqual([live.rawOutput,"exitCode" in live],[MUSE_SANDBOX_REFUSED_COMMAND,false],"the item the 2026-11-02 live run stored: Muse's reason, its output and no exit code");
   const shell=museItemRow({itemId:"shell-1",kind:"userShell",status:"failed",commandText:"echo trebell-probe",visibleOutput:SHELL_REFUSAL,turnId:null});
   assert.deepEqual([shell.kind,shell.title,shell.rawOutput],["execute","echo trebell-probe",MUSE_SANDBOX_REFUSED_COMMAND]);
   // A command that ran and failed, or whose output only mentions the sandbox, keeps what Muse said; so does one that finished.
@@ -60,6 +62,19 @@ test("a command Muse never started because its host cannot use its sandbox says 
   assert.deepEqual(call({status:"failed",failureReason:"The command failed.",visibleOutput:record}).rawOutput,{command:"grep sandbox log.txt",exit_code:1,output:"The command failed.\nsandbox enforcement unavailable: seen in the log\n"});
   assert.equal(call({status:"completed",visibleOutput:TOOL_REFUSAL}).rawOutput,TOOL_REFUSAL,"only a failed command was refused");
   assert.equal(call({status:"failed",visibleOutput:"exit code 1"}).rawOutput,"Muse Code reported failed.\nexit code 1");
+  // A command that ran keeps its record and its exit code though its command or its output names Muse's refusal in full, as a search
+  // for that error or a failing test's log does, and though its failure's reason begins with those words; so does a command with an
+  // exit code whose plain output begins with them, and a failed one whose output names them after other words.
+  const ran=(command,output,failureReason="The command failed.")=>call({status:"failed",failureReason,args:JSON.stringify({command}),visibleOutput:JSON.stringify({command,exit_code:1,output}),exitCode:1});
+  const search='grep -rn "environment failure: sandbox enforcement unavailable" logs',searched=ran(search,"");
+  assert.deepEqual([searched.title,searched.rawOutput,searched.exitCode],[search,{command:search,exit_code:1,output:"The command failed."},1]);
+  const log="FAIL parser.test.js\n  expected: tool failed: environment failure: managed shell sandbox is unavailable\n",tested=ran("npm test",log);
+  assert.deepEqual([tested.title,tested.rawOutput,tested.exitCode],["npm test",{command:"npm test",exit_code:1,output:`The command failed.\n${log}`},1]);
+  const printed="environment failure: sandbox enforcement unavailable: printed by the command";
+  assert.deepEqual(ran("cat expected.txt",printed,printed).rawOutput,{command:"cat expected.txt",exit_code:1,output:`${printed}\n${printed}`});
+  const exited=call({status:"failed",visibleOutput:TOOL_REFUSAL,exitCode:1});
+  assert.deepEqual([exited.rawOutput,exited.exitCode],[`Muse Code reported failed.\n${TOOL_REFUSAL}`,1]);
+  assert.equal(call({status:"failed",visibleOutput:`npm ERR! ${SHELL_REFUSAL}`}).rawOutput,`Muse Code reported failed.\nnpm ERR! ${SHELL_REFUSAL}`);
 });
 
 test("a Supervised session on a host that says it cannot use its sandbox asks for its command with that said on the card, sends the person's Allow once, and shows the command Muse never started as failed in Trebell's words; Full access on the same host and a host that can use its sandbox say nothing",async()=>{
