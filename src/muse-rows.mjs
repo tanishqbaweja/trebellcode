@@ -1,5 +1,6 @@
 // What Trebell shows of Muse Code's items: each item's row in the relay's ACP shape (the fields acpToolFrame reads), how far the item
 // got, a workflow's agents as rows under it, Muse's to-do list as the turn's plan, and which items show no row of their own.
+import { documentKind } from "./document-reading.mjs";
 
 const asText=value=>typeof value==="string"?value:value==null?"":String(value);
 // The non-empty parts, a line each.
@@ -175,8 +176,9 @@ const UPLOAD_NAME=/^(?:\d{10,}-[0-9a-f]{8}|[0-9a-f]{32})-(.+)$/;
 function shownFile(path){
   const parts=path.split(/[\\/]+/),name=parts.at(-1),attached=parts.length>2&&parts.at(-2).toLowerCase()==="attachments"?UPLOAD_NAME.exec(name):null;
   if(!attached)return path;
-  const text=/^(.+\.[A-Za-z0-9]{1,8})\.txt$/.exec(attached[1]);
-  return text?`the text of ${text[1]}`:attached[1];
+  // Only a document Trebell reads into text has its text file (document-text.mjs): a notes.v2.txt upload is a file of its own.
+  const text=/^(.+(\.[A-Za-z0-9]{1,8}))\.txt$/.exec(attached[1]);
+  return text&&documentKind(text[2])?`the text of ${text[1]}`:attached[1];
 }
 // A read of a named file: "Read <file>", and for a long file read in parts, the line its part starts from (Muse's offset, the
 // first line read). A call that names no file is a plain tool row.

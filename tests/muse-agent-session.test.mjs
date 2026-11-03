@@ -518,7 +518,10 @@ test("a read's row names the file it read and, for a long file read in parts, th
   const home="H:\\home\\trebell\\attachments\\";
   assert.equal(read({path:home+"1793618868946-f28073b7-long-log.docx.txt",offset:500,limit:2000}).title,"Read the text of long-log.docx from line 500");
   assert.equal(read({path:home+"1793618267521-6fbe65d0-notes.txt"}).title,"Read notes.txt");
-  assert.equal(read({path:"/home/me/.trebell/attachments/0123456789abcdef0123456789abcdef-report.pdf.txt"}).title,"Read the text of report.pdf");
+  assert.equal(read({path:"/home/me/.trebell/attachments/0123456789abcdef0123456789abcdef-budget.xlsx.txt"}).title,"Read the text of budget.xlsx");
+  // Only a document Trebell reads into text has a text file: an uploaded notes.v2.txt or report.pdf.txt is a file of its own.
+  assert.equal(read({path:home+"1793618267521-6fbe65d0-notes.v2.txt"}).title,"Read notes.v2.txt");
+  assert.equal(read({path:home+"1793618267521-6fbe65d0-report.pdf.txt"}).title,"Read report.pdf.txt");
   assert.equal(read({path:"C:\\work\\attachments\\plain-name.md"}).title,"Read C:\\work\\attachments\\plain-name.md","a file of the person's own keeps its path");
   // A read that failed says what went wrong after the file.
   assert.equal(museItemRow({itemId:"read-2",kind:"toolCall",tool:"read_file",status:"failed",revision:2,args:JSON.stringify({path:"gone.md"}),failureReason:"file not found"}).title,"Read gone.md: file not found");
