@@ -51,7 +51,7 @@ function offlineGlobalFetch(){
 
 // failing: while the file it names is there (from the start with serveFails), the stand-in's host exits as Muse does with a
 // malformed settings file.
-async function startMuseHarness({serveFails=false,skills=false}={}){
+async function startMuseHarness({serveFails=false,skills=false,sessionSkills=null}={}){
   const offline=offlineGlobalFetch();
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-e2e-")),repo=join(root,"muse-repo"),log=join(root,"muse.log");await mkdir(repo,{recursive:true});
   const failing=join(root,"serve-fails");if(serveFails)await writeFile(failing,"3");
@@ -59,7 +59,7 @@ async function startMuseHarness({serveFails=false,skills=false}={}){
   const launcher=join(folder,windows?"muse.cmd":"muse");
   await writeFile(launcher,windows?`@echo off\r\nsetlocal\r\n"${process.execPath}" "${FAKE_MUSE}" %*\r\nexit /b %ERRORLEVEL%\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${FAKE_MUSE}" "$@"\n`);
   if(!windows)await chmod(launcher,0o755);
-  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,MUSE_FAKE_SERVE_FAIL:failing,...(skills?{MUSE_FAKE_SKILLS:SKILL_LIST}:{})}}]},meta=new Map();
+  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,MUSE_FAKE_SERVE_FAIL:failing,...(skills?{MUSE_FAKE_SKILLS:SKILL_LIST}:{}),...(sessionSkills?{MUSE_FAKE_SESSION_SKILLS:sessionSkills}:{})}}]},meta=new Map();
   const state={settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...(windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")})};
   // Meta's channel manifest is not read from here: the update reading of Settings' listings finds it unavailable.
@@ -313,6 +313,42 @@ test("the / menu on Muse Code offers Muse Code's own commands from the window's 
     expect(second.params.input.some(part=>part.type==="skill")).toBe(false);
     expect(JSON.stringify(second.params.input)).toContain("/tmp holds the build output");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-skill-command-ran-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+// A message in a Muse Code thread that starts with one of the commands the thread's own session lists, the skills of its folder
+// among them, runs as Muse's command, though the window's list (read in a session in the server's own folder) lacks it; one only
+// the window's list has goes as words, which Muse would otherwise refuse as a command it does not have (review of tour L10-13).
+test("a message in a Muse Code thread runs a command its own session lists, its folder's own skills among them, and one only the window's list has goes as words",async({page},testInfo)=>{
+  test.setTimeout(60_000);
+  const own=testInfo.outputPath("session-skills.json");
+  await writeFile(own,JSON.stringify({result:{skills:[{selector:"release-notes",description:"Draft the release notes from the merged work."},{selector:"grill",description:"Grill the plan until it holds."}]}}));
+  const harness=await startMuseHarness({skills:true,sessionSkills:own});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const composer=page.getByTestId("composer"),send=async text=>{await composer.click();await page.keyboard.type(text);await page.keyboard.press("Enter")};
+    await send("Look over the merged work");
+    await expect(page.getByText(/^Muse fixture reply on /).last()).toBeVisible({timeout:20_000});
+    // The thread's / menu offers the session's own commands, the folder's /release-notes among them, and not /doctor, which only
+    // the window's list has.
+    const menu=page.locator(".composer-wrap .slash-menu"),row=name=>menu.locator("button").filter({has:page.locator("strong",{hasText:new RegExp(`^/${name}$`)})});
+    await composer.click();await page.keyboard.type("/");
+    await expect(row("release-notes")).toContainText("Draft the release notes from the merged work.");
+    await expect(row("grill")).toHaveCount(1);await expect(row("doctor")).toHaveCount(0);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await row("release-notes").scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-thread-own-commands-menu-${mode}-1280x800.png`})}
+    await composer.fill("");
+    // The folder's own /release-notes, typed in full in the thread, runs as Muse's command.
+    await send("/release-notes for 2.1.4");
+    await expect(page.getByText("RAN /release-notes: for 2.1.4",{exact:true})).toBeVisible({timeout:20_000});
+    expect((await harness.frames("turn/start")).at(-1).params.input).toEqual([{type:"skill",selector:"release-notes",arguments:"for 2.1.4"}]);
+    // /doctor, which only the window's list has, goes as words and gets a reply, not a refusal.
+    await send("/doctor the build");
+    await expect(page.getByText(/^Muse fixture reply on /)).toHaveCount(2,{timeout:20_000});
+    const words=(await harness.frames("turn/start")).at(-1).params.input;
+    expect(words.some(part=>part.type==="skill")).toBe(false);expect(JSON.stringify(words)).toContain("/doctor the build");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-thread-own-command-ran-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
 

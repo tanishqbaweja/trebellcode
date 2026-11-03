@@ -20,6 +20,8 @@ import { SessionRefusalError } from "./session-refusal.mjs";
 // todo list as a plan, token usage and the context meter). A turn Muse starts itself is a turn of its own (onWakeTurn).
 
 export const MUSE_REQUEST_TIMEOUT_MS=30_000;
+// How long a session's start waits for the commands the session lists (#listCommands) before it goes on with the window's list.
+export const MUSE_COMMANDS_WAIT_MS=3_000;
 export const MUSE_INTERRUPT_TIMEOUT_MS=30_000;
 // How often Trebell asks the person again about one approval or question whose answer Muse would not take.
 const MUSE_ASK_ATTEMPTS=3;
@@ -326,14 +328,19 @@ export class MuseAgentSession{
   // Muse refused as a skill part (skillNotFound). The thread's / menu offers them (available_commands_update, as an ACP harness lists
   // its commands), and a message is told a command by them (#commandNames). Asked once the session is open, and only where the
   // window's list shows that Muse lists skills; until it answers, or where it cannot, the window's list stands (review of L10-13).
+  // The session's start waits for the answer, at most MUSE_COMMANDS_WAIT_MS: a list that came after the start reached the thread
+  // after the new thread had been handed to the window without it, so its / menu kept the window's list until the thread was opened
+  // again, and the first message was told a command by the window's list.
   #listCommands(sessionId){
     this.sessionCommands=null;
-    if(!this.#catalog()?.commands?.length)return;
-    Promise.resolve().then(()=>this.connection.request("skill/list",{sessionId})).then(result=>{
+    if(!this.#catalog()?.commands?.length)return null;
+    let timer;
+    const listed=Promise.resolve().then(()=>this.connection.request("skill/list",{sessionId})).then(result=>{
       if(this.sessionId!==sessionId||this.dead)return;
       const commands=museSkillCommands(result);this.sessionCommands=new Set(commands.map(command=>command.name));
       this.onUpdate?.({sessionId,update:{sessionUpdate:"available_commands_update",commands}});
-    },()=>{});
+    },()=>{}).finally(()=>clearTimeout(timer));
+    return Promise.race([listed,new Promise(done=>{timer=setTimeout(done,MUSE_COMMANDS_WAIT_MS);timer.unref?.()})]);
   }
   #commandNames(){return this.sessionCommands||new Set((this.#catalog()?.commands||[]).map(command=>command?.name))}
   modeRefusal(mode=this.permissionMode,{queued=false}={}){
@@ -393,7 +400,7 @@ export class MuseAgentSession{
       this.sessionSetup={sessionId,models:{currentModelId:this.model,availableModels:this.model?[{modelId:this.model,name:this.model}]:[]},configOptions:[],modes:{currentModeId:"default",availableModes:[]}};
       // A turn Muse starts itself is one of the session's from here (#turnStarted).
       this.ready=true;
-      this.#listCommands(sessionId);
+      await this.#listCommands(sessionId);
       return {initialize:this.initializeResult,session:this.sessionSetup};
     }catch(error){
       // The host has no session of Trebell's then; a resume that found none closes nothing on Muse's side.

@@ -281,7 +281,8 @@ test("a session lists its own commands for the thread's / menu, and a message ru
   const session=new MuseAgentSession({command:"muse",cwd:process.cwd(),env:{PATH:""},version:"1.6.0",modelCatalog:()=>catalog,spawnFn:()=>child,stopTree:fakeStop,onUpdate:update=>updates.push(update)});
   try{
     await session.start({model:"muse-wonder-1.0"});
-    for(const end=Date.now()+5000;!updates.some(update=>update.update?.sessionUpdate==="available_commands_update");){if(Date.now()>end)throw new Error("the session listed no commands");await new Promise(done=>setTimeout(done,10))}
+    // Listed by the time the start ends, so the new thread reaches the window with its commands, and its first message is told by them.
+    assert.equal(updates.filter(update=>update.update?.sessionUpdate==="available_commands_update").length,1,"the session's commands came with its start");
     const [listed]=muse.sent("skill/list"),[started]=muse.sent("session/start");
     assert.equal(listed.params.sessionId,started.params.sessionId,"listed on the thread's own session");
     assert.deepEqual(updates.find(update=>update.update?.sessionUpdate==="available_commands_update"),{sessionId:started.params.sessionId,update:{sessionUpdate:"available_commands_update",commands:[{name:"release-notes",description:"Draft the release notes from the merged work."},{name:"grill",description:"Grill the plan.",input:{hint:"[topic]"}}]}});

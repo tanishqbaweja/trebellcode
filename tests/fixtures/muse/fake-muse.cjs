@@ -23,6 +23,8 @@
 //   MUSE_FAKE_SKILLS       a file holding skill/list's answer ({"result":...}, as skill-list-1.4.13.json records Muse 1.4.13's in a
 //                          fresh home); without it skill/list is a method this host does not know. A turn whose input is a skill
 //                          part replies RAN /<selector>, with its arguments after a colon
+//   MUSE_FAKE_SESSION_SKILLS  a file holding the skill/list answer of a thread's host (one with a session log), as a session in a
+//                          project's folder lists that folder's own skills; the read-only listing host answers MUSE_FAKE_SKILLS
 // session/start names the session Trebell names, or one of its own when Trebell names none, as Muse does.
 //   MUSE_FAKE_SANDBOX      what initialize says of the host's sandbox (sandboxAvailability): "available" unless it says
 //                          "unavailable", as Muse Code 1.4.13's host answers on Windows. Then a command the person (or Muse's reviewer)
@@ -335,7 +337,8 @@ const answers={
   "skill/list":params=>{
     if(!process.env.MUSE_FAKE_SKILLS)throw Object.assign(new Error("method not found: skill/list"),{code:-32601,kind:"methodNotFound"});
     if(!sessions.has(params.sessionId))throw Object.assign(new Error(`session ${params.sessionId} not found`),{code:-32020,kind:"sessionNotFound"});
-    return JSON.parse(fs.readFileSync(process.env.MUSE_FAKE_SKILLS,"utf8")).result;
+    const own=!argv.includes("--no-session-log")&&process.env.MUSE_FAKE_SESSION_SKILLS;
+    return JSON.parse(fs.readFileSync(own||process.env.MUSE_FAKE_SKILLS,"utf8")).result;
   },
   "session/resume":params=>{
     if(process.env.MUSE_FAKE_FORGET&&fs.existsSync(process.env.MUSE_FAKE_FORGET))throw Object.assign(new Error(`session ${params.sessionId} not found`),{code:-32020,kind:"sessionNotFound"});
