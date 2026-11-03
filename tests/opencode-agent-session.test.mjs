@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { agentToolLifecycle } from "../src/agent-relay.mjs";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -613,6 +614,27 @@ test("an OpenCode permission request the app never answered is refused, and the 
     fixture.emit({type:"permission.asked",properties:{id:"per_2",sessionID:"ses_fixture",permission:"bash",patterns:["npm test"],metadata:{},always:[]}});
     await eventually(()=>fixture.called("POST /permission/per_2/reply").length,{message:"the session stopped reading OpenCode's events"});
     assert.deepEqual(fixture.called("POST /permission/per_2/reply")[0].body,{reply:"once"});
+  }finally{await session.close();await fixture.close()}
+});
+
+// A call whose request the thread's access level refused unasked did not fail: its row says it was not allowed and why (L10-F-4).
+test("an OpenCode call whose request the access level refused reads as not allowed, with why, on its row",async()=>{
+  const fixture=await fakeOpenCode();
+  const {session,updates}=await startedSession(fixture,{permissionMode:"read-only",onPermission:async()=>{throw new Error("Read only refuses without asking")}});
+  try{
+    fixture.emit({type:"message.updated",properties:{sessionID:"ses_fixture",info:{id:"msg_ro",sessionID:"ses_fixture",role:"assistant"}}});
+    fixture.emit({type:"message.part.updated",properties:{sessionID:"ses_fixture",part:{id:"prt_ro",messageID:"msg_ro",sessionID:"ses_fixture",type:"tool",tool:"bash",callID:"call_ro",state:{status:"running",input:{command:"npm test"}}}}});
+    fixture.emit({type:"permission.asked",properties:{id:"per_ro",sessionID:"ses_fixture",permission:"bash",patterns:["npm test"],metadata:{},always:[],tool:{messageID:"msg_ro",callID:"call_ro"}}});
+    await eventually(()=>fixture.called("POST /permission/per_ro/reply").length);
+    fixture.emit({type:"message.part.updated",properties:{sessionID:"ses_fixture",part:{id:"prt_ro",messageID:"msg_ro",sessionID:"ses_fixture",type:"tool",tool:"bash",callID:"call_ro",state:{status:"error",input:{command:"npm test"},error:"The user rejected permission to use this specific tool call."}}}});
+    await eventually(()=>updates.some(update=>update.toolCallId==="call_ro"&&update.status==="failed"));
+    const ended=updates.filter(update=>update.toolCallId==="call_ro").at(-1);
+    assert.equal(ended.notAllowed,"Read only does not allow changes or commands.");
+    assert.deepEqual(agentToolLifecycle(ended).item.refusal,{status:"notAllowed",text:"Not run: Read only does not allow changes or commands."});
+    // A call that ran and failed still failed.
+    fixture.emit({type:"message.part.updated",properties:{sessionID:"ses_fixture",part:{id:"prt_ls",messageID:"msg_ro",sessionID:"ses_fixture",type:"tool",tool:"ls",callID:"call_ls",state:{status:"error",input:{},error:"no such folder"}}}});
+    await eventually(()=>updates.some(update=>update.toolCallId==="call_ls"&&update.status==="failed"));
+    assert.equal(updates.filter(update=>update.toolCallId==="call_ls").at(-1).notAllowed,undefined);
   }finally{await session.close();await fixture.close()}
 });
 

@@ -8,7 +8,7 @@ import { stripVTControlCharacters } from "node:util";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { linkedFileLine } from "./prompt-attachments.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
-import { normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
+import { normalizePermissionMode, permissionDisposition, permissionRefusalWords } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
@@ -623,6 +623,9 @@ export class ClaudeAgentSession{
     // A fork or rewind that has not run yet: the first query resumes the source at the cursor into this session's new id.
     this.pendingFork=forkFromSessionId?{sourceSessionId:forkFromSessionId,targetSessionId:null,resumeSessionAt:resumeSessionAt||null}:null;
     this.live=null;this.turn=null;this.idleTimer=null;this.tools=new Map();
+    // The calls Trebell's access level refused unasked (#canUseTool), by id, with why in the person's words: each one's result says it
+    // was not allowed (notAllowed), as the other harnesses' refused calls do, not that it failed.
+    this.refusedCalls=new Map();
     // taskCalls: the task tool calls without a result yet, by id, and todoCalls the TodoWrite calls; taskLists: each Claude session's
     // task list, by its id.
     this.taskCalls=new Map();this.todoCalls=new Set();this.taskLists=new Map();
@@ -1101,9 +1104,10 @@ export class ClaudeAgentSession{
     if(!block?.tool_use_id)return;
     live?.foregroundSubagents.delete(block.tool_use_id);
     const tool=this.tools.get(block.tool_use_id)||{title:"Tool",kind:"other",rawInput:{}};this.tools.delete(block.tool_use_id);
+    const notAllowed=this.refusedCalls.get(block.tool_use_id);this.refusedCalls.delete(block.tool_use_id);
     // A TodoWrite that failed shows, as the call it is, once it ends.
     const todo=this.todoCalls.delete(block.tool_use_id);
-    if(!todo||block.is_error)this.#emit({sessionUpdate:todo?"tool_call":"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content)});
+    if(!todo||block.is_error)this.#emit({sessionUpdate:todo?"tool_call":"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content),...(notAllowed&&block.is_error?{notAllowed}:{})});
     // A task tool call that failed, or that never ran (cancelled), changed no task.
     const call=this.taskCalls.get(block.tool_use_id);if(!call)return;
     this.taskCalls.delete(block.tool_use_id);
@@ -1401,7 +1405,12 @@ export class ClaudeAgentSession{
       return {behavior:"deny",message:CLAUDE_PLAN_CAPTURED,toolUseID};
     }
     const policyKind=editTool(toolName)?"edit":readOnlyTool(toolName)?"read":toolKind(toolName),disposition=permissionDisposition(this.permissionMode,policyKind,{action:toolName,rawInput:input,workspace:this.cwd});
-    if(disposition==="deny")return {behavior:"deny",message:"Trebell read-only mode denied this tool.",toolUseID};
+    if(disposition==="deny"){
+      // Claude is told why the access level did not allow the call, in the words its row then says (notAllowed on its result).
+      const words=permissionRefusalWords(this.permissionMode,policyKind,{action:toolName,rawInput:input,workspace:this.cwd})||"this access level does not allow it.";
+      if(toolUseID){this.refusedCalls.set(toolUseID,words);if(this.refusedCalls.size>500)this.refusedCalls.delete(this.refusedCalls.keys().next().value)}
+      return {behavior:"deny",message:"Not run: "+words,toolUseID};
+    }
     // What Claude Code forwards in Full access, in Plan mode (whatever plan mode does not allow) or for an ask rule in any mode (the
     // SDK's matchedAskRule: the person's own wish to be asked) is the person's to decide: askUser
     // keeps the relay from accepting it for Trebell's policy.

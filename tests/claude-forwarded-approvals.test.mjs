@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
-import { attachAgentRelay } from "../src/agent-relay.mjs";
+import { agentToolLifecycle, attachAgentRelay } from "../src/agent-relay.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { ClaudeAgentSession } from "../src/claude-agent-session.mjs";
 import { claudeResult, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
@@ -162,8 +162,37 @@ test("read-only still denies what it denies, whatever Claude Code asks or plan m
   for(const collaborationMode of ["default","plan"]){
     const {session,requests,canUse}=await claudeSession({permissionMode:"read-only",collaborationMode});
     const denied=await canUse("Write",{file_path:"/repo/notes/plan.md",content:"# Plan\n"},{toolUseID:"write-1",matchedAskRule:{source:"projectSettings",toolName:"Write"},suggestions:[]});
-    assert.deepEqual([denied.behavior,denied.message],["deny","Trebell read-only mode denied this tool."]);
+    assert.deepEqual([denied.behavior,denied.message],["deny","Not run: Read only does not allow changes or commands."]);
     assert.equal(requests.length,0,"a denial is never put to the person");
+    await session.close();
+  }
+});
+
+// A call Trebell's access level refuses before anyone is asked (Read only's command, Supervised's write outside the project): Claude
+// is told why, and the call's row says it was not allowed and why, as the other harnesses' rows do, not that it failed (L10-F-4).
+test("a call the access level refuses unasked reads as not allowed, with why, on its row, and Claude is told the same words",async()=>{
+  const cases=[
+    {permissionMode:"read-only",name:"Bash",input:{command:"npm test"},words:"Read only does not allow changes or commands."},
+    {permissionMode:"supervised",name:"Write",input:{file_path:"/elsewhere/notes.txt",content:"x"},words:"it is outside the project folder, which this access level does not allow."},
+  ];
+  for(const {permissionMode,name,input,words} of cases){
+    const told=[];
+    const {sdk}=scriptedClaudeSdk({turn:async({message,options,emit,signal})=>{
+      emit({type:"assistant",uuid:"a-1",parent_tool_use_id:null,message:{id:"m-1",content:[{type:"tool_use",id:"toolu_1",name,input}]}});
+      const decision=await options.canUseTool(name,input,{toolUseID:"toolu_1",signal,suggestions:[]});told.push(decision);
+      emit({type:"user",parent_tool_use_id:null,message:{role:"user",content:[{type:"tool_result",tool_use_id:"toolu_1",is_error:true,content:decision.message}]}});
+      emit(claudeResult(message));
+    }});
+    const updates=[],requests=[];
+    const session=new ClaudeAgentSession({cwd:"/repo",sdk,permissionMode,onUpdate:({update})=>updates.push(update),onPermission:async request=>{requests.push(request);return "accept"}});
+    await session.start();await session.prompt([{type:"text",text:"go"}]);
+    assert.equal(requests.length,0,`${permissionMode} ${name}: nobody is asked`);
+    assert.deepEqual([told[0]?.behavior,told[0]?.message],["deny","Not run: "+words],`${permissionMode} ${name}: Claude is told why`);
+    const ended=updates.filter(update=>update.toolCallId==="toolu_1").at(-1);
+    assert.deepEqual([ended?.sessionUpdate,ended?.status,ended?.notAllowed],["tool_call_update","failed",words]);
+    const {item}=agentToolLifecycle(ended);
+    assert.deepEqual(item.refusal,{status:"notAllowed",text:"Not run: "+words},`${permissionMode} ${name}: its row says it was not allowed, and why`);
+    assert.doesNotMatch(JSON.stringify(item),/read-only mode/,"no word of a mode the thread is not in");
     await session.close();
   }
 });

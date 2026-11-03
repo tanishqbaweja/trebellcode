@@ -15,7 +15,7 @@ import { PROMPT_TEXT_PATH } from "./prompt-attachments.mjs";
 import { retryNotice } from "./retry-notice.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
-import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
+import { normalizePermissionKind, normalizePermissionMode, permissionDisposition, permissionRefusalWords } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 import { isUserResponseTimeout } from "./user-response-timeout.mjs";
 
@@ -807,6 +807,9 @@ export class OpenCodeAgentSession{
     // Session ID -> whether it is a subagent (child) session of this one. The IDs of the assistant's text and reasoning parts, whose
     // deltas are streamed, and the subagent sessions that already have this session's rules.
     this.subagentSessions=new Map();this.assistantTextParts=new Set();this.reasoningParts=new Set();this.subagentsGivenRules=new Set();
+    // The tool calls whose permission request the access level refused unasked (#permission), by call id, with why in the person's
+    // words: the call's row says it was not allowed (notAllowed), not that it failed.
+    this.refusedCalls=new Map();
   }
   async start({providerSessionId=null,model=null}={}){
     const [{createOpencodeClient},{createOpencodeClient:createOpencodeV2Client}]=await loadOpenCodeClients();
@@ -1130,7 +1133,10 @@ export class OpenCodeAgentSession{
     // rule, so a grant made automatically in Auto would still run those commands and edits unasked after a switch to Supervised (and,
     // on a shared server, in its other sessions). Only the user's own "Always allow" saves one.
     if(disposition==="allow")decision="accept";
-    else if(disposition==="ask"&&this.onPermission){
+    else if(disposition==="deny"){
+      const callID=String((asked?p.tool?.callID:p.callID)||"");
+      if(callID){this.refusedCalls.set(callID,permissionRefusalWords(this.permissionMode,normalizePermissionKind(kind),{readOnlyAllowsRead:false})||"this access level does not allow it.");if(this.refusedCalls.size>500)this.refusedCalls.delete(this.refusedCalls.keys().next().value)}
+    }else if(disposition==="ask"&&this.onPermission){
       const toolCall=asked
         ?{title:openCodePermissionTitle(p),toolCallId:p.tool?.callID||requestID,rawInput:{...(p.metadata||{}),patterns:Array.isArray(p.patterns)?p.patterns:[]},kind:normalizePermissionKind(kind)}
         :{title:p.title,toolCallId:p.callID||requestID,rawInput:p.metadata,kind:normalizePermissionKind(kind)};
@@ -1229,7 +1235,8 @@ export class OpenCodeAgentSession{
         const state=part.state||{},input=state.input||{},read=part.tool==="read",question=part.tool==="question"&&Array.isArray(input.questions);
         const answers=Array.isArray(state.metadata?.answers)?state.metadata.answers:null;
         const output=read?unwrapOpenCodeRead(state.output):question?openCodeQuestionText(input.questions,answers,state.status==="error"?state.error:answers?"":state.output):state.output;
-        const update={sessionUpdate:state.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:openCodeToolTitle(part.tool,{title:state.title,input,cwd:this.cwd}),kind:toolKind(part.tool),status,rawInput:input,rawOutput:output||state.error||null,...(read||question?{textOutput:true}:{})};
+        const notAllowed=status==="failed"?this.refusedCalls.get(String(part.callID||"")):undefined;
+        const update={sessionUpdate:state.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:openCodeToolTitle(part.tool,{title:state.title,input,cwd:this.cwd}),kind:toolKind(part.tool),status,rawInput:input,rawOutput:output||state.error||null,...(read||question?{textOutput:true}:{}),...(notAllowed?{notAllowed}:{})};
         this.onUpdate?.({sessionId:this.sessionId,update});
         // The task tool names the subagent's session once it has created it.
         if(part.tool==="task"&&part.state?.metadata?.sessionId)await this.#applyChildRules(part.state.metadata.sessionId);
