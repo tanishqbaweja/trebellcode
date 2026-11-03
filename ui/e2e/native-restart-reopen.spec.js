@@ -67,7 +67,9 @@ test("a Native thread reopened after a reload and a restart shows its turns as i
     await composer.fill("Reply with exactly the word PONG.");await page.getByTestId("send").click();
     await expect(pill).toHaveText(/^done · \d\.\ds$/,{timeout:20_000});
     const live={heading:await heading.textContent(),pill:await pill.textContent(),context:await context.textContent()};
-    expect(live.heading).toBe("Trebell Native · Model A · Supervised");expect(live.context).toMatch(/^Context 8,442 tokens/);
+    // The composer reads the context from the turn's last request where the model's window is not known (its input, 8,422, not
+    // the request's 8,442 tokens in all), live and once reopened alike.
+    expect(live.heading).toBe("Trebell Native · Model A · Supervised");expect(live.context).toMatch(/^Context 8,422 tokens/);
     await shot("live");
 
     // A reload opens the thread from what it keeps.
