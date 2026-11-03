@@ -67,7 +67,7 @@ test("a turn for another harness's thread is refused with the harness that owns 
 });
 
 test("a Trebell Native approval card says in plain words what it asks and why the access level asks, with no tool or policy names",()=>{
-  const supervised={reason:"Supervised profile requires confirmation.",profile:"supervised"},why="Supervised asks before each change, command or web request.";
+  const supervised={reason:"Supervised profile requires confirmation.",profile:"supervised"},why="Supervised asks before each step other than reading this project's files.";
   // The live tour's cards (L10-F-5): a write named by its file, a command shown as it runs, each under a title for what it asks.
   assert.deepEqual(nativeApprovalCard({namespace:"trebell_workspace",name:"write_file",arguments:{path:"data.txt",content:"alpha\n"}},supervised),
     {title:"File write needs approval",reason:"Write data.txt. "+why,notice:"Write data.txt"});
@@ -76,7 +76,7 @@ test("a Trebell Native approval card says in plain words what it asks and why th
   const exe="C:\\Program Files\\nodejs\\node.exe";
   assert.equal(nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:exe,args:["-e","1 + 1"]})},{profile:"workspace-write",reason:"Workspace Write requires confirmation for execution, network, external, or high-risk actions."}).command,
     `${JSON.stringify(exe)} -e "1 + 1"`,"spaced parts are quoted, and string arguments are read");
-  assert.equal(nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"]}},{profile:"workspace-write"}).reason,"Auto-accept edits asks before each command, web request or risky change.");
+  assert.equal(nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"]}},{profile:"workspace-write"}).reason,"Auto-accept edits asks before each step other than reading or editing this project's files.");
   assert.deepEqual(nativeApprovalCard({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"a",new_text:"b"}},{profile:"auto",reason:"Auto/Guarded requires confirmation for high-risk, irreversible, external, or escalating actions."}),
     {title:"File edit needs approval",reason:"Edit src/app.js. Auto asks before a risky action, one that cannot be undone, or one that reaches outside this computer.",notice:"Edit src/app.js"});
   // A rule of the person's asks in its own words; one with none, and an ask for more access, say so plainly.
@@ -85,8 +85,27 @@ test("a Trebell Native approval card says in plain words what it asks and why th
   // An app's or another server's tool: by its name and its server's, with what it is sent shown as sent.
   assert.deepEqual(nativeApprovalCard({namespace:"github",name:"create_issue",arguments:{title:"Bug"}},supervised),
     {title:"Tool needs approval",reason:"Use create issue from github. "+why,command:'{\n  "title": "Bug"\n}',notice:"Use create issue from github"});
-  for(const card of [nativeApprovalCard({namespace:"trebell_workspace",name:"write_file",arguments:{path:"data.txt"}},supervised),nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:{command:"node"}},supervised)])
-    assert.doesNotMatch(JSON.stringify(card),/trebell_|profile|requires confirmation/,"no tool namespace or policy words");
+  // An MCP server's tool by the server's own name, whether mounted or called through Trebell's MCP tools, never Trebell's mcp_ id.
+  const mounted={...supervised,definition:{source:"mcp",rawDefinition:{serverName:"GitHub",toolName:"create_issue"}}};
+  assert.equal(nativeApprovalCard({namespace:"mcp_3f9a",name:"create_issue",arguments:{title:"Bug"}},mounted).reason,"Use create issue from GitHub. "+why);
+  assert.deepEqual(nativeApprovalCard({namespace:"trebell_mcp",name:"call",arguments:{namespace:"mcp_github",name:"create_issue",arguments:{title:"Bug"}}},supervised),
+    {title:"Tool needs approval",reason:"Use create issue from github. "+why,command:'{\n  "title": "Bug"\n}',notice:"Use create issue from github"});
+  // Every other Trebell tool that can ask says what it does, with what it types or looks for.
+  const said=(namespace,name,args={})=>{const card=nativeApprovalCard({namespace,name,arguments:args},supervised);return [card.title,card.reason]};
+  assert.deepEqual(said("trebell_workspace","list",{path:"."}),["File read needs approval",`List the project folder. ${why}`]);
+  assert.deepEqual(said("trebell_browser","type",{ref:"e12",text:"hello there"}),["Browser action needs approval",`Type "hello there" into the page in the browser. ${why}`]);
+  assert.deepEqual(said("trebell_browser","screenshot"),["Browser read needs approval",`Take a screenshot of the page open in the browser. ${why}`]);
+  assert.deepEqual(said("trebell_browser","set_viewport",{width:390,height:844}),["Browser action needs approval",`Resize the page in the browser to 390 by 844. ${why}`]);
+  assert.deepEqual(said("trebell_computer","screenshot"),["Screen capture needs approval",`Take a screenshot of your screen. ${why}`]);
+  assert.deepEqual(said("trebell_computer","key",{key:"CTRL+C"}),["Computer control needs approval",`Press CTRL+C on your computer. ${why}`]);
+  assert.deepEqual(said("trebell_output","inspect",{handle:"out-1",query:"ERROR"}),["Output read needs approval",`Search an earlier step's output for ERROR. ${why}`]);
+  assert.deepEqual(said("trebell_process","status",{process_id:"p-1"}),["Command needs approval",`Check on a command running in the background. ${why}`]);
+  assert.deepEqual(said("trebell_source_control","status"),["Git read needs approval",`Read the project's Git status. ${why}`]);
+  assert.deepEqual(said("trebell_repo","git_history",{path:"src/app.js"}),["Project read needs approval",`Look through this project's code in src/app.js. ${why}`]);
+  assert.deepEqual(said("trebell_mcp","discover",{query:"open an issue"}),["Tool search needs approval",`Search your MCP servers for a tool: open an issue. ${why}`]);
+  for(const card of [nativeApprovalCard({namespace:"trebell_workspace",name:"write_file",arguments:{path:"data.txt"}},supervised),nativeApprovalCard({namespace:"trebell_terminal",name:"run",arguments:{command:"node"}},supervised),
+    nativeApprovalCard({namespace:"trebell_repo",name:"repo_map",arguments:{}},supervised),nativeApprovalCard({namespace:"trebell_mcp",name:"call",arguments:{namespace:"mcp_github",name:"list_issues",arguments:{}}},supervised)])
+    assert.doesNotMatch(JSON.stringify(card),/trebell_|mcp_|profile|requires confirmation|repo map/,"no tool namespace, tool id or policy words");
 });
 
 test("a Trebell Native session grant covers the same action, whatever its output and time bounds",()=>{
@@ -381,6 +400,9 @@ test("a call that did not run because it was not allowed says so on its item: de
   const muse=status=>agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"muse-1",title:"Get-Content notes.txt",kind:"execute",status,rawOutput:"Not run: it was not approved.",declined:true}).item;
   assert.deepEqual([muse("failed").type,muse("failed").refusal],["commandExecution",{status:"declined",text:"Not run: it was not approved."}]);
   assert.equal(muse("completed").refusal,undefined);
+  // An ACP harness's request the relay refused for its access level says why, even where the harness's own row says declined.
+  assert.deepEqual(agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"acp-1",title:"rm notes.txt",kind:"execute",status:"failed",rawOutput:"Permission denied",declined:true,notAllowed:"Read only does not allow changes or commands."}).item.refusal,
+    {status:"notAllowed",text:"Not run: Read only does not allow changes or commands."});
   // Another harness's tool that failed, with no such word, is a failure.
   assert.equal(agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"x",title:"Edit",kind:"other",status:"failed",rawOutput:{success:false,confirmationRequired:true}}).item.refusal,undefined);
 });

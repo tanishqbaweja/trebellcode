@@ -904,7 +904,7 @@ test("Trebell Native runs a Supervised command after Allow session and runs it a
     thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"supervised",dynamicTools:[]})).thread;
     const first=await runTurn("Run A");
     const asked=await rpc.waitFor(message=>message.method==="item/tool/requestApproval",15000);
-    assert.deepEqual([asked.params.trebellTitle,asked.params.reason],["Command needs approval","Supervised asks before each change, command or web request."],"the card says what it asks and why, in plain words");
+    assert.deepEqual([asked.params.trebellTitle,asked.params.reason],["Command needs approval","Supervised asks before each step other than reading this project's files."],"the card says what it asks and why, in plain words");
     assert.match(asked.params.command,/ -e process\.stdout\.write\('A'\)$/,"the card shows the command it approves");
     answer(asked,"acceptForSession");await finished(first);
     assert.equal(runItem(0).success,true,"Allow session runs the command");

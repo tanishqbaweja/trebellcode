@@ -148,14 +148,14 @@ test("Native's approval cards say what they ask in plain words, with no tool or 
     const approval=page.locator(".approval-card");
     const write=ask({id:"call-write",namespace:"trebell_workspace",name:"write_file",arguments:{path:"data.txt",content:"alpha\nbeta\ngamma\n"}});
     await expect(approval.locator(".card-title strong")).toHaveText("File write needs approval");
-    await expect(approval.locator("p").first()).toHaveText("Write data.txt. Supervised asks before each change, command or web request.");
+    await expect(approval.locator("p").first()).toHaveText("Write data.txt. Supervised asks before each step other than reading this project's files.");
     await expect(approval).not.toContainText("trebell_");await expect(approval).not.toContainText("profile");
     await shoot(page,"l10-native-write-card-1280");
     await approval.getByRole("button",{name:"Allow once",exact:true}).click();
     expect((await write).decision).toBe("accept");
     const run=ask({id:"call-run",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["count-lines.js"],cwd:"."}});
     await expect(approval.locator(".card-title strong")).toHaveText("Command needs approval");
-    await expect(approval.locator("p").first()).toHaveText("Supervised asks before each change, command or web request.");
+    await expect(approval.locator("p").first()).toHaveText("Supervised asks before each step other than reading this project's files.");
     await expect(approval.getByTestId("approval-command")).toHaveText("node count-lines.js");
     await expect(approval).not.toContainText("trebell_");await expect(approval).not.toContainText("requires confirmation");
     await shoot(page,"l10-native-run-card-1280");

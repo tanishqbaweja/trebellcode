@@ -14,7 +14,7 @@ import { acpApiKeyMethod } from "./harness-auth.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
-import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
+import { normalizePermissionKind, normalizePermissionMode, permissionDisposition, permissionRefusalWords } from "./permission-policy.mjs";
 import { attachmentLine, unsentImageLine } from "./attachment-line.mjs";
 import { documentKind } from "./document-reading.mjs";
 import { attachmentName, PROMPT_AUDIO_PATH, PROMPT_IMAGE_PATH, PROMPT_TEXT_PATH, unreadableAttachment } from "./prompt-attachments.mjs";
@@ -1048,8 +1048,14 @@ export class AcpAgentSession{
     const kind=toolCall.kind??params?.kind??null;
     // In Grok's Auto mode Grok decides routine actions itself; whatever it asks about goes to the user.
     const askUser=this.runtime==="grok"&&this.permissionMode==="auto";
-    const automatic=askUser?null:acpPermissionChoice(options,this.permissionMode,kind,{action:toolCall.title||"session/request_permission",rawInput:toolCall.rawInput||params,workspace:this.cwd});
-    if(automatic)return selected(automatic);
+    const policyInput={action:toolCall.title||"session/request_permission",rawInput:toolCall.rawInput||params,workspace:this.cwd};
+    const automatic=askUser?null:acpPermissionChoice(options,this.permissionMode,kind,policyInput);
+    if(automatic){
+      // A call the access level refuses says why on its row (notAllowed on its state, which its later frames carry), not that it failed.
+      const id=text(toolCall.toolCallId);
+      if(id&&options.find(option=>option?.optionId===automatic)?.kind==="reject_once")this.#keepTool(id,{...this.tools.get(id),notAllowed:permissionRefusalWords(this.permissionMode,normalizePermissionKind(kind),{readOnlyAllowsRead:false,...policyInput})||"this access level does not allow it."});
+      return selected(automatic);
+    }
     const decision=await this.#waitForUser(()=>this.onPermission?.({method:"session/request_permission",params,options,askUser,approvalOptions:acpApprovalOptions(this.runtime,options)}));
     const optionId=decision===CANCELLED?null:acpDecisionOption(this.runtime,options,decision||"decline");
     return optionId?selected(optionId):CANCELLED_OUTCOME;
