@@ -972,13 +972,13 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const priceConfig=savedPrice(settings,agentRuntime,model,provider);
   function dictate(){
     if(!speechSupported)return;
-    // A press stops the recognition on its way, also one the browser has not started listening for yet.
+    // A press stops the recognition on its way, also one the browser has not started listening for yet: its own end lets the mic go.
     const current=recognitionRef.current;
-    if(current){recognitionRef.current=null;clearTimeout(current.wait);setListening(false);current.stop();return}
+    if(current){current.end();current.stop();return}
     const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
     const recognition=new Recognition(),say=text=>setDictationAlert({kind:"dictation",text});recognitionRef.current=recognition;setDictationAlert(null);setListening(true);let started=false;
     // This recognition lets the mic go, unless a press or a newer one has it: false then.
-    const end=()=>{clearTimeout(recognition.wait);if(recognitionRef.current!==recognition)return false;recognitionRef.current=null;setListening(false);return true};
+    const end=recognition.end=()=>{clearTimeout(recognition.wait);if(recognitionRef.current!==recognition)return false;recognitionRef.current=null;setListening(false);return true};
     recognition.wait=setTimeout(()=>{if(end()){try{recognition.abort()}catch{}say(DICTATION_SILENT)}},DICTATION_WAIT_MS);
     // One phrase, final results only: continuous and interimResults are off by the Web Speech API's own defaults.
     recognition.lang=navigator.language||"en-US";
