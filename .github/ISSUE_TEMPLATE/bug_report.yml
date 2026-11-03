@@ -13,7 +13,7 @@ body:
     attributes:
       label: Trebell Code version
       description: Settings shows it beside View licenses. For a build from source, give the commit (`git rev-parse --short HEAD`).
-      placeholder: "2.1.4"
+      placeholder: "2.1.5"
     validations:
       required: true
   - type: dropdown
