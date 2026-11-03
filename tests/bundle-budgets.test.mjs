@@ -172,8 +172,8 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // read, provider keys and words, drafts per thread and the context meter, not-allowed rows and approval words) took the first
 // bundle to 618.0 / 200.9 KB. Moving dictation (dictation.js, loaded by idle-parts.js) and the taking-off of gone files (into
 // turn-support.js) out of it, and the turn's error rows into one helper, brought it to 615.3 / 200.2 KB, with the lazy chunks at
-// 816.5 / 271.8 KB. That is the measured cost of those fixes, 0.6 / 0.8 KB gzip over the old limits, so the gzip limits rise to
-// 200.5 and 272.5 KB, which leaves 0.3 / 0.7 KB for the next round of tour fixes; the raw limits and the CSS stay.
+// 816.5 / 271.8 KB. That is the measured cost of those fixes, 0.6 / 0.8 KB gzip more than before and 0.2 / 0.8 KB over the old
+// limits, so the gzip limits rise to 200.5 and 272.5 KB, which leaves 0.3 / 0.7 KB for the next round of tour fixes; the raw limits and the CSS stay.
 const B11={initialJs:{rawKB:640,gzipKB:200.5},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:818.7,gzipKB:272.5}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
