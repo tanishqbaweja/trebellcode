@@ -25,7 +25,7 @@ test("only finished turns have an outcome, and imported zero durations are not m
     {id:"t3",status:"inProgress",durationMs:null},
     {id:"t4",status:"interrupted"},
     {status:"completed",durationMs:10},
-  ]),{t1:{status:"completed",durationMs:3000},t2:{status:"completed",durationMs:null},t4:{status:"interrupted",durationMs:null}});
+  ]),{t1:{status:"completed",durationMs:3000,wholeSeconds:true},t2:{status:"completed",durationMs:null},t4:{status:"interrupted",durationMs:null}});
 });
 
 test("the outcome pill says done, with the time when one was measured, and always names a stop or failure",()=>{
@@ -44,10 +44,11 @@ test("history pages add outcomes without replacing what this window measured or 
   const next=mergeTurnOutcomes(current,"thread-1",[{id:"t2",status:"completed",durationMs:5000},{id:"t3",status:"inProgress"}]);
   assert.notEqual(next,current);
   assert.deepEqual(next[key],{mode:"Full access",status:"completed",durationMs:3412});
-  assert.deepEqual(next[turnInfoKey("thread-1","t2")],{status:"completed",durationMs:5000});
+  // A page's turn kept in whole seconds only (no startedAtMs) says so (wholeSeconds), so its pill shows no tenth it does not know.
+  assert.deepEqual(next[turnInfoKey("thread-1","t2")],{status:"completed",durationMs:5000,wholeSeconds:true});
   assert.equal(next[turnInfoKey("thread-1","t3")],undefined);
   const modeOnly={[key]:{mode:"Supervised"}};
-  assert.deepEqual(mergeTurnOutcomes(modeOnly,"thread-1",[{id:"t1",status:"completed",durationMs:3000}])[key],{mode:"Supervised",status:"completed",durationMs:3000});
+  assert.deepEqual(mergeTurnOutcomes(modeOnly,"thread-1",[{id:"t1",status:"completed",durationMs:3000}])[key],{mode:"Supervised",status:"completed",durationMs:3000,wholeSeconds:true});
   assert.notEqual(turnInfoKey("thread-1","t1"),turnInfoKey("thread-2","t1"));
   assert.equal(turnInfoKey(null,"t1"),"");
 });
@@ -132,7 +133,7 @@ test("history pages carry a turn's error, and every page keeps its completed tur
     {id:"t2",status:"failed",durationMs:2100,error:{message:"Usage limit reached."}},
     {id:"t3",status:"interrupted",durationMs:null,error:null},
   ];
-  assert.deepEqual(turnOutcomesFromTurns(turns),{t1:{status:"completed",durationMs:3000},t2:{status:"failed",durationMs:2100,error:"Usage limit reached."},t3:{status:"interrupted",durationMs:null}});
+  assert.deepEqual(turnOutcomesFromTurns(turns),{t1:{status:"completed",durationMs:3000,wholeSeconds:true},t2:{status:"failed",durationMs:2100,error:"Usage limit reached."},t3:{status:"interrupted",durationMs:null}});
   const keys=value=>Object.keys(value).sort();
   assert.deepEqual(keys(mergeTurnOutcomes({},"th",turns)),[turnInfoKey("th","t1"),turnInfoKey("th","t2"),turnInfoKey("th","t3")].sort());
   // The error this window was sent is kept over the page's; a page adds one where none was known.
@@ -148,13 +149,13 @@ test("a page holding a later completion of a turn replaces what this window reco
   const recorded={[key]:{mode:"Supervised",status:"interrupted",durationMs:800,completedAt:1000,error:note}};
   // The relay ran the turn again after a restart and it failed: the page says so, with a later completion time.
   const rerun=mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"failed",durationMs:3000,completedAt:1012,error:{message:real}}]);
-  assert.deepEqual(rerun[key],{mode:"Supervised",status:"failed",durationMs:3000,completedAt:1012,error:real});
+  assert.deepEqual(rerun[key],{mode:"Supervised",status:"failed",durationMs:3000,completedAt:1012,wholeSeconds:true,error:real});
   // A later completion with no error drops the old one.
-  assert.deepEqual(mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"completed",durationMs:3000,completedAt:1012}])[key],{mode:"Supervised",status:"completed",durationMs:3000,completedAt:1012});
+  assert.deepEqual(mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"completed",durationMs:3000,completedAt:1012}])[key],{mode:"Supervised",status:"completed",durationMs:3000,completedAt:1012,wholeSeconds:true});
   // The same completion (or an older one, read before the turn ran again) leaves the window's record as it is.
   for(const completedAt of [1000,990])assert.equal(mergeTurnOutcomes(recorded,"th",[{id:"t1",status:"failed",durationMs:3000,completedAt,error:{message:real}}]),recorded);
   // A completed turn this window holds no outcome for is added, so its reply has its done pill after a reload.
-  assert.deepEqual(mergeTurnOutcomes({},"th",[{id:"t2",status:"completed",durationMs:3000,completedAt:1012}]),{[turnInfoKey("th","t2")]:{status:"completed",durationMs:3000,completedAt:1012}});
+  assert.deepEqual(mergeTurnOutcomes({},"th",[{id:"t2",status:"completed",durationMs:3000,completedAt:1012}]),{[turnInfoKey("th","t2")]:{status:"completed",durationMs:3000,completedAt:1012,wholeSeconds:true}});
 });
 
 test("a completion records its own error, a replay keeps the first, and a turn that starts again is not ended any more",()=>{
