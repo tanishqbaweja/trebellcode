@@ -328,6 +328,15 @@ function acpToolItem(update){
   return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
 }
 
+// A Native call a rule of the person's refused: its result gives the rule's own reason, which its row then says (notAllowed), as
+// it says the access level's. Only a refused call whose reason Trebell does not word itself looks the rules up (rules: a function).
+export function nativeRuleRefusal(update={},rules=()=>[]){
+  const output=update?.rawOutput&&typeof update.rawOutput==="object"?update.rawOutput:null,namespace=String(update?.namespace||"");
+  if(!namespace||namespace==="agent"||update.status!=="failed"||output?.success!==false||output.decision!=="REJECT"||notAllowedWords(output.error))return update;
+  const said=String(output.error||"").trim(),list=said?rules():null;
+  const refused=Array.isArray(list)&&list.some(rule=>String(rule?.reason||"").trim()===said&&/^(?:reject|deny)$/i.test(String(rule?.effect||rule?.decision||"").trim()));
+  return refused?{...update,notAllowed:said}:update;
+}
 // The ids a refused request's call goes by: its call (toolCallId) and, where the harness's rows go by another id, its item (itemId:
 // Muse Code's). The refusal is kept under each, for the call's row to find it.
 export function refusalCallIds(toolCall={}){
@@ -892,7 +901,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const declinedToolCalls=new Map();
   const declineToolCall=(threadId,toolCallId,notAllowed="")=>{if(!toolCallId)return;declinedToolCalls.set(threadId+":"+String(toolCallId),notAllowed||"");if(declinedToolCalls.size>500)declinedToolCalls.delete(declinedToolCalls.keys().next().value)};
   const declineCallIds=(threadId,toolCall,notAllowed="")=>{for(const id of refusalCallIds(toolCall))declineToolCall(threadId,id,notAllowed)};
-  const refusedUpdate=(key,update)=>{const notAllowed=declinedToolCalls.get(key);return notAllowed===undefined?update:notAllowed?{...update,notAllowed}:{...update,declined:true}};
+  const refusedUpdate=(key,update)=>{const notAllowed=declinedToolCalls.get(key);return notAllowed===undefined?nativeRuleRefusal(update,()=>state?.settings?.()?.policyRules):notAllowed?{...update,notAllowed}:{...update,declined:true}};
   // A running tool's latest item waiting to be stored, per thread and tool call: {turnId,at,item,timer}.
   const toolWrites=new Map();
   // The reasoning segment each thread's harness is thinking in: {id,turnId,messageId,text}.

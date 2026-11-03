@@ -10,7 +10,7 @@ import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
 import { openCodeMessageId, openCodeSessionRules } from "../src/opencode-agent-session.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { policyRefusalWords,refusalCallIds } from "../src/agent-relay.mjs";
+import { nativeRuleRefusal,policyRefusalWords,refusalCallIds } from "../src/agent-relay.mjs";
 import { museApprovalToolCall } from "../src/muse-agent-session.mjs";
 import { museItemRow } from "../src/muse-rows.mjs";
 import { acpPlanEvent,agentApprovalReason,agentTextAfterToolCall,agentThreadTitleSeed,agentTurnOwnerError,nativeApprovalCard,nativeApprovalGrantKey,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,claudeRewindProviderMeta,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
@@ -427,6 +427,16 @@ test("a request Trebell's policy refused says why in the person's words, a rule 
   const rule={effect:"reject",kind:"execute",actionPrefix:"npm install",reason:"No package installs on this machine."};
   assert.equal(policyRefusalWords(agentPermissionPolicyDecision(thread,command,{policyRules:[rule]})),"No package installs on this machine.");
   assert.equal(policyRefusalWords(agentPermissionPolicyDecision(thread,command,{policyRules:[{...rule,reason:undefined}]})),"a rule in your settings does not allow it.");
+  // A Native call a rule of the person's refused says the rule's own reason; one the rules do not give keeps failing.
+  const native=rawOutput=>({sessionUpdate:"tool_call_update",toolCallId:"n1",namespace:"trebell_terminal",tool:"run",title:"trebell_terminal / run",kind:"execute",status:"failed",rawInput:{command:"npm install left-pad"},rawOutput});
+  const rules=()=>[rule];
+  assert.deepEqual(agentToolLifecycle(nativeRuleRefusal(native({success:false,decision:"REJECT",error:"No package installs on this machine.",confirmationRequired:false}),rules)).item.refusal,{status:"notAllowed",text:"Not run: No package installs on this machine."});
+  const unknown=native({success:false,decision:"REJECT",error:"Invalid arguments for trebell_terminal/run: command is required."});
+  assert.equal(nativeRuleRefusal(unknown,rules),unknown);
+  let looked=0;const counted=()=>{looked++;return [rule]};
+  nativeRuleRefusal(native({success:false,decision:"REJECT",error:"Read Only profile rejects mutating or executable actions."}),counted);
+  nativeRuleRefusal({...native({success:true,exitCode:0}),status:"completed"},counted);
+  assert.equal(looked,0,"the rules are read only for a refusal Trebell does not word itself");
   // Muse Code asks by its call id, while the call's row goes by its item id: the refusal is kept under both.
   const approval={approvalId:"01a18ecd-65f2",itemId:"01a18ecd-65f2",toolCallId:"call_rec_2",subject:{kind:"fileAccess",access:"write",path:"/elsewhere/notes.txt"}};
   const row=museItemRow({itemId:"01a18ecd-65f2",callId:"call_rec_2",kind:"toolCall",tool:"write_file",status:"failed",revision:2,args:JSON.stringify({path:"/elsewhere/notes.txt",content:"x"}),failureReason:"denied"},{declined:true});
