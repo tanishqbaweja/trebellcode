@@ -594,7 +594,7 @@ test("a recorded approval asks the person once with Muse's own choices, its requ
   assert.equal(chunks(updates),"REFUSED");
   assert.equal(asked.length,1,"the request and its notification are asked once");
   assert.deepEqual(asked[0].approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"acceptAlways",label:"Always allow in this workspace: touch ..."},{decision:"decline",label:"Reject"}]);
-  assert.deepEqual(asked[0].params.toolCall,{toolCallId:"call_rec_2",title:"touch trebell-declined.txt",kind:"execute",rawInput:{command:"touch trebell-declined.txt"}});
+  assert.deepEqual(asked[0].params.toolCall,{toolCallId:"call_rec_2",itemId:"01a18ecd-65f2-71c2-b60a-e3fad3746b02",title:"touch trebell-declined.txt",kind:"execute",rawInput:{command:"touch trebell-declined.txt"}});
   const decide=muse.frames.find(frame=>frame.method==="approval/decide");
   assert.equal(decide.params.choiceId,"abort","Muse's Reject; the 'Always allow' rule is never chosen for the person");
   assert.deepEqual(decide.params.requirementId,{approvalId:decide.params.approvalId,sourceIndex:0});
@@ -632,7 +632,7 @@ test("Muse's questions are asked in the question dialog and answered with userIn
   const decide=await muse.next("approval/decide");
   assert.equal(decide.params.choiceId,"no");
   assert.equal("feedback" in decide.params,false);
-  assert.deepEqual(approvals[0].params.toolCall,{toolCallId:"call_2",title:"../outside.txt",kind:"edit",rawInput:{path:"../outside.txt",access:"write"}});
+  assert.deepEqual(approvals[0].params.toolCall,{toolCallId:"call_2",itemId:"ap-1",title:"../outside.txt",kind:"edit",rawInput:{path:"../outside.txt",access:"write"}});
   muse.notify("turn/completed",{sessionId:sid,viewCursor:"v",terminal:"completed",turnId});
   await running;
   await until(()=>muse.frames.some(frame=>frame.id===7&&frame.result),"the question's receipt");

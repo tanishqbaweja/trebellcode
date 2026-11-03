@@ -10,6 +10,9 @@ import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
 import { openCodeMessageId, openCodeSessionRules } from "../src/opencode-agent-session.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
+import { policyRefusalWords,refusalCallIds } from "../src/agent-relay.mjs";
+import { museApprovalToolCall } from "../src/muse-agent-session.mjs";
+import { museItemRow } from "../src/muse-rows.mjs";
 import { acpPlanEvent,agentApprovalReason,agentTextAfterToolCall,agentThreadTitleSeed,agentTurnOwnerError,nativeApprovalCard,nativeApprovalGrantKey,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,claudeRewindProviderMeta,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("permission trace metadata excludes raw tool arguments",()=>{
@@ -100,6 +103,9 @@ test("a Trebell Native approval card says in plain words what it asks and why th
   assert.deepEqual(said("trebell_computer","key",{key:"CTRL+C"}),["Computer control needs approval",`Press CTRL+C on your computer. ${why}`]);
   assert.deepEqual(said("trebell_output","inspect",{handle:"out-1",query:"ERROR"}),["Output read needs approval",`Search an earlier step's output for ERROR. ${why}`]);
   assert.deepEqual(said("trebell_process","status",{process_id:"p-1"}),["Command needs approval",`Check on a command running in the background. ${why}`]);
+  // A command started in the background says so on its line, over the command it starts; a plain run's command is what it asks.
+  assert.deepEqual(nativeApprovalCard({namespace:"trebell_process",name:"start",arguments:{command:"npm",args:["run","dev"]}},supervised),
+    {title:"Command needs approval",reason:`Start this command in the background. ${why}`,command:"npm run dev",notice:"Start this command in the background: npm run dev"});
   assert.deepEqual(said("trebell_source_control","status"),["Git read needs approval",`Read the project's Git status. ${why}`]);
   assert.deepEqual(said("trebell_repo","git_history",{path:"src/app.js"}),["Project read needs approval",`Look through this project's code in src/app.js. ${why}`]);
   assert.deepEqual(said("trebell_mcp","discover",{query:"open an issue"}),["Tool search needs approval",`Search your MCP servers for a tool: open an issue. ${why}`]);
@@ -393,6 +399,11 @@ test("a call that did not run because it was not allowed says so on its item: de
   assert.deepEqual(native("run",{success:false,decision:"REJECT",error:"Read Only profile rejects mutating or executable actions."}).refusal,{status:"notAllowed",text:"Not run: Read only does not allow changes or commands."});
   assert.deepEqual(native("read_file",{success:false,decision:"REJECT",error:"Requested path is outside the active workspace boundary.",confirmationRequired:false}).refusal,{status:"notAllowed",text:"Not run: it is outside the project folder, which this access level does not allow."});
   assert.deepEqual(native("run",{success:false,decision:"REJECT",error:"Matched an explicit user policy rule."}).refusal,{status:"notAllowed",text:"Not run: a rule in your settings does not allow it."});
+  // A Native call of an MCP server's tool, or of an app's, that its access level refused reads the same.
+  const mcp=rawOutput=>agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"call-mcp",namespace:"mcp_github",tool:"create_issue",title:"mcp_github / create_issue",kind:"other",status:"failed",rawInput:{title:"Bug"},rawOutput}).item;
+  assert.deepEqual(mcp({success:false,decision:"REJECT",error:"Read Only profile rejects mutating or executable actions.",confirmationRequired:false}).refusal,{status:"notAllowed",text:"Not run: Read only does not allow changes or commands."});
+  assert.deepEqual(mcp({success:false,decision:"REJECT",error:"Requested path is outside the active workspace boundary."}).refusal,{status:"notAllowed",text:"Not run: it is outside the project folder, which this access level does not allow."});
+  assert.equal(mcp({success:false,error:"GitHub answered 502"}).refusal,undefined,"a tool that ran and failed still failed");
   // A call that failed for another reason keeps failing: input the tool does not take, a command that ran and failed.
   assert.equal(native("run",{success:false,decision:"REJECT",error:"Invalid arguments for trebell_terminal/run: command is required."}).refusal,undefined);
   assert.equal(native("run",{success:false,exitCode:1,stdout:"",stderr:"boom"}).refusal,undefined);
@@ -405,6 +416,24 @@ test("a call that did not run because it was not allowed says so on its item: de
     {status:"notAllowed",text:"Not run: Read only does not allow changes or commands."});
   // Another harness's tool that failed, with no such word, is a failure.
   assert.equal(agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"x",title:"Edit",kind:"other",status:"failed",rawOutput:{success:false,confirmationRequired:true}}).item.refusal,undefined);
+});
+
+test("a request Trebell's policy refused says why in the person's words, a rule of theirs in its own, and is kept where the call's row looks (L10-F-4)",()=>{
+  const thread={id:"t",runtime:"muse",cwd:"/repo",providerMeta:{permissionProfile:"supervised"}};
+  const outside={params:{toolCall:{toolCallId:"c1",title:"/elsewhere/notes.txt",kind:"edit",rawInput:{path:"/elsewhere/notes.txt",access:"write"}}}};
+  assert.equal(policyRefusalWords(agentPermissionPolicyDecision(thread,outside)),"it is outside the project folder, which this access level does not allow.");
+  // A rule of the person's refuses in its own words, else says a rule of theirs does not allow it.
+  const command={params:{toolCall:{toolCallId:"c2",title:"npm install left-pad",kind:"execute",rawInput:{command:"npm install left-pad"}}}};
+  const rule={effect:"reject",kind:"execute",actionPrefix:"npm install",reason:"No package installs on this machine."};
+  assert.equal(policyRefusalWords(agentPermissionPolicyDecision(thread,command,{policyRules:[rule]})),"No package installs on this machine.");
+  assert.equal(policyRefusalWords(agentPermissionPolicyDecision(thread,command,{policyRules:[{...rule,reason:undefined}]})),"a rule in your settings does not allow it.");
+  // Muse Code asks by its call id, while the call's row goes by its item id: the refusal is kept under both.
+  const approval={approvalId:"01a18ecd-65f2",itemId:"01a18ecd-65f2",toolCallId:"call_rec_2",subject:{kind:"fileAccess",access:"write",path:"/elsewhere/notes.txt"}};
+  const row=museItemRow({itemId:"01a18ecd-65f2",callId:"call_rec_2",kind:"toolCall",tool:"write_file",status:"failed",revision:2,args:JSON.stringify({path:"/elsewhere/notes.txt",content:"x"}),failureReason:"denied"},{declined:true});
+  assert.ok(refusalCallIds(museApprovalToolCall(approval)).includes(row.toolCallId),"the row finds the refusal kept for its request");
+  assert.deepEqual(refusalCallIds({toolCallId:"t1"}),["t1"]);
+  // With the relay's words on it, the row says it was not allowed and why, not that the person declined it.
+  assert.deepEqual(agentToolLifecycle({...row,notAllowed:"it is outside the project folder, which this access level does not allow."}).item.refusal,{status:"notAllowed",text:"Not run: it is outside the project folder, which this access level does not allow."});
 });
 
 test("one turn's items page in order both ways and hold no other turn's, so a past activity card can read its own turn",()=>{

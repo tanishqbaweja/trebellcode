@@ -238,7 +238,9 @@ export function nativeApprovalCard(call={},authorization={}){
     action=`Use ${cut(words(name),80)}${server?` from ${server}`:""}`;sent(args);
   }
   const title=known?.[0]||(namespace==="trebell_repo"?"Project read needs approval":"Tool needs approval");
-  return {title,reason:command&&known?why:`${action}. ${why}`,...(command?{command}:{}),notice:command&&known?`${action}: ${commandLine?cut(commandLine,160):""}`.replace(/: $/,""):action};
+  // A plain run's command under the line is what it asks; any other command tool says what it does with it (in the background).
+  const plainRun=command&&known&&`${namespace}/${call?.name||""}`==="trebell_terminal/run";
+  return {title,reason:plainRun?why:`${action}. ${why}`,...(command?{command}:{}),notice:command&&known?`${action}: ${commandLine?cut(commandLine,160):""}`.replace(/: $/,""):action};
 }
 // A turn the person sends continues a thread only on the harness that owns it. A client that still shows another harness's thread
 // after a switch sends this harness's model with it, which the owning harness cannot run and must not save as the thread's model
@@ -326,19 +328,31 @@ function acpToolItem(update){
   return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
 }
 
+// The ids a refused request's call goes by: its call (toolCallId) and, where the harness's rows go by another id, its item (itemId:
+// Muse Code's). The refusal is kept under each, for the call's row to find it.
+export function refusalCallIds(toolCall={}){
+  return [...new Set([toolCall?.toolCallId,toolCall?.itemId].filter(Boolean).map(String))];
+}
+// Why Trebell's policy refused an ACP harness's request, in the person's words: a rule of theirs by its own reason, else the access
+// level's (notAllowedWords).
+export function policyRefusalWords(policy={}){
+  if(policy?.rule){const own=String(policy.rule.reason||"").trim();return own||"a rule in your settings does not allow it."}
+  return notAllowedWords(policy?.reason);
+}
 // A harness's call that did not run because it was not allowed (refusal: declined or notAllowed, with what its row says), or null.
 // Declined: Muse Code's call whose approval Trebell declined (its row says declined), and a Native call whose card was declined or
 // left unanswered (its result says confirmationRequired). Not allowed: a call its access level refused unasked (notAllowedWords): a
-// Native call by the reason in its result, an ACP harness's by the refusal its session or the relay gave its request (notAllowed:
-// why, in the person's words). A Native refusal for any other reason (input the tool does not take, a tool this thread does not
-// have) is a failure of the call, and keeps failing. Either reads so on its row, not as a failed step, and its turn's card does not
-// count it as failed.
+// Native call of any tool (an MCP server's too: its update names its namespace) by the reason in its result, an ACP harness's by
+// the refusal its session or the relay gave its request (notAllowed: why, in the person's words). A Native refusal for any other
+// reason (input the tool does not take, a tool this thread does not have) is a failure of the call, and keeps failing. Either reads
+// so on its row, not as a failed step, and its turn's card does not count it as failed.
 export function agentToolRefusal(update={},item={}){
   if(item.status!=="failed")return null;
   const output=update.rawOutput&&typeof update.rawOutput==="object"?update.rawOutput:null;
   if(typeof update.notAllowed==="string"&&update.notAllowed)return {status:"notAllowed",text:"Not run: "+update.notAllowed};
   if(update.declined===true)return {status:"declined",text:NOT_APPROVED_TEXT};
-  if(!String(update.namespace||"").startsWith("trebell_")||output?.success!==false)return null;
+  const namespace=String(update.namespace||"");
+  if(!namespace||namespace==="agent"||output?.success!==false)return null;
   if(output.confirmationRequired===true)return {status:"declined",text:NOT_APPROVED_TEXT};
   const plain=output.decision==="REJECT"?notAllowedWords(output.error):null;
   return plain?{status:"notAllowed",text:"Not run: "+plain}:null;
@@ -877,6 +891,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // did not run, and its row says it was declined or not allowed (agentToolRefusal). The oldest go past 500.
   const declinedToolCalls=new Map();
   const declineToolCall=(threadId,toolCallId,notAllowed="")=>{if(!toolCallId)return;declinedToolCalls.set(threadId+":"+String(toolCallId),notAllowed||"");if(declinedToolCalls.size>500)declinedToolCalls.delete(declinedToolCalls.keys().next().value)};
+  const declineCallIds=(threadId,toolCall,notAllowed="")=>{for(const id of refusalCallIds(toolCall))declineToolCall(threadId,id,notAllowed)};
   const refusedUpdate=(key,update)=>{const notAllowed=declinedToolCalls.get(key);return notAllowed===undefined?update:notAllowed?{...update,notAllowed}:{...update,declined:true}};
   // A running tool's latest item waiting to be stored, per thread and tool call: {turnId,at,item,timer}.
   const toolWrites=new Map();
@@ -2617,15 +2632,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           const askedRead=outsideReadsAsk&&policy.decision===POLICY_REJECT&&policy.action.kind==="read"&&policy.action.pathInsideWorkspace===false;
           if(policy.decision===POLICY_REJECT&&!askedRead){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"decline",data:{...traceData,decision:"decline",policyDecision:policy.decision}});
-            // Its row says why the access level did not allow it (notAllowedWords), not that the person declined it.
-            declineToolCall(thread.id,params.toolCall?.toolCallId,notAllowedWords(policy.reason));return "decline";
+            // Its row says why the access level, or a rule of the person's, did not allow it (notAllowedWords), not that the person
+            // declined it.
+            declineCallIds(thread.id,params.toolCall,policyRefusalWords(policy));return "decline";
           }
           try{
             // An ACP harness's own choices (approvalOptions) are shown as the card's buttons; each answers with its decision.
             const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:card?.reason||agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{}),
               ...(card?.title?{trebellTitle:card.title}:{}),...(card?.command?{command:card.command}:{}),...(card?.notice?{trebellNotice:card.notice}:{})},thread.id,signal,{runless}),decision=result?.decision||"decline";
             journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});
-            if(/^(?:decline|cancel|reject)/i.test(String(decision)))declineToolCall(thread.id,params.toolCall?.toolCallId);return decision;
+            if(/^(?:decline|cancel|reject)/i.test(String(decision)))declineCallIds(thread.id,params.toolCall);return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
           }

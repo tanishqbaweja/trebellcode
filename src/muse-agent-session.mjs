@@ -182,7 +182,8 @@ const MUSE_SUBJECTS=new Set(["shell","fileAccess","network","unixSocket","proces
 const personOnly=params=>params?.protectedWrite===true||!MUSE_SUBJECTS.has(text(params?.subject?.kind));
 // What a Muse approval asks, as the relay's approval card and Trebell's policy read it: a shell stage is a command
 // and a file read a read, other file access an edit, a network host network and anything else a tool; its title is the command,
-// path, host or target, else the tool.
+// path, host or target, else the tool. It names Muse's item as well as its call (itemId), since the call's row goes by the item: a
+// refusal the relay keeps for the request is found by the row.
 export function museApprovalToolCall(params={}){
   const subject=params.subject&&typeof params.subject==="object"?params.subject:{},kind=text(subject.kind);
   const title=[subject.command,subject.path,subject.host,subject.target,params.toolName,subject.toolName].map(value=>text(value).trim()).find(Boolean)||"Muse Code requests permission";
@@ -191,7 +192,8 @@ export function museApprovalToolCall(params={}){
     :kind==="network"?{host:text(subject.host),...(Number.isInteger(subject.port)?{port:subject.port}:{}),...(subject.protocol?{protocol:text(subject.protocol)}:{})}
     :{...(subject.target?{target:text(subject.target)}:{}),...(typeof params.rawArgs==="string"?{args:params.rawArgs}:{})};
   const policyKind=kind==="shell"?"execute":kind==="fileAccess"?(subject.access==="read"?"read":"edit"):kind==="network"?"network":"other";
-  return {toolCallId:text(params.toolCallId||params.itemId||params.approvalId),title,kind:policyKind,rawInput};
+  const toolCallId=text(params.toolCallId||params.itemId||params.approvalId),itemId=text(params.itemId);
+  return {toolCallId,...(itemId&&itemId!==toolCallId?{itemId}:{}),title,kind:policyKind,rawInput};
 }
 // The approval card's words for what a Muse approval asks (the relay's card): a title for a file access or network approval, a
 // protected write and a read outside the workspace by name (Muse names a path inside its workspace relative to it), else the card's
