@@ -815,3 +815,15 @@ export async function compactContext(deps){
     setEvents(prev=>{const row=prev.findLast(item=>item.kind==="contextCompaction"&&item.status==="running");return row?prev.map(item=>item===row?{...item,...failed}:item):upsertEvent(prev,{id,...failed,raw:{}})});
   }
 }
+
+// The files of a send whose saved copies are gone (error.data.missing; missingIn names a remote environment) leave the draft with their
+// chips, a context chip's too, or leave a follow-up of Trebell's own queue (item), which then waits for the person (autoStartFailed),
+// and the composer says so once (App's dropGoneAttachments, which tells whether the refusal named any).
+export function dropGoneFiles({activeThreadRef,persistLocalQueue,queueNow,showActionError,setAttachments,setContextChips,setComposerAlert,attachmentDisplayName},error,item){
+  const gone=error.data.missing;
+  const keep=list=>(list||[]).filter(entry=>!gone.includes(entry?.path??entry)),threadId=activeThreadRef.current?.id;
+  if(item)persistLocalQueue(threadId,queueNow(threadId).map(q=>q.id===item.id?{...q,attachments:keep(q.attachments),contextChips:keep(q.contextChips),dispatchingAt:null,autoStartFailed:true}:q)).catch(showActionError);
+  else{setAttachments(keep);setContextChips(keep)}
+  const one=gone.length<2,it=one?"it":"them",names=new Intl.ListFormat("en").format(gone.map(path=>`"${attachmentDisplayName(path)}"`));
+  setComposerAlert({kind:"send",queuedId:item?.id,text:names+(one?" is":" are")+" no longer "+(error.data.missingIn?"in "+error.data.missingIn:"on this computer")+", so "+(one?"it was":"they were")+" taken off "+(item?"the queued follow-up. Edit the follow-up to attach "+it+" again, or send the follow-up":"your message. Attach "+it+" again, or send the message")+" without "+it+"."});
+}

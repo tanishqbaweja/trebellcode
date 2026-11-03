@@ -815,19 +815,6 @@ function lessSent({attachments=[],contextChips=[]},sent){
 // A draft's text given back (next) before the composer's (current), between them a line (between), unless the composer has it.
 const draftBefore=(next,current,between)=>!next?current:!String(current||"").trim()?next:String(current).includes(next)?current:next.replace(/\s+$/,"")+between+current;
 
-// Why dictation stopped, by the browser's speech recognition error; any other error gets the last line. The mic shows on from the
-// press. A recognition the browser has not started listening for within DICTATION_WAIT_MS is let go, and one that ends without
-// starting, with DICTATION_SILENT: where the browser could not listen (headless Chromium has no speech service, so its recognition
-// never starts, errs or ends), two presses changed nothing, with no word (tour L10-22).
-const DICTATION_ERRORS={
-  "not-allowed":"The microphone is blocked. Allow microphone access for Trebell Code to dictate.",
-  "service-not-allowed":"The microphone is blocked. Allow microphone access for Trebell Code to dictate.",
-  "audio-capture":"No microphone was found to dictate with.",
-  "network":"Dictation could not reach the browser's speech service.",
-  "no-speech":"No speech was heard. Press the mic and speak.",
-  "":"Dictation stopped: the browser could not listen.",
-};
-const DICTATION_SILENT="Dictation did not start: the browser is not listening. Allow the microphone if asked, then try again.",DICTATION_WAIT_MS=8000;
 // The composer drawn now: its field and the setter of its caret. A file picked from the @ menu goes into the composer drawn once the
 // file is in, which is another one when a page (Settings, History) took the chat's place meanwhile, and into App's draft while the
 // page is still up.
@@ -970,26 +957,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   },[activeMention?.query,onFileMentionSearch]);
   const contextPercent=contextUsagePercent(tokenUsage);
   const priceConfig=savedPrice(settings,agentRuntime,model,provider);
+  // A press of the mic: dictation's code (dictation.js) comes with idle-parts.js after the first paint, so a press before it is in
+  // waits for it.
   function dictate(){
     if(!speechSupported)return;
-    // A press stops the recognition on its way, also one the browser has not started listening for yet: its own end lets the mic go.
-    const current=recognitionRef.current;
-    if(current){current.end();current.stop();return}
-    const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
-    const recognition=new Recognition(),say=text=>setDictationAlert({kind:"dictation",text});recognitionRef.current=recognition;setDictationAlert(null);setListening(true);let started=false;
-    // This recognition lets the mic go, unless a press or a newer one has it: false then.
-    const end=recognition.end=()=>{clearTimeout(recognition.wait);if(recognitionRef.current!==recognition)return false;recognitionRef.current=null;setListening(false);return true};
-    recognition.wait=setTimeout(()=>{if(end()){try{recognition.abort()}catch{}say(DICTATION_SILENT)}},DICTATION_WAIT_MS);
-    // One phrase, final results only: continuous and interimResults are off by the Web Speech API's own defaults.
-    recognition.lang=navigator.language||"en-US";
-    recognition.onstart=()=>{started=true;clearTimeout(recognition.wait)};
-    recognition.onend=()=>{if(end()&&!started)say(DICTATION_SILENT)};
-    recognition.onerror=event=>{const code=event?.error;if(end()&&code!=="aborted")say(DICTATION_ERRORS[code]||DICTATION_ERRORS[""])};
-    recognition.onresult=(event)=>{
-      const text=[...event.results].map(result=>result[0]?.transcript||"").join(" ").trim();
-      if(text)setPrompt(prev=>(prev&& !/\s$/.test(prev)?prev+" ":"")+text);
-    };
-    try{recognition.start()}catch(error){end();say("Dictation could not start: "+sentenceText(error?.message||String(error)))}
+    const run=parts=>parts.dictate({recognitionRef,setDictationAlert,setListening,setPrompt});
+    if(idleParts)run(idleParts);else loadIdleParts().then(run,error=>setDictationAlert({kind:"dictation",text:"Dictation could not start: "+sentenceText(error?.message||String(error))}));
   }
   // The composer takes keys while the picked file imports, so the pick goes into the draft as it is once the file is in: on its word
   // where that is then, what was typed meanwhile kept and the caret in it (a word edited or erased meanwhile gets nothing, and its chip
@@ -1306,6 +1279,8 @@ export default function App(){
   useLayoutEffect(()=>{setCardTurnId(activeTurnId||null);if(!running)setEvents(current=>{const kept=current.filter(event=>!event.turnId);return kept.length===current.length?current:kept})},[activeThread?.id]);
   useLayoutEffect(()=>{if(activeTurnId)setCardTurnId(activeTurnId)},[activeTurnId]);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
+  // An error row in the turn activity (kind error, status done), its id made unique by the time.
+  const errorRow=(id,title,raw={})=>setEvents(prev=>[...prev,{id:id+"-"+Date.now(),kind:"error",title,status:"done",raw}]);
   // The anchor row of an older page landing now: its virtual chunk mounts with the page, so the anchor is placed exactly.
   const [historyAnchorItemId,setHistoryAnchorItemId]=useState(null);
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
@@ -2130,7 +2105,7 @@ export default function App(){
       try{
         await (turnSupport||await loadTurnSupport()).attachSnapshot({snapshots,prepareAttachmentPaths,setAttachments,setContextChips,setSection,maxAttachments:MAX_COMPOSER_ATTACHMENTS},id);
       }catch(error){
-        setEvents(prev=>[...prev,{id:"snapshot-error-"+Date.now(),kind:"error",title:"Could not attach the SnapShot: "+(error.message||String(error)),status:"done",raw:{snapshotId:id}}]);
+        errorRow("snapshot-error","Could not attach the SnapShot: "+(error.message||String(error)),{snapshotId:id});
       }finally{handling.delete(id)}
     };
     snapshots.pending().then(items=>{for(const item of items||[])attachCapture(item.id)}).catch(error=>showActionError(error,"Could not load pending SnapShots"));
@@ -2673,7 +2648,7 @@ export default function App(){
     try{
       await rpc.request("thread/settings/update",params);
       setCodexThreadState(current=>current?.threadId===threadId?{...current,...(Object.prototype.hasOwnProperty.call(patch,"effort")?{effort:patch.effort||null}:{}),...(patch.serviceTier?{serviceTier:patch.serviceTier}:{})}:current);
-    }catch(error){setEvents(prev=>[...prev,{id:"codex-settings-error-"+Date.now(),kind:"error",title:"Could not change this thread's Codex settings: "+(error.message||String(error)),status:"done",raw:{}}])}
+    }catch(error){errorRow("codex-settings-error","Could not change this thread's Codex settings: "+(error.message||String(error)))}
   }
   async function changeCollaborationMode(nextMode){
     if(!collaborationModes.some(item=>item.mode===nextMode)||leavingThread())return;
@@ -2685,7 +2660,7 @@ export default function App(){
     try{await rpc.request("thread/settings/update",{threadId:activeThread.id,collaborationMode:payload})}
     catch(error){
       setCollaborationMode(previous);
-      setEvents(prev=>[...prev,{id:"collaboration-mode-error-"+Date.now(),kind:"error",title:`Could not change ${agentRuntimeLabel} mode: `+(error.message||String(error)),status:"done",raw:{}}]);
+      errorRow("collaboration-mode-error",`Could not change ${agentRuntimeLabel} mode: `+(error.message||String(error)));
     }finally{setCollaborationModeBusy(false)}
   }
   async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
@@ -2731,7 +2706,7 @@ export default function App(){
       return true;
     }catch(error){
       const label=agentRuntime==="codex"?"Codex":"Claude";
-      setEvents(prev=>[...prev,{id:"runtime-profile-error-"+Date.now(),kind:"error",title:`Could not switch ${label} profile: `+(error.message||String(error)),status:"done",raw:{instanceId}}]);
+      errorRow("runtime-profile-error",`Could not switch ${label} profile: `+(error.message||String(error)),{instanceId});
       showActionError(error,`Could not switch ${label} profile`);
       return false;
     }finally{setThreadRuntimeProfileBusy("")}
@@ -3577,7 +3552,7 @@ export default function App(){
     else if(message.method==="thread/elicitation/completed"&&isCurrent){
       setEvents(prev=>[...prev,{id:"elicitation-complete-"+(p.elicitationId||Date.now()),kind:"tool",title:"External interaction completed",status:"done",raw:p}]);
     }
-    else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>setEvents(prev=>[...prev,{id:"queue-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
+    else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>errorRow("queue-refresh-error","Could not refresh queued follow-ups: "+(error.message||String(error))));
     else if(message.method==="thread/sourceControl/updated"&&isCurrent&&p.gitInfo){
       setGitInfo(current=>({...current,...p.gitInfo}));
     }
@@ -3589,7 +3564,7 @@ export default function App(){
     else if(message.method==="windows/worldWritableWarning"){
       window.dispatchEvent(new CustomEvent("trebell:windows-sandbox-warning",{detail:p}));
       const count=(p.samplePaths||[]).length+(Number(p.extraCount)||0);const detail=p.failedScan?"Codex could not fully scan Windows writable paths.":`${count} Windows path${count===1?"":"s"} may not be protectable by the sandbox.`;
-      setEvents(prev=>[...prev,{id:"windows-sandbox-warning-"+Date.now(),kind:"error",title:detail,status:"done",raw:p}]);desktopNotify("Windows sandbox warning",detail);
+      errorRow("windows-sandbox-warning",detail,p);desktopNotify("Windows sandbox warning",detail);
     }
     else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId);
     else if(message.method==="thread/runtimeInstance/updated"){
@@ -4136,7 +4111,7 @@ export default function App(){
           showActionError(error,"Could not restore latest activity timeline");
         });
     }
-    if(useNativeQueue)await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
+    if(useNativeQueue)await loadNativeQueue(client,thread.id).catch(error=>errorRow("queue-load-error","Could not load queued follow-ups: "+(error.message||String(error))));
     // A thread opened or a new task started while these reads ran has the view: this thread's saved state does not go into it.
     if(activeThreadRef.current?.id!==openedThread.id)return thread;
     const meta=savedMeta;setReviewedFiles(meta.reviewedFiles||[]);
@@ -4332,7 +4307,7 @@ export default function App(){
       if(activation.stopped)current=(await rpc.request("thread/goal/set",{threadId:activation.threadId,status:"paused"}))?.goal||current;
       if(activeThreadRef.current?.id===activation.threadId)setGoal(current);
     }catch(error){
-      setEvents(prev=>[...prev,{id:"goal-start-error-"+Date.now(),kind:"error",title:"The turn started, but Codex could not make the goal active: "+(error.message||String(error)),status:"done",raw:{}}]);
+      errorRow("goal-start-error","The turn started, but Codex could not make the goal active: "+(error.message||String(error)));
     }finally{if(codexGoalActivationRef.current===activation)codexGoalActivationRef.current=null}
   }
   // A Stop pressed before its send's turn started is sent once to that turn, as soon as the harness can take it: turn/started, or
@@ -4514,13 +4489,13 @@ export default function App(){
   // Compact runs in turn-support.js (compactContext); one that cannot load it says so as a compaction that fails does.
   async function compactContext(){
     let support;try{support=turnSupport||await loadTurnSupport()}
-    catch(error){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:"Context compaction failed: "+error.message,status:"done",raw:{}}]);return}
+    catch(error){errorRow("compact-unavailable","Context compaction failed: "+error.message);return}
     return support.compactContext(turnDeps());
   }
   async function dispatchSend(promptOverride=null){
     const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim(),sendView=submittingRef.current,pressed=terminalPresses();if(!text)return;
     setComposerAlert(null);
-    if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
+    if(visiblePrompt.length>MAX_COMPOSER_CHARS){errorRow("prompt-too-long",`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,{length:visiblePrompt.length});return}
     // The draft's text leaves the composer as the send starts, before the send first waits (a command such as /goal or /compact, a
     // clone that runs, its files checked with the server), so what the person types straight on lands there, for the next message, as
     // the line under the composer says. A send kept here (a harness switch, a check that failed) gives it back before what was typed
@@ -4535,21 +4510,21 @@ export default function App(){
     // A started thread continues only on the harness that owns it.
     const threadOwner=threadOwnerElsewhere(activeThreadRef.current,threadMeta[activeThreadRef.current?.id],agentRuntime);
     if(threadOwner){keepDraft();const label=agentRuntimeName(threadOwner);setEvents(prev=>[...prev.filter(item=>item.id!=="thread-owned-elsewhere"),{id:"thread-owned-elsewhere",kind:"error",title:`This chat belongs to ${label}. Your draft was kept; open the chat from the sidebar to continue it in ${label}.`,status:"done",raw:{}}]);return}
-    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){keepDraft();setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
+    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){keepDraft();errorRow("video-unsupported",agentRuntimeLabel+" does not accept video attachments");return}
     // A follow-up's edit, a follow-up queued or one steered that does not go comes back before what was typed on meanwhile, with its
     // files and context (restoreSentDraft).
     if(runtimeCapabilities.nativeQueue&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
       try{
         if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips,{queuedId:queuedEditId}))return;
-        restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-update-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not support editing native queued follow-ups.`,status:"done",raw:{}}]);return;
-      }catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+        restoreSentDraft(draft);errorRow("queue-update-unavailable",`${agentRuntimeLabel} does not support editing native queued follow-ups.`);return;
+      }catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))errorRow("queue-update-error","Could not update queued follow-up: "+(error.message||String(error)));return}
     }
     // An edit of a follow-up in Trebell's own queue is saved in its place there; its files and context leave the composer once it is.
     if(queuedEditId&&activeThread?.id&&queued.some(item=>item.id===queuedEditId&&!item.native)){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};
       try{await validateAttachmentPaths(draft.attachments);await persistLocalQueue(activeThread.id,queued.map(item=>item.id===queuedEditId?{...item,...draft}:item));setPromptHistoryIndex(-1);dropSentDraft(draft);setQueuedEditId(null)}
-      catch(error){keepDraft();if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}
+      catch(error){keepDraft();if(!dropGoneAttachments(error))errorRow("queue-update-error","Could not update queued follow-up: "+(error.message||String(error)))}
       return;
     }
     // A follow-up waits in the queue of the thread it follows, which sends it once the turn ends; with no thread shown there is no
@@ -4558,16 +4533,16 @@ export default function App(){
     // for it (-31000: Muse Code writes its report on a host of another mode) says beside the composer that it was not sent.
     if(running&&activeThread?.id){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
-      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){restoreSentDraft(draft);if(dropGoneAttachments(error))return;if(error?.rpcCode===-31000)setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});else setEvents(prev=>[...prev,{id:"steer-error-"+Date.now(),kind:"error",title:"Could not steer the agent: "+(error.message||String(error)),status:"done",raw:{}}])}return}
+      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){restoreSentDraft(draft);if(dropGoneAttachments(error))return;if(error?.rpcCode===-31000)setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});else errorRow("steer-error","Could not steer the agent: "+(error.message||String(error)))}return}
       if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
         try{
           if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;
           const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};await persistLocalQueue(activeThread.id,[...queued,item]);return;
         }
-        catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+        catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))errorRow("queue-add-error","Could not queue follow-up: "+(error.message||String(error)));return}
       }
       try{await validateAttachmentPaths(draft.attachments);const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};await persistLocalQueue(activeThread.id,[...queued,item])}
-      catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
+      catch(error){restoreSentDraft(draft);if(!dropGoneAttachments(error))errorRow("queue-local-error","Could not queue follow-up: "+(error.message||String(error)))}return;
     }
     // Never start a turn with a model the active runtime does not list: a stale pick from another harness, or a catalog that is loading or failed.
     if(!modelsRef.current.includes(model)&&selectedModels.filter(id=>modelsRef.current.includes(id)).length<2){
@@ -4577,9 +4552,9 @@ export default function App(){
       const reason=modelsLoadingRef.current||!initialLoaded?`${agentRuntimeLabel} models are still loading`:modelError?`${agentRuntimeLabel} has no usable model: ${modelError}`:`No ${agentRuntimeLabel} model is available`;
       setEvents(prev=>[...prev.filter(item=>item.id!=="model-unavailable"),{id:"model-unavailable",kind:"error",title:reason+". Your draft was kept; send it again once a model is selected.",status:"done",raw:{model:model||null}}]);return;
     }
-    try{await waitForActiveClone()}catch(error){keepDraft();setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
+    try{await waitForActiveClone()}catch(error){keepDraft();errorRow("clone-wait",error.message);return}
     const fanned=await sendModelFanout(text);if(fanned){if(fanned==="kept")keepDraft();return}
-    try{await validateAttachmentPaths(attachments)}catch(e){keepDraft();if(dropGoneAttachments(e))return;setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
+    try{await validateAttachmentPaths(attachments)}catch(e){keepDraft();if(dropGoneAttachments(e))return;errorRow("attachment-error",e.message);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};if(sendView)sendDraftsRef.current.set(sendView,draft);
     setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock){
@@ -4659,7 +4634,7 @@ export default function App(){
   // A queued follow-up is edited in the composer and stays queued as it was until the edit is saved (dispatchSend) or Escape ends it
   // (cancelQueuedEdit); the composer's draft is set aside meanwhile.
   async function editQueued(item){
-    if(item?.native&&!item.editable){setEvents(prev=>[...prev,{id:"queue-edit-unavailable-"+Date.now(),kind:"error",title:"This queued follow-up contains input Trebell cannot safely edit yet.",status:"done",raw:{}}]);return}
+    if(item?.native&&!item.editable){errorRow("queue-edit-unavailable","This queued follow-up contains input Trebell cannot safely edit yet.");return}
     // One follow-up is edited at a time (the others' Edit waits until it is saved or Escape ends it), so an edit never replaces another;
     // one on its way goes as it is, so an edit of it would send it twice (queuedOnItsWay).
     if(queuedEditId||queuedOnItsWay(item))return;
@@ -4781,14 +4756,13 @@ export default function App(){
   // file that is no longer there refused every later send the same way. Every send does this, a follow-up's (queued, steered, an edit
   // of one queued), a multi-model send's and a background send's too. Given a follow-up of Trebell's own queue (its Send now, or the
   // queue's own start of it once a turn ends), the files
-  // leave that follow-up, which waits for the person (autoStartFailed), so it never goes without them unasked. True when it did.
+  // leave that follow-up, which waits for the person (autoStartFailed), so it never goes without them unasked. True when it did:
+  // the work is turn-support.js's (dropGoneFiles), as a send's is, so it runs at once once that module is in, as it is after the first
+  // paint.
   function dropGoneAttachments(error,item){
-    const gone=error?.data?.missing;if(!gone?.length)return false;
-    const keep=list=>(list||[]).filter(entry=>!gone.includes(entry?.path??entry)),threadId=activeThreadRef.current?.id;
-    if(item)persistLocalQueue(threadId,queueNow(threadId).map(q=>q.id===item.id?{...q,attachments:keep(q.attachments),contextChips:keep(q.contextChips),dispatchingAt:null,autoStartFailed:true}:q)).catch(showActionError);
-    else{setAttachments(keep);setContextChips(keep)}
-    const one=gone.length<2,it=one?"it":"them",names=new Intl.ListFormat("en").format(gone.map(path=>`"${attachmentDisplayName(path)}"`));
-    setComposerAlert({kind:"send",queuedId:item?.id,text:names+(one?" is":" are")+" no longer "+(error.data.missingIn?"in "+error.data.missingIn:"on this computer")+", so "+(one?"it was":"they were")+" taken off "+(item?"the queued follow-up. Edit the follow-up to attach "+it+" again, or send the follow-up":"your message. Attach "+it+" again, or send the message")+" without "+it+"."});
+    if(!error?.data?.missing?.length)return false;
+    const deps={activeThreadRef,persistLocalQueue,queueNow,showActionError,setAttachments,setContextChips,setComposerAlert,attachmentDisplayName};
+    if(turnSupport)turnSupport.dropGoneFiles(deps,error,item);else loadTurnSupport().then(support=>support.dropGoneFiles(deps,error,item),showActionError);
     return true;
   }
   async function validateAttachmentPaths(paths,{extract=true}={}){
@@ -5111,7 +5085,7 @@ export default function App(){
         setEvents(prev=>[...prev,{id:"live-model-"+Date.now(),kind:"tool",title:"Running turn switched to "+(modelMeta?.[nextModel]?.name||modelLabel(nextModel)||nextModel),status:"done",raw:{model:nextModel}}]);
       }
     }catch(error){
-      setEvents(prev=>[...prev,{id:"live-model-error-"+Date.now(),kind:"error",title:"Could not change the running turn's model. The new model will apply to the next turn: "+(error.message||String(error)),status:"done",raw:{model:nextModel}}]);
+      errorRow("live-model-error","Could not change the running turn's model. The new model will apply to the next turn: "+(error.message||String(error)),{model:nextModel});
     }
   }
 

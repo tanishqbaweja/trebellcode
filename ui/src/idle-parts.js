@@ -1,7 +1,9 @@
 // What App draws or runs only once the person does something, loaded in one chunk at idle after the first paint (B11): the Cite
-// button of text selected in a reply, the find bar of Ctrl+F and its search, what the sidebar's and the palette's searches find in
-// threads, the right panel's Runtime tab, History's list and its pages, and a thread's history beyond its first page.
+// button of text selected in a reply, the composer's dictation (a press of the mic), the find bar of Ctrl+F and its search, what the
+// sidebar's and the palette's searches find in threads, the right panel's Runtime tab, History's list and its pages, and a thread's
+// history beyond its first page.
 export { default as ReplyCiteButton, citeAssistant } from "./components/ReplyCiteButton.jsx";
+export { dictate } from "./dictation.js";
 export { default as ThreadFindBar } from "./components/ThreadFindBar.jsx";
 export { default as RuntimeSurface } from "./components/RuntimeSurface.jsx";
 export { default as ThreadHistoryPage } from "./components/ThreadHistoryPage.jsx";
