@@ -254,6 +254,25 @@ test("a new thread reads its first message as its title while its first turn run
   }finally{await harness.close()}
 });
 
+test("a new Codex thread reads its first message as its title while its first turn runs, though Codex says so only in its thread list (L10-F-8)",async({page})=>{
+  test.setTimeout(45_000);
+  const message="List the files in this folder and say which one is largest";
+  const thread=baseThread("first-title-codex",{turns:[]});
+  // As Codex does: the turn starts, and nothing names the thread until its list is read again.
+  const harness=await startHarness(thread,{onTurn:(h,params,turn)=>h.push("turn/started",{turn})});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openThread(page,{harness,thread,title:"Untitled task"});
+    await expect(page.locator(".thread-title-button strong")).toHaveText("Untitled task");
+    await page.getByTestId("composer").fill(message);await page.getByTestId("send").click();
+    await expect.poll(()=>harness.started.length).toBe(1);
+    await expect(page.locator(".thread-title-button strong")).toHaveText(message);
+    await expect(page.locator(`.thread-row .thread-main[title="${message}"]`)).toHaveCount(1);
+    await expect(page.locator(".thread-row .thread-main",{hasText:"Untitled task"})).toHaveCount(0);
+    await shoot(page,"l10-first-title-codex-1280");
+  }finally{await harness.close()}
+});
+
 test("Usage names the environment of turns run on this computer plainly (L10-F-9)",async({page})=>{
   test.setTimeout(45_000);
   const thread=baseThread("usage-thread",{name:"Usage thread",turns:[]});
