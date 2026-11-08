@@ -64,7 +64,9 @@ function normalizeUsage(value={}){
   const cachedInputTokens=Number(value.input_tokens_details?.cached_tokens??value.prompt_tokens_details?.cached_tokens??value.cache_read_input_tokens??0)||0;
   const cacheWriteInputTokens=Number(value.input_tokens_details?.cache_write_tokens??value.prompt_tokens_details?.cache_write_tokens??value.cache_creation_input_tokens??0)||0;
   const reasoningOutputTokens=Number(value.output_tokens_details?.reasoning_tokens??value.completion_tokens_details?.reasoning_tokens??value.reasoning_tokens??0)||0;
-  return {inputTokens,outputTokens,totalTokens:Number(value.total_tokens??inputTokens+outputTokens)||inputTokens+outputTokens,cachedInputTokens,cacheWriteInputTokens,reasoningOutputTokens};
+  // Anthropic's usage.speed (fast mode's "fast", else "standard") stays with the request's usage when the response gives it.
+  const speed=typeof value.speed==="string"&&value.speed?{speed:value.speed}:{};
+  return {inputTokens,outputTokens,totalTokens:Number(value.total_tokens??inputTokens+outputTokens)||inputTokens+outputTokens,cachedInputTokens,cacheWriteInputTokens,reasoningOutputTokens,...speed};
 }
 
 function openAiContent(content){
@@ -293,7 +295,7 @@ export function normalizeChatTurnResponse(body={},provider=null,fallbackModel=""
   const choice=body?.choices?.[0]||{},message=choice.message||{},toolCalls=(message.tool_calls||[]).filter(call=>call?.type==="function").map(normalizeToolCall);
   return {
     id:String(body.id||""),provider:provider?String(provider):null,model:String(body.model||fallbackModel||""),text:textContent(message.content),toolCalls,
-    serviceTier:normalizedServiceTier(body.service_tier??body.serviceTier),finishReason:String(choice.finish_reason||"")||null,status:"completed",usage:normalizeUsage(body.usage||{}),raw:body,
+    serviceTier:normalizedServiceTier(body.service_tier??body.serviceTier??body.usage?.speed),finishReason:String(choice.finish_reason||"")||null,status:"completed",usage:normalizeUsage(body.usage||{}),raw:body,
   };
 }
 

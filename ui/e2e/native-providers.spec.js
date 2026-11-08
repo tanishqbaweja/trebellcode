@@ -74,9 +74,9 @@ const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
 // checkKey, when given, is a provider manager's own check of a typed key (ProviderManager.checkKey), whose refusal is said as the
 // GUI server says it.
 async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={},listThreads=false,project=null,envKey=null,relayOptions={},checkKey=null}){
-  const server={provider,hasKey,keyCheck:null,posts:[],checks:[],refuseKey,modelsMs:0,reasoningEfforts:{...reasoningEfforts},envKey};
+  const server={provider,hasKey,keyCheck:null,posts:[],checks:[],refuseKey,modelsMs:0,reasoningEfforts:{...reasoningEfforts},serviceTiers:{},envKey};
   const relay=await startNativeRelay({listThreads,...relayOptions});
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",modelReasoningEfforts:server.reasoningEfforts,...(project?{activeProjectId:project.id}:{})});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",modelReasoningEfforts:server.reasoningEfforts,modelServiceTiers:server.serviceTiers,...(project?{activeProjectId:project.id}:{})});
   const bootstrap=()=>({mock:false,provider:server.provider,providerReady:server.hasKey,agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"native-providers-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const keyless=()=>STATIC_MODELS[server.provider]||[];
   const catalog=()=>server.hasKey
@@ -91,6 +91,7 @@ async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models
   await page.route(/\/api\/settings$/,route=>{
     const patch=route.request().method()==="POST"?route.request().postDataJSON()||{}:{};
     if(patch.modelReasoningEfforts)server.reasoningEfforts={...patch.modelReasoningEfforts};
+    if(patch.modelServiceTiers)server.serviceTiers={...patch.modelServiceTiers};
     return json(route,settings());
   });
   await page.route(/\/api\/models(?:\?.*)?$/,async route=>{if(server.modelsMs)await new Promise(resolve=>setTimeout(resolve,server.modelsMs));return json(route,catalog())});
@@ -435,6 +436,47 @@ for(const mode of MODES)test(`a Thinking level the model does not offer reads an
     expect(relay.turnStarts[1]).toMatchObject({model:"gpt-5",reasoningEffort:"high"});
     await expect(picker).toBeEnabled();await expect(picker).toHaveValue("high");
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-thinking-level-picked-${mode}.png`});
+  }finally{await close()}
+});
+
+// The Speed option, Standard or Fast, on both providers Native runs with a faster tier (the owner, 2026-11-09: "There should be an
+// option shown in the UI for native so that the user can enable fast mode or keep it standard, for both open ai and anthropic"):
+// on Anthropic it is fast mode (Claude Opus 5.5, Opus 5 and Opus 4.8), on OpenAI the processing tier the model lists. Its tooltip
+// says what Fast does and that it costs more. Standard is the default and sends no tier; the Fast pick is kept for the model and
+// reaches the runner in turn/start's serviceTier; a model without a faster tier shows no Speed option.
+const SPEED_CASES=[
+  {provider:"anthropic",fast:"claude-opus-5-5",fastLabel:/claude-opus-5-5/i,other:"claude-sonnet-5-5",otherLabel:/claude-sonnet-5-5/i,title:"Speed. Standard runs at the usual speed and price. Fast turns on Anthropic's fast mode: the same model writes up to 2.5 times faster and costs about twice as much per token."},
+  {provider:"openai",fast:"gpt-6-luna",fastLabel:/gpt-6-luna/i,other:"gpt-5",otherLabel:/gpt-5/i,title:"Speed. Standard runs at the usual speed and price. Fast uses OpenAI's priority processing: the same model answers faster and costs more per token."},
+];
+for(const item of SPEED_CASES)for(const mode of MODES)test(`Native on ${item.provider} offers Speed Standard or Fast, says what Fast costs, keeps the pick and sends it with the turn (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const {server,relay,close}=await startNativeHarness(page,{provider:item.provider,mode,hasKey:true,models:[item.fast,item.other],defaultModel:item.fast});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    const model=page.getByTestId("model-picker"),speed=page.getByTestId("service-tier-picker"),composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    await expect(model).toContainText(item.fastLabel);
+    await expect(speed).toBeVisible();await expect(speed).toHaveValue("");
+    await expect(speed.locator("option")).toHaveText(["Speed · Standard","Speed · Fast"]);
+    await expect(speed).toHaveAttribute("title",item.title);
+    // Standard, the default, sends no tier.
+    await composer.fill("hello");await send.click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(1);
+    expect(relay.turnStarts[0]).toMatchObject({model:item.fast,modelProvider:item.provider});
+    expect(relay.turnStarts[0]).not.toHaveProperty("serviceTier");
+    // Fast is kept for the model and goes with the next turn.
+    await speed.selectOption({label:"Speed · Fast"});
+    await expect(speed).toHaveValue("fast");
+    await expect.poll(()=>server.serviceTiers).toEqual({[`native:${item.provider}:${item.fast}`]:"fast"});
+    await composer.fill("again");await send.click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(2);
+    expect(relay.turnStarts[1]).toMatchObject({model:item.fast,modelProvider:item.provider,serviceTier:"fast"});
+    await expect(speed).toBeEnabled();await expect(speed).toHaveValue("fast");
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-speed-fast-${item.provider}-${mode}-1280x800.png`});
+    // A model with no faster tier shows no Speed option.
+    await model.click();await page.locator(".model-picker-menu").locator(":scope > button").filter({hasText:item.otherLabel}).first().click();
+    await expect(model).toContainText(item.otherLabel);
+    await expect(speed).toHaveCount(0);
   }finally{await close()}
 });
 

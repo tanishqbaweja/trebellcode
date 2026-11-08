@@ -126,9 +126,18 @@ export function supportedModelServiceTiers(runtime,provider,model,metadata={}){
   for(const value of advertised){const tier=normalizeModelServiceTier(typeof value==="string"?value:(value?.serviceTier??value?.tier??value?.value??value?.id));if(tier&&!normalized.includes(tier))normalized.push(tier)}
   if(normalized.length)return normalized;
   const id=String(model||"").trim().toLowerCase();
+  if(runtime==="native"&&provider==="anthropic")return anthropicFastMode(id,metadata)?["fast"]:[];
   // Point releases of Luna and Sol (gpt-6.1-sol) take the priority tier as their base models do.
   if(runtime==="native"&&provider==="openai"&&/^gpt-6(?:\.\d+)?-(?:luna|sol)(?:$|-)/.test(id))return ["fast"];
   return [];
+}
+
+// Anthropic's fast mode (a research preview of the Claude API): the model list's capabilities say which models have it where
+// they name it (fast_mode, or speed.fast); the list named neither on 2026-11-09, so then Claude Opus 5.5, Opus 5 and Opus 4.8.
+const ANTHROPIC_FAST_MODELS=/^claude-opus-(?:5-5|5|4-8)(?:-\d{8})?$/;
+export function anthropicFastMode(model,metadata={}){
+  const capabilities=metadata?.capabilities,said=capabilities?.fast_mode?.supported??capabilities?.speed?.fast?.supported;
+  return typeof said==="boolean"?said:ANTHROPIC_FAST_MODELS.test(String(model||"").trim().toLowerCase());
 }
 
 // Native's tier when the person picked none is the shared default (native-configuration.mjs): none, so Standard.

@@ -248,6 +248,11 @@ function openAiChunk({id,model,delta={},finish_reason=null,usage}={}){
   };
 }
 
+function usageSpeed(usage){
+  const speed=typeof usage?.speed==="string"?usage.speed.trim().toLowerCase():"";
+  return speed||null;
+}
+
 function mapStopReason(reason){
   if(reason==="tool_use")return"tool_calls";
   if(reason==="max_tokens")return"length";
@@ -276,6 +281,8 @@ export function anthropicSseToChatStream(source,{model=""}={}){
   let cacheReadTokens=0;
   let cacheWriteTokens=0;
   let outputTokens=0;
+  // usage.speed, which fast mode's responses carry: "fast", or "standard" for a request that ran at standard speed.
+  let speed=null;
   const toolIndexes=new Map();
   let nextToolIndex=0;
 
@@ -300,6 +307,7 @@ export function anthropicSseToChatStream(source,{model=""}={}){
               inputTokens=Number(event.message?.usage?.input_tokens||0)||0;
               cacheReadTokens=Number(event.message?.usage?.cache_read_input_tokens||0)||0;
               cacheWriteTokens=Number(event.message?.usage?.cache_creation_input_tokens||0)||0;
+              speed=usageSpeed(event.message?.usage)||speed;
               if(event.message?.model)model=event.message.model;
             }else if(event.type==="content_block_start"){
               const blockValue=event.content_block||{};
@@ -326,6 +334,7 @@ export function anthropicSseToChatStream(source,{model=""}={}){
             }else if(event.type==="message_delta"){
               finishReason=mapStopReason(event.delta?.stop_reason)||finishReason;
               outputTokens=Number(event.usage?.output_tokens||outputTokens)||outputTokens;
+              speed=usageSpeed(event.usage)||speed;
             }
           }
         }
@@ -337,6 +346,7 @@ export function anthropicSseToChatStream(source,{model=""}={}){
             completion_tokens:outputTokens,
             total_tokens:inputTokens+cacheReadTokens+cacheWriteTokens+outputTokens,
             prompt_tokens_details:{cached_tokens:cacheReadTokens,cache_write_tokens:cacheWriteTokens},
+            ...(speed?{speed}:{}),
           },
         })));
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -363,7 +373,7 @@ export function anthropicMessageToChatCompletion(message={},fallbackModel=""){
   }
   const fresh=Number(message.usage?.input_tokens||0)||0,cacheRead=Number(message.usage?.cache_read_input_tokens||0)||0,cacheWrite=Number(message.usage?.cache_creation_input_tokens||0)||0;
   const prompt=fresh+cacheRead+cacheWrite;
-  const completion=Number(message.usage?.output_tokens||0)||0;
+  const completion=Number(message.usage?.output_tokens||0)||0,speed=usageSpeed(message.usage);
   return {
     id:message.id||`chatcmpl_${randomUUID()}`,
     object:"chat.completion",
@@ -374,7 +384,7 @@ export function anthropicMessageToChatCompletion(message={},fallbackModel=""){
       message:{role:"assistant",content:content.join(""),...(tool_calls.length?{tool_calls}:{})},
       finish_reason:mapStopReason(message.stop_reason)||"stop",
     }],
-    usage:{prompt_tokens:prompt,completion_tokens:completion,total_tokens:prompt+completion,prompt_tokens_details:{cached_tokens:cacheRead,cache_write_tokens:cacheWrite}},
+    usage:{prompt_tokens:prompt,completion_tokens:completion,total_tokens:prompt+completion,prompt_tokens_details:{cached_tokens:cacheRead,cache_write_tokens:cacheWrite},...(speed?{speed}:{})},
   };
 }
 

@@ -42,10 +42,14 @@ export function harnessInventory(runtimeInventory=null,providerMeta=null,{withSk
   return {commands:list(merged.commands),agents:list(merged.agents),...(withSkills?{skills:list(merged.skills)}:{})};
 }
 
-// The Speed picker's tooltip names what the choice changes for the harness.
-export function serviceTierPickerTitle(runtime){
+// The Speed picker's tooltip names what the choice changes for the harness; Trebell Native's says what Fast does on the provider
+// and that it costs more.
+export function serviceTierPickerTitle(runtime,provider=null){
   if(runtime==="codex")return "Codex service tier";
   if(runtime==="claude")return "Claude Code Fast mode";
   if(runtime==="cursor")return "Cursor Fast mode";
+  if(runtime==="native")return "Speed. Standard runs at the usual speed and price. Fast "+(provider==="anthropic"
+    ?"turns on Anthropic's fast mode: the same model writes up to 2.5 times faster and costs about twice as much per token."
+    :"uses OpenAI's priority processing: the same model answers faster and costs more per token.");
   return "OpenAI processing speed tier";
 }

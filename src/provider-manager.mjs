@@ -199,6 +199,8 @@ function bundledCodexVersion(){
 }
 const DEFAULT_AGENTROUTER_CLIENT_VERSION=bundledCodexVersion();
 const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
+// Anthropic's fast mode: the beta flag every fast request carries, with speed "fast" in its body (docs: build-with-claude/fast-mode).
+export const ANTHROPIC_FAST_MODE_BETA="fast-mode-2026-02-01";
 function providerErrorExcerpt(value,{environment={},secret="",maxChars=1200}={}){
   const max=Math.max(120,Math.min(4000,Math.trunc(Number(maxChars)||1200))),scan=String(value??"").slice(0,Math.max(max*4,max+4096));
   return redactSecretText(scan,{environment:{...environment,TREBELL_PROVIDER_ERROR_SECRET:String(secret||"")}}).slice(0,max);
@@ -989,7 +991,9 @@ export class ProviderManager {
     if (provider.protocolCompatibility?.includes("anthropic-messages")) {
       const requestBody = anthropicBody||chatToAnthropic(chatBody);
       if(provider.id==="anthropic"&&promptCaching===true)requestBody.cache_control={type:"ephemeral"};
-      const endpoint=provider.baseUrl + "/messages",body=this.reusePreSerializedToolJson?stringifyProviderBody(requestBody):JSON.stringify(requestBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
+      // Fast mode (speed "fast", set by turn() for the Fast pick) goes to the beta Messages endpoint under its beta header.
+      const fast=provider.id==="anthropic"&&requestBody.speed==="fast";
+      const endpoint=provider.baseUrl + "/messages" + (fast?"?beta=true":""),body=this.reusePreSerializedToolJson?stringifyProviderBody(requestBody):JSON.stringify(requestBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
       const headerGuard=requestBody.stream?providerHeadersSignal(signal,this.requestTimeoutMs):null;
       try{
         const upstream = await this.fetchFn(endpoint, {
@@ -997,6 +1001,7 @@ export class ProviderManager {
           headers: {
             "x-api-key": key,
             "anthropic-version": "2023-06-01",
+            ...(fast ? { "anthropic-beta": ANTHROPIC_FAST_MODE_BETA } : {}),
             "Content-Type": "application/json",
             "Accept": requestBody.stream ? "text/event-stream, application/json" : "application/json",
             "User-Agent": TREBELL_USER_AGENT,
@@ -1187,6 +1192,9 @@ export class ProviderManager {
     let anthropicMessageProjector=null;
     if(anthropicScaffold&&this.reuseAnthropicMessageBuild){const identity=request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY];if(identity&&typeof identity==="object"){anthropicMessageProjector=this.anthropicMessageProjectors.get(identity);if(!anthropicMessageProjector){anthropicMessageProjector=createAnthropicMessageProjector();this.anthropicMessageProjectors.set(identity,anthropicMessageProjector)}}}
     const directAnthropicBody=anthropicScaffold?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:anthropicScaffold.scaffold,messageProjector:anthropicMessageProjector}):null;
+    // The Fast pick on Anthropic is fast mode: speed "fast" on every request of the turn, a rate-limited one too (its 429 is waited
+    // out by its retry-after and sent again fast, never at standard speed). Standard sends nothing new.
+    if(directAnthropicBody&&requestedServiceTier==="fast")directAnthropicBody.speed="fast";
     if(this.reusePreSerializedToolJson&&directAnthropicBody?.[ANTHROPIC_PRE_SERIALIZED_MESSAGES])attachPreSerializedTopLevel(directAnthropicBody,"messages",directAnthropicBody.messages,directAnthropicBody[ANTHROPIC_PRE_SERIALIZED_MESSAGES]);
     if(this.reusePreSerializedToolJson&&directAnthropicBody&&anthropicScaffold?.toolsJson&&directAnthropicBody.tools===anthropicScaffold.scaffold.tools)attachPreSerializedTopLevel(directAnthropicBody,"tools",directAnthropicBody.tools,anthropicScaffold.toolsJson);
     const chatManifest=provider.wireApi==="responses"||directAnthropicBody?null:this.#chatToolManifest(request);

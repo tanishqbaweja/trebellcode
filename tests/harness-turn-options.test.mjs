@@ -80,5 +80,7 @@ test("the Speed picker names what it changes for the harness",()=>{
   assert.equal(serviceTierPickerTitle("codex"),"Codex service tier");
   assert.equal(serviceTierPickerTitle("claude"),"Claude Code Fast mode");
   assert.equal(serviceTierPickerTitle("cursor"),"Cursor Fast mode");
-  assert.equal(serviceTierPickerTitle("native"),"OpenAI processing speed tier");
+  assert.match(serviceTierPickerTitle("native"),/^Speed. Standard runs at the usual speed and price. Fast uses OpenAI.s priority processing/);
+  assert.match(serviceTierPickerTitle("native","anthropic"),/Anthropic.s fast mode.*about twice as much per token/);
+  assert.equal(serviceTierPickerTitle("opencode"),"OpenAI processing speed tier");
 });
