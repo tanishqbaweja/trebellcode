@@ -4,7 +4,7 @@ This page says where Trebell Code stands and which work is planned next. It give
 
 ## Where it stands
 
-- **Release 2.1.5**, a desktop app for Windows x64, from the [releases page](https://github.com/tanishqbaweja/trebellcode-releases/releases). Its notes are in [docs/releases/v2.1.5.md](docs/releases/v2.1.5.md).
+- **Release 2.1.6**, a desktop app for Windows x64, from the [releases page](https://github.com/tanishqbaweja/trebellcode-releases/releases). Its notes are in [docs/releases/v2.1.6.md](docs/releases/v2.1.6.md).
 - **Trebell Native**, Trebell's own harness, on your API key of OpenAI, Anthropic, Google Gemini, xAI or the Meta Model API, or of the AgentRouter, JustWorker.icu, HCNSec.cn and VyceAi compatible routes.
 - **Other agents as their real harnesses:** Codex, Claude Code, OpenCode, Cursor, Grok Build, Antigravity and Muse Code.
 - **Benchmark results** in [BENCHMARKS.md](BENCHMARKS.md). They were measured before the app and the benchmark runner came to share one Native configuration on 2026-10-29. Results measured with the shared configuration are not published there yet.
